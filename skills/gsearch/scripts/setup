@@ -21,7 +21,7 @@ if ! echo ":$PATH:" | grep -q ":$target_dir:"; then
       break
     fi
   done
-  if [ -n "$profile" ]; then
+  if [ -n "$profile" ] && ! grep -q '\.local/bin' "$profile"; then
     printf '\nexport PATH="$HOME/.local/bin:$PATH"\n' >> "$profile"
     echo "Added $target_dir to PATH in $profile"
   fi

@@ -9,7 +9,6 @@ description: >-
   calls. Use when the user wants to automate, script, or inspect a
   Chromium-based browser via CDP — single tab or multi-tab, attach to an
   existing browser or launch a new one with --remote-debugging-port.
-disable-model-invocation: true
 ---
 
 # CDP — `browser-harness-js` skill

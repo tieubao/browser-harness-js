@@ -22,17 +22,11 @@ Run the setup script to symlink `gsearch` onto your PATH:
 bash <skill-dir>/scripts/setup
 ```
 
-Or symlink manually:
+The script creates `~/.local/bin` if needed, adds it to your PATH in `~/.zshrc` (or `~/.bashrc`), and symlinks the CLI. Or symlink manually:
 
 ```bash
-# macOS (Apple Silicon + Homebrew)
-command -v gsearch >/dev/null || ln -sf <skill-dir>/scripts/gsearch /opt/homebrew/bin/gsearch
-
-# macOS (Intel) / most Linux — may need sudo
-command -v gsearch >/dev/null || ln -sf <skill-dir>/scripts/gsearch /usr/local/bin/gsearch
-
-# Linux without sudo (ensure ~/.local/bin is on PATH)
-command -v gsearch >/dev/null || ln -sf <skill-dir>/scripts/gsearch ~/.local/bin/gsearch
+mkdir -p ~/.local/bin
+ln -sf <skill-dir>/scripts/gsearch ~/.local/bin/gsearch
 ```
 
 ## Quick search

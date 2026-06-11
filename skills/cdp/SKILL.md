@@ -26,17 +26,11 @@ The SDK lives in the skill's `sdk/` directory. In the rest of this doc, `<skill-
 bash <skill-dir>/scripts/setup
 ```
 
-Or symlink manually:
+The script creates `~/.local/bin` if needed, adds it to your PATH in `~/.zshrc` (or `~/.bashrc`), and symlinks the CLI. Or symlink manually:
 
 ```bash
-# macOS (Apple Silicon + Homebrew)
-command -v browser-harness-js >/dev/null || ln -sf <skill-dir>/sdk/browser-harness-js /opt/homebrew/bin/browser-harness-js
-
-# macOS (Intel) / most Linux — may need sudo
-command -v browser-harness-js >/dev/null || ln -sf <skill-dir>/sdk/browser-harness-js /usr/local/bin/browser-harness-js
-
-# Linux without sudo (ensure ~/.local/bin is on PATH)
-command -v browser-harness-js >/dev/null || { mkdir -p ~/.local/bin && ln -sf <skill-dir>/sdk/browser-harness-js ~/.local/bin/browser-harness-js; }
+mkdir -p ~/.local/bin
+ln -sf <skill-dir>/sdk/browser-harness-js ~/.local/bin/browser-harness-js
 ```
 
 The CLI auto-installs `bun` on first run if it's missing (the server is Bun-native). Set `BROWSER_HARNESS_SKIP_BUN_INSTALL=1` to opt out.

@@ -10,19 +10,24 @@ if [ ! -f "$cli" ]; then
   exit 1
 fi
 
-linked=false
-for dir in /opt/homebrew/bin /usr/local/bin ~/.local/bin; do
-  if [ -d "$dir" ] && [ -w "$dir" ]; then
-    ln -sf "$cli" "$dir/browser-harness-js"
-    echo "Linked: $dir/browser-harness-js -> $cli"
-    linked=true
-    break
-  fi
-done
+target_dir="$HOME/.local/bin"
 
-if [ "$linked" = false ]; then
-  mkdir -p ~/.local/bin
-  ln -sf "$cli" ~/.local/bin/browser-harness-js
-  echo "Linked: ~/.local/bin/browser-harness-js -> $cli"
-  echo "Make sure ~/.local/bin is on your PATH."
+if ! echo ":$PATH:" | grep -q ":$target_dir:"; then
+  mkdir -p "$target_dir"
+  profile=""
+  for f in "$HOME/.zshrc" "$HOME/.bashrc" "$HOME/.profile"; do
+    if [ -f "$f" ]; then
+      profile="$f"
+      break
+    fi
+  done
+  if [ -n "$profile" ]; then
+    printf '\nexport PATH="$HOME/.local/bin:$PATH"\n' >> "$profile"
+    echo "Added $target_dir to PATH in $profile"
+  fi
+  export PATH="$target_dir:$PATH"
 fi
+
+mkdir -p "$target_dir"
+ln -sf "$cli" "$target_dir/browser-harness-js"
+echo "Linked: $target_dir/browser-harness-js"

@@ -9,9 +9,13 @@ description: >-
   calls. Use when the user wants to automate, script, or inspect a
   Chromium-based browser via CDP — single tab or multi-tab, attach to an
   existing browser or launch a new one with --remote-debugging-port.
+setup: bash <skill-dir>/scripts/setup
 ---
 
 # CDP — `browser-harness-js` skill
+
+> ⚠️ **Required before first use:** run `bash <skill-dir>/scripts/setup` to put the
+> `browser-harness-js` CLI on PATH. Nothing works until this is done.
 
 Custom codegen'd CDP SDK (every method from browser_protocol.json + js_protocol.json gets a typed wrapper) plus a tiny HTTP server that holds one persistent CDP `Session`. The `browser-harness-js` CLI auto-starts the server on first use and forwards JS snippets to it.
 
@@ -25,7 +29,13 @@ The SDK lives in the skill's `sdk/` directory. In the rest of this doc, `<skill-
 bash <skill-dir>/scripts/setup
 ```
 
-The script creates `~/.local/bin` if needed, adds it to your PATH in `~/.zshrc` (or `~/.bashrc`), and symlinks the CLI. Or symlink manually:
+The script creates `~/.local/bin` if needed, adds it to your PATH in `~/.zshrc` (or `~/.bashrc`), and symlinks the CLI. After running it, verify:
+
+```bash
+browser-harness-js --status
+```
+
+Or symlink manually:
 
 ```bash
 mkdir -p ~/.local/bin

@@ -5,10 +5,14 @@ description: >-
   snippet) in under 1 second. Use when the user asks to search the web, look
   something up, find a link, or research a topic. Requires browser-harness-js
   on PATH and a Chromium-based browser with remote debugging enabled.
+setup: bash <skill-dir>/scripts/setup
 compatibility: Requires browser-harness-js on PATH and a running Chromium browser with remote debugging (port 9222 or chrome://inspect).
 ---
 
 # Google Search
+
+> ⚠️ **Required before first use:** run `bash <skill-dir>/scripts/setup` to put the
+> `gsearch` and `browser-harness-js` CLIs on PATH. Nothing works until this is done.
 
 Search Google and extract structured results via CDP. Reuses one dedicated tab across calls — no browser churn.
 
@@ -16,13 +20,19 @@ Search Google and extract structured results via CDP. Reuses one dedicated tab a
 
 The `browser-harness-js` CLI must be on PATH and a Chromium-based browser must be running with remote debugging. See the `cdp` skill for browser setup.
 
-Run the setup script to symlink `gsearch` onto your PATH:
+Run the setup script to symlink `gsearch` (and `browser-harness-js`, if missing) onto your PATH:
 
 ```bash
 bash <skill-dir>/scripts/setup
 ```
 
-The script creates `~/.local/bin` if needed, adds it to your PATH in `~/.zshrc` (or `~/.bashrc`), and symlinks the CLI. Or symlink manually:
+The script creates `~/.local/bin` if needed, adds it to your PATH in `~/.zshrc` (or `~/.bashrc`), and symlinks the CLI. After running it, verify:
+
+```bash
+gsearch "test" 1
+```
+
+Or symlink manually:
 
 ```bash
 mkdir -p ~/.local/bin

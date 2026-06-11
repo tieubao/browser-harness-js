@@ -31,3 +31,15 @@ fi
 mkdir -p "$target_dir"
 ln -sf "$cli" "$target_dir/gsearch"
 echo "Linked: $target_dir/gsearch"
+
+# gsearch depends on browser-harness-js — symlink it if not already on PATH.
+if ! command -v browser-harness-js >/dev/null 2>&1; then
+  bhjs="$skill_dir/../cdp/sdk/browser-harness-js"
+  if [ -f "$bhjs" ]; then
+    ln -sf "$bhjs" "$target_dir/browser-harness-js"
+    echo "Linked: $target_dir/browser-harness-js"
+  else
+    echo "Warning: browser-harness-js not found at $bhjs" >&2
+    echo "  Install the cdp skill or put browser-harness-js on PATH manually." >&2
+  fi
+fi

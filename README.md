@@ -21,13 +21,13 @@ One persistent WebSocket, 56 domains, 652 typed wrappers, zero wrapping of what 
 ## Installation
 
 ```bash
-npx skills add https://github.com/browser-use/browser-harness-js --skill cdp
+npx skills add https://github.com/monotykamary/browser-harness-js
 ```
 
 Or paste this into your agent — it'll install the skill, put the CLI on your PATH, and run a first task:
 
 ```text
-Run `npx skills add https://github.com/browser-use/browser-harness-js --skill cdp`, then
+Run `npx skills add https://github.com/monotykamary/browser-harness-js`, then
 symlink `browser-harness-js` into a directory on my PATH, then use the cdp skill to drive
 my browser: look at all the tabs I have open, group them by topic, and screenshot the most
 interesting one.
@@ -39,16 +39,27 @@ If Chrome asks you to tick a remote-debugging checkbox, do it — that's how the
 
 <img src="docs/setup-remote-debugging.png" alt="Remote debugging setup" width="520" style="border-radius: 12px;" />
 
-See [interaction-skills/](interaction-skills/) for recipes on the mechanics that are not obvious from the CDP method list alone.
+See [skills/cdp/interaction-skills/](skills/cdp/interaction-skills/) for recipes on the mechanics that are not obvious from the CDP method list alone.
+
+## Skills
+
+This repo contains two skills installable via `npx skills add`:
+
+| Skill | Description |
+|-------|------------|
+| **cdp** | Drive any Chromium-based browser via CDP — 56 domains, 652 typed methods |
+| **gsearch** | Search the web via Google through CDP — structured results in under 1 second |
 
 ## Files
 
-- `SKILL.md` — day-to-day usage; how to connect, pick a tab, call methods, persist state
-- `sdk/browser-harness-js` — tiny CLI that auto-spawns the server and forwards snippets
-- `sdk/repl.ts` — Bun HTTP server holding one persistent `Session`
-- `sdk/session.ts` — the `Session` class: transport, connect, target routing, events
-- `sdk/gen.ts` — codegen: reads `browser_protocol.json` + `js_protocol.json` → typed wrappers
-- `sdk/generated.ts` — every CDP method as `session.<Domain>.<method>(params)` (generated)
+- `skills/cdp/SKILL.md` — day-to-day usage; how to connect, pick a tab, call methods, persist state
+- `skills/cdp/sdk/browser-harness-js` — tiny CLI that auto-spawns the server and forwards snippets
+- `skills/cdp/sdk/repl.ts` — Bun HTTP server holding one persistent `Session`
+- `skills/cdp/sdk/session.ts` — the `Session` class: transport, connect, target routing, events
+- `skills/cdp/sdk/gen.ts` — codegen: reads `browser_protocol.json` + `js_protocol.json` → typed wrappers
+- `skills/cdp/sdk/generated.ts` — every CDP method as `session.<Domain>.<method>(params)` (generated)
+- `skills/gsearch/SKILL.md` — Google Search skill instructions
+- `skills/gsearch/scripts/gsearch` — Google Search CLI
 
 No helpers file. No `click()`, no `goto()`, no `upload_file()` — just the protocol, typed.
 
@@ -67,7 +78,7 @@ The only "helpers" you'll find are things CDP itself is missing:
 
 ## Contributing
 
-PRs welcome. The best way to help: **contribute a new interaction skill** under [interaction-skills/](interaction-skills/) when you figure out the CDP recipe for something non-obvious (a dropdown framework, a shadow-DOM trap, a network-wait pattern).
+PRs welcome. The best way to help: **contribute a new interaction skill** under [skills/cdp/interaction-skills/](skills/cdp/interaction-skills/) when you figure out the CDP recipe for something non-obvious (a dropdown framework, a shadow-DOM trap, a network-wait pattern).
 
 - Keep recipes in **pure CDP** — `session.Domain.method(...)`, not wrapped helpers.
 - Lead with the shortest method call that works; add the workaround or trap afterwards.

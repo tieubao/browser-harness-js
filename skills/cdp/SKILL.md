@@ -272,5 +272,5 @@ All paths are relative to `<skill-dir>` (the install path — see top of this do
 - `sdk/session.ts` — `Session` class (transport, connect, target routing, events)
 - `sdk/generated.ts` — codegen output: every CDP method as a typed wrapper
 - `sdk/gen.ts` — codegen script
-- `sdk/gsearch` — Google Search CLI (defaults to pretty-printed; `--json` for raw)
 - `sdk/{browser,js}_protocol.json` — upstream protocol (vendored)
+- `interaction-skills/` — CDP how-to guides (screenshots, tabs, network requests, etc.)

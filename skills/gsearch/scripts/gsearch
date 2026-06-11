@@ -35,30 +35,20 @@ if (!session.isConnected()) {
   }
 }
 
-if (globalThis.__gsearch_target) {
-  try {
-    await session.use(globalThis.__gsearch_target)
-  } catch {
-    delete globalThis.__gsearch_target
-  }
-}
-if (!globalThis.__gsearch_target) {
-  const t = await session.Target.createTarget({ url: "about:blank" })
-  globalThis.__gsearch_target = t.targetId
-  await session.use(globalThis.__gsearch_target)
-  await session.Page.enable()
-}
+const t = await session.Target.createTarget({ url: "about:blank", background: true })
+const { sessionId } = await session.Target.attachToTarget({ targetId: t.targetId, flatten: true })
 
-const url = "https://www.google.com/search?q=${encoded_query}&num=${count}"
-await session.Page.navigate({ url })
+await cdp(sessionId, "Page.enable", {})
+await cdp(sessionId, "Page.navigate", { url: "https://www.google.com/search?q=${encoded_query}&num=${count}" })
 await new Promise(r => {
-  const off = session.onEvent((m) => { if (m === "Page.loadEventFired") { off(); r() } })
+  const off = session.onEvent((m, _p, sid) => { if (m === "Page.loadEventFired" && sid === sessionId) { off(); r() } })
 })
 
-const result = await session.Runtime.evaluate({
+const result = await cdp(sessionId, "Runtime.evaluate", {
   expression: 'JSON.stringify([...document.querySelectorAll(".tF2Cxc")].slice(0, ${count}).map(el => ({ title: el.querySelector("h3")?.textContent?.trim() || "", url: el.querySelector("a[href]")?.href || "", snippet: el.querySelector(".VwiC3b")?.textContent?.trim() || "" })))',
   returnByValue: true
 })
+try { await session.Target.closeTarget({ targetId: t.targetId }) } catch {}
 return JSON.parse(result.result.value)
 EOF
 )

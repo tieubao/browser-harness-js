@@ -183,14 +183,15 @@ export class Session implements Transport {
   }
 
   // Transport implementation. Called by the generated domain bindings.
-  _call(method: string, params: unknown = {}): Promise<unknown> {
+  _call(method: string, params: unknown = {}, opts?: { sessionId?: string }): Promise<unknown> {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       return Promise.reject(new Error('Not connected. Call session.connect(...) first.'));
     }
     const id = this.nextId++;
     const msg: Record<string, unknown> = { id, method, params: params ?? {} };
-    if (this.activeSessionId && !isBrowserLevel(method)) {
-      msg.sessionId = this.activeSessionId;
+    const sid = opts?.sessionId ?? this.activeSessionId;
+    if (sid && !isBrowserLevel(method)) {
+      msg.sessionId = sid;
     }
     return new Promise((resolve, reject) => {
       this.pending.set(id, { resolve, reject });

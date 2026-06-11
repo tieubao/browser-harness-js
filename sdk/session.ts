@@ -18,6 +18,11 @@ export type ConnectOptions = {
   wsUrl?: string;
   /** Or: read DevToolsActivePort from a specific browser's profile dir. */
   profileDir?: string;
+  /** Connect to a specific port. Tries /json/version first, then falls back
+   *  to scanning detected browsers for one listening on this port. */
+  port?: number;
+  /** Host for port-based connect. Default: '127.0.0.1'. */
+  host?: string;
   /** Per-candidate WS-open timeout in ms. Default 5000.
    *  A live browser opens or 403s within ~100ms, so 5s is generous.
    *  The only case that legitimately needs longer is waiting on the Chrome
@@ -74,7 +79,7 @@ export class Session implements Transport {
    */
   async connect(opts: ConnectOptions = {}): Promise<void> {
     const timeoutMs = opts.timeoutMs ?? 5_000;
-    if (opts.wsUrl || opts.profileDir) {
+    if (opts.wsUrl || opts.profileDir || opts.port) {
       const wsUrl = await resolveWsUrl(opts);
       await this.openWs(wsUrl, timeoutMs);
       return;
@@ -228,6 +233,9 @@ function isBrowserLevel(method: string): boolean {
  *   { profileDir } — reads `<profileDir>/DevToolsActivePort` and builds the
  *                    WS URL directly. Works on all Chrome versions including
  *                    144+ / chrome://inspect (which doesn't serve /json/version).
+ *   { port, host? } — tries /json/version on that host:port for the
+ *                    webSocketDebuggerUrl. Falls back to scanning detected
+ *                    browsers for one listening on that port.
  *
  * For auto-detect, call `session.connect()` with no args — it iterates
  * `detectBrowsers()` and picks the first browser whose WS accepts.
@@ -238,7 +246,31 @@ export async function resolveWsUrl(opts: ConnectOptions): Promise<string> {
     const { port, path } = await readDevToolsActivePort(opts.profileDir);
     return `ws://127.0.0.1:${port}${path}`;
   }
-  throw new Error('resolveWsUrl needs { wsUrl } or { profileDir }. For auto-detect, call session.connect() directly.');
+  if (opts.port) {
+    const host = opts.host ?? '127.0.0.1';
+    const wsUrl = await resolveWsUrlFromPort(opts.port, host);
+    if (wsUrl) return wsUrl;
+    throw new Error(
+      `Could not resolve a WebSocket URL from ${host}:${opts.port}. ` +
+      `The port is open but /json/version returned no webSocketDebuggerUrl, ` +
+      `and no detected browser is listening on that port. ` +
+      `Try { profileDir } or { wsUrl } instead.`,
+    );
+  }
+  throw new Error('resolveWsUrl needs { wsUrl }, { profileDir }, or { port }. For auto-detect, call session.connect() directly.');
+}
+
+async function resolveWsUrlFromPort(port: number, host: string): Promise<string | undefined> {
+  try {
+    const resp = await fetch(`http://${host}:${port}/json/version`);
+    if (resp.ok) {
+      const json: any = await resp.json();
+      if (json.webSocketDebuggerUrl) return json.webSocketDebuggerUrl;
+    }
+  } catch { /* /json/version not served (Chrome 144+, Dia, etc.) */ }
+  const browsers = await detectBrowsers();
+  const match = browsers.find(b => b.port === port);
+  return match?.wsUrl;
 }
 
 /**
@@ -324,6 +356,7 @@ function getBrowserCandidates(): BrowserCandidate[] {
 
   if (process.platform === 'darwin') {
     const base = `${home}/Library/Application Support`;
+    push('Dia',                    `${base}/Dia/User Data`);
     push('Google Chrome',          `${base}/Google/Chrome`);
     push('Chromium',               `${base}/Chromium`);
     push('Microsoft Edge',         `${base}/Microsoft Edge`);
@@ -335,6 +368,7 @@ function getBrowserCandidates(): BrowserCandidate[] {
     push('Google Chrome Canary',   `${base}/Google/Chrome Canary`);
   } else if (process.platform === 'linux') {
     const cfg = `${home}/.config`;
+    push('Dia',                    `${cfg}/dia`);
     push('Google Chrome',          `${cfg}/google-chrome`);
     push('Chromium',               `${cfg}/chromium`);
     push('Microsoft Edge',         `${cfg}/microsoft-edge`);
@@ -344,6 +378,7 @@ function getBrowserCandidates(): BrowserCandidate[] {
     push('Google Chrome Canary',   `${cfg}/google-chrome-unstable`);
   } else if (process.platform === 'win32') {
     const local = process.env.LOCALAPPDATA ?? `${home}\\AppData\\Local`;
+    push('Dia',                    `${local}\\Dia\\User Data`);
     push('Google Chrome',          `${local}\\Google\\Chrome\\User Data`);
     push('Chromium',               `${local}\\Chromium\\User Data`);
     push('Microsoft Edge',         `${local}\\Microsoft\\Edge\\User Data`);

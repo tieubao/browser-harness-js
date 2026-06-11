@@ -1,6 +1,15 @@
 ---
 name: cdp
-description: Drive Chrome via the DevTools Protocol from JavaScript. Run JS snippets through the `browser-harness-js` CLI — it auto-spawns a long-lived bun HTTP server holding a fully-typed CDP `Session`, and every call (`browser-harness-js 'await session.Page.navigate(...)'`) executes against the same persistent connection. Session, active target, and globals survive across calls. Use when the user wants to automate, script, or inspect a Chrome browser via CDP — single tab or multi-tab, attach to existing Chrome or to a new one launched with --remote-debugging-port.
+description: >-
+  Drive any Chromium-based browser via the DevTools Protocol from JavaScript.
+  Run JS snippets through the `browser-harness-js` CLI — it auto-spawns a
+  long-lived bun HTTP server holding a fully-typed CDP `Session`, and every call
+  (`browser-harness-js 'await session.Page.navigate(...)'`) executes against the
+  same persistent connection. Session, active target, and globals survive across
+  calls. Use when the user wants to automate, script, or inspect a
+  Chromium-based browser via CDP — single tab or multi-tab, attach to an
+  existing browser or launch a new one with --remote-debugging-port.
+disable-model-invocation: true
 ---
 
 # CDP — `browser-harness-js` skill
@@ -28,7 +37,7 @@ The CLI auto-installs `bun` on first run if it's missing (the server is Bun-nati
 
 ## How to use
 
-Just run `browser-harness-js '<JS>'`. The first call spawns the server in the background; subsequent calls hit the same process and so reuse the same `session`, the same WebSocket to Chrome, and any globals you set.
+Just run `browser-harness-js '<JS>'`. The first call spawns the server in the background; subsequent calls hit the same process and so reuse the same `session`, the same WebSocket to the browser, and any globals you set.
 
 ```bash
 browser-harness-js 'await session.connect()'
@@ -110,40 +119,50 @@ const { nodeId } = await session.DOM.querySelector({ nodeId: root.nodeId, select
 
 ### Connecting
 
-**Default: just call `session.connect()` with no args.** It auto-detects running Chromium-based browsers (Chrome, Chromium, Edge, Brave, Arc, Vivaldi, Opera, Comet, Canary) by scanning OS-specific profile dirs for a `DevToolsActivePort` file, ordered by most-recently-launched, and picks the first one whose WebSocket accepts. OS-agnostic — works on macOS, Linux, Windows.
+**Preferred: connect directly to `127.0.0.1:9222`.** If a Chromium-based browser is already running with `--remote-debugging-port=9222`, this is the fastest and most reliable path — no profile scanning, no guessing which browser. Always try this first:
 
 ```js
-await session.connect()   // auto-detect
+await session.connect({ port: 9222, host: '127.0.0.1' })
 ```
+
+If that fails (no browser on 9222, or the port isn't open yet), fall back to auto-detect:
+
+```js
+await session.connect()   // auto-detect via DevToolsActivePort scan
+```
+
+Auto-detect scans OS-specific profile dirs for running Chromium-based browsers (Chrome, Chromium, Edge, Brave, Arc, Vivaldi, Opera, Comet, Canary, Dia, etc.) by looking for a `DevToolsActivePort` file, ordered by most-recently-launched, and picks the first one whose WebSocket accepts. OS-agnostic — works on macOS, Linux, Windows.
 
 Use `detectBrowsers()` first if you want to see what's available (or let the user pick) before connecting:
 
 ```js
 const found = await detectBrowsers()
-// [{ name: 'Google Chrome', profileDir, port, wsPath, wsUrl, mtimeMs }, ...]
+// [{ name: 'Dia', profileDir, port, wsPath, wsUrl, mtimeMs }, ...]
 ```
 
 **Explicit forms** — use these only when auto-detect picks the wrong browser, or when you already know where to connect:
 
 | Form | When to use |
 |---|---|
+| `{ port, host? }` | Port is known (default host `127.0.0.1`). **Preferred** — no profile scanning needed. |
 | `{ profileDir }` | Target a specific browser when several are running. Reads `<profileDir>/DevToolsActivePort` directly. |
 | `{ wsUrl }` | You already have `ws://…/devtools/browser/<uuid>` (e.g. piped from elsewhere). |
 
 ```js
-await session.connect({ profileDir: '/Users/<you>/Library/Application Support/Google/Chrome' })
+await session.connect({ port: 9222 })
+await session.connect({ profileDir: '/Users/<you>/Library/Application Support/Dia' })
 await session.connect({ wsUrl: 'ws://127.0.0.1:9222/devtools/browser/<uuid>' })
 ```
 
 Profile paths by OS — use these with `{ profileDir }`:
-- macOS: `~/Library/Application Support/<Browser>` (e.g. `Google/Chrome`, `Comet`, `BraveSoftware/Brave-Browser`, `Arc/User Data`)
-- Linux: `~/.config/<browser>` (e.g. `google-chrome`, `chromium`, `BraveSoftware/Brave-Browser`)
-- Windows: `%LOCALAPPDATA%\<Browser>\User Data` (e.g. `Google\Chrome`, `Microsoft\Edge`, `BraveSoftware\Brave-Browser`)
+- macOS: `~/Library/Application Support/<Browser>` (e.g. `Dia/User Data`, `Google/Chrome`, `Comet`, `BraveSoftware/Brave-Browser`, `Arc/User Data`)
+- Linux: `~/.config/<browser>` (e.g. `dia`, `google-chrome`, `chromium`, `BraveSoftware/Brave-Browser`)
+- Windows: `%LOCALAPPDATA%\<Browser>\User Data` (e.g. `Dia\User Data`, `Google\Chrome`, `Microsoft\Edge`, `BraveSoftware\Brave-Browser`)
 
-Per-candidate WS-open timeout defaults to **5s** — live browsers answer with open/close within ~100ms, so 5s is already generous. The only case where 5s is too short is when Chrome is showing the **Allow** popup and waiting on the user to click. If you expect that, pass `timeoutMs: 30000`:
+Per-candidate WS-open timeout defaults to **5s** — live browsers answer with open/close within ~100ms, so 5s is already generous. The only case where 5s is too short is when the browser is showing the **Allow** popup and waiting for the user to click. If you expect that, pass `timeoutMs: 30000`:
 
 ```js
-await session.connect({ profileDir: '/Users/<you>/Library/Application Support/Google/Chrome', timeoutMs: 30_000 })
+await session.connect({ port: 9222, timeoutMs: 30_000 })
 ```
 
 **If you see `No detected browser accepted a connection`** — the browsers have `DevToolsActivePort` files but none are currently serving WS. Most common cause: remote-debugging is enabled but the user hasn't clicked **Allow** on the prompt yet. Tell them to click Allow, then retry (or bump `timeoutMs`).
@@ -195,30 +214,36 @@ browser-harness-js 'await session.Page.navigate({url:"https://example.com"})'
 
 `session` itself, the active sessionId, and event subscribers are already preserved by the server — globals are only needed for ad-hoc data.
 
-## Connecting to a running Chrome (chrome://inspect flow)
+## Connecting to a running browser (inspect flow)
 
 When attaching to the user's already-running browser:
 
-1. **Try `await session.connect()` first** (no args) — auto-detect handles every Chromium-based browser via `DevToolsActivePort`. If it returns, you're done.
-2. **If auto-detect fails** with `No running browser with remote debugging detected`, the user needs to turn it on. Open the inspect page:
+1. **Try `await session.connect({ port: 9222 })` first** — direct port connection to `127.0.0.1:9222`. If it returns, you're done.
+2. **If port 9222 fails**, try `await session.connect()` (no args) — auto-detect handles every Chromium-based browser via `DevToolsActivePort`. If it returns, you're done.
+3. **If both fail** with `No running browser with remote debugging detected`, the user needs to turn it on. Detect which browser to open, then navigate to the inspect page:
    ```bash
+   # First, detect the default/running Chromium browser
+   browser-harness-js 'const found = await detectBrowsers(); return found.length ? found[0].name : "none"'
+
+   # Then open the inspect page in that browser.
    # macOS — prefer AppleScript over `open -a` (reuses current profile, avoids the profile picker)
    osascript -e 'open location "chrome://inspect/#remote-debugging"'
 
-   # Linux
-   google-chrome 'chrome://inspect/#remote-debugging'     # or: chromium, google-chrome-stable
+   # Linux — replace with the detected browser binary name
+   # e.g. dia, google-chrome, chromium, brave-browser
+   <browser-binary> 'chrome://inspect/#remote-debugging'
 
    # Windows (PowerShell)
-   Start-Process chrome 'chrome://inspect/#remote-debugging'
+   Start-Process <browser-binary> 'chrome://inspect/#remote-debugging'
    ```
    Only macOS's AppleScript path avoids the profile picker; Linux/Windows may prompt the user to pick a profile first.
-3. **Tick "Discover network targets"** in chrome://inspect, then click **Allow** when Chrome prompts.
-4. **If auto-detect picks the wrong browser** (multiple running, you want a specific one): list them with `await detectBrowsers()`, then `await session.connect({ profileDir: <the one you want> })`.
-5. **If `session.connect()` returns `No detected browser accepted a connection`**, the user has remote-debugging on but hasn't clicked **Allow** yet. Tell them to click it and retry, or pass `timeoutMs: 30000` to wait for the click.
+4. **Tick "Discover network targets"** in the browser's inspect page, then click **Allow** when the browser prompts.
+5. **If auto-detect picks the wrong browser** (multiple running, you want a specific one): list them with `await detectBrowsers()`, then `await session.connect({ profileDir: <the one you want> })`.
+6. **If `session.connect()` returns `No detected browser accepted a connection`**, the user has remote-debugging on but hasn't clicked **Allow** yet. Tell them to click it and retry, or pass `timeoutMs: 30000` to wait for the click.
 
 ## Working with targets (tabs)
 
-- **Filter Chrome internals.** `listPageTargets()` already drops `chrome://` and `devtools://` URLs. If you call `Target.getTargets()` directly, filter manually.
+- **Filter browser internals.** `listPageTargets()` already drops `chrome://` and `devtools://` URLs. If you call `Target.getTargets()` directly, filter manually.
 - **CDP target order ≠ visible tab-strip order.** When the user says "the first tab I can see", use a screenshot or page title to identify it — `Target.activateTarget` only switches to a known targetId.
 
 ## Looking up a method
@@ -247,4 +272,5 @@ All paths are relative to `<skill-dir>` (the install path — see top of this do
 - `sdk/session.ts` — `Session` class (transport, connect, target routing, events)
 - `sdk/generated.ts` — codegen output: every CDP method as a typed wrapper
 - `sdk/gen.ts` — codegen script
+- `sdk/gsearch` — Google Search CLI (defaults to pretty-printed; `--json` for raw)
 - `sdk/{browser,js}_protocol.json` — upstream protocol (vendored)

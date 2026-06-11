@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() { echo "Usage: gsearch [--json] <query> [count]" >&2; exit 1; }
+[ $# -lt 1 ] && usage
+
+json_output=false
+if [ "$1" = "--json" ]; then
+  json_output=true
+  shift
+fi
+
+query="${1:?Usage: gsearch [--json] <query> [count]}"
+count="${2:-10}"
+encoded_query=$(printf '%s' "$query" | jq -sRr @uri)
+
+raw=$(browser-harness-js <<EOF
+if (!session.isConnected()) {
+  try { await session.connect({ port: 9222 }) } catch {
+    try { await session.connect() } catch (e) { throw new Error("Cannot connect to browser: " + e.message) }
+  }
+}
+
+if (!globalThis.__gsearch_target) {
+  const t = await session.Target.createTarget({ url: "about:blank" })
+  globalThis.__gsearch_target = t.targetId
+  await session.use(globalThis.__gsearch_target)
+  await session.Page.enable()
+} else {
+  await session.use(globalThis.__gsearch_target)
+}
+
+const url = "https://www.google.com/search?q=${encoded_query}&num=${count}"
+await session.Page.navigate({ url })
+await new Promise(r => {
+  const off = session.onEvent((m) => { if (m === "Page.loadEventFired") { off(); r() } })
+})
+
+const result = await session.Runtime.evaluate({
+  expression: 'JSON.stringify([...document.querySelectorAll(".tF2Cxc")].slice(0, ${count}).map(el => ({ title: el.querySelector("h3")?.textContent?.trim() || "", url: el.querySelector("a[href]")?.href || "", snippet: el.querySelector(".VwiC3b")?.textContent?.trim() || "" })))',
+  returnByValue: true
+})
+return JSON.parse(result.result.value)
+EOF
+)
+
+if $json_output; then
+  printf '%s\n' "$raw"
+else
+  printf '%s\n' "$raw" | jq -r '.[] | "\(.title)\n  \(.url)\n  \(.snippet)\n"'
+fi

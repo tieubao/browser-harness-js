@@ -21,13 +21,18 @@ if (!session.isConnected()) {
   }
 }
 
+if (globalThis.__gsearch_target) {
+  try {
+    await session.use(globalThis.__gsearch_target)
+  } catch {
+    delete globalThis.__gsearch_target
+  }
+}
 if (!globalThis.__gsearch_target) {
   const t = await session.Target.createTarget({ url: "about:blank" })
   globalThis.__gsearch_target = t.targetId
   await session.use(globalThis.__gsearch_target)
   await session.Page.enable()
-} else {
-  await session.use(globalThis.__gsearch_target)
 }
 
 const url = "https://www.google.com/search?q=${encoded_query}&num=${count}"

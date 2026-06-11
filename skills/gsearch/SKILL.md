@@ -14,9 +14,15 @@ Search Google and extract structured results via CDP. Reuses one dedicated tab a
 
 ## Setup (once)
 
-The `browser-harness-js` CLI must be on PATH and a Chromium-based browser must be running with remote debugging. See the `cdp` skill for setup instructions.
+The `browser-harness-js` CLI must be on PATH and a Chromium-based browser must be running with remote debugging. See the `cdp` skill for browser setup.
 
-Symlink the search script into any directory on your PATH:
+Run the setup script to symlink `gsearch` onto your PATH:
+
+```bash
+bash <skill-dir>/scripts/setup
+```
+
+Or symlink manually:
 
 ```bash
 # macOS (Apple Silicon + Homebrew)

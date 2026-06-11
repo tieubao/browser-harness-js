@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "$0")" && pwd)"
+skill_dir="$(dirname "$script_dir")"
+cli="$skill_dir/sdk/browser-harness-js"
+
+if [ ! -f "$cli" ]; then
+  echo "Error: $cli not found" >&2
+  exit 1
+fi
+
+linked=false
+for dir in /opt/homebrew/bin /usr/local/bin ~/.local/bin; do
+  if [ -d "$dir" ] && [ -w "$dir" ]; then
+    ln -sf "$cli" "$dir/browser-harness-js"
+    echo "Linked: $dir/browser-harness-js -> $cli"
+    linked=true
+    break
+  fi
+done
+
+if [ "$linked" = false ]; then
+  mkdir -p ~/.local/bin
+  ln -sf "$cli" ~/.local/bin/browser-harness-js
+  echo "Linked: ~/.local/bin/browser-harness-js -> $cli"
+  echo "Make sure ~/.local/bin is on your PATH."
+fi

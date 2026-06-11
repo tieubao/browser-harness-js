@@ -20,7 +20,13 @@ The SDK lives in the skill's `sdk/` directory. In the rest of this doc, `<skill-
 
 ## Setup (once, first use)
 
-`npx skills add` drops the skill into your agent's skills directory but does NOT put the CLI on PATH. Before the first call, verify it's reachable and symlink it into any directory on your PATH if not:
+`npx skills add` drops the skill into your agent's skills directory but does NOT put the CLI on PATH. Run the setup script:
+
+```bash
+bash <skill-dir>/scripts/setup
+```
+
+Or symlink manually:
 
 ```bash
 # macOS (Apple Silicon + Homebrew)

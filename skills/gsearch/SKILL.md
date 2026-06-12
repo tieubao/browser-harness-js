@@ -49,7 +49,7 @@ gsearch --json "your query" 3   # raw JSON
 
 ## Parallel use
 
-Each `gsearch` call reuses the shared WebSocket but attaches to its own tab with a per-call `sessionId`. Tab-specific CDP calls go through `cdp(sessionId, method, params)`, and `loadEventFired` listeners filter by sessionId. Multiple calls can run concurrently without interfering — no `activeSessionId` clobbering, no tab trampling, no event cross-fire.
+Each `gsearch` call reuses the shared WebSocket but attaches to its own tab with a per-call `sessionId`. Tab-specific CDP calls go through `cdp(sessionId, method, params)`, and `loadEventFired` listeners filter by sessionId. Multiple calls can run concurrently without interfering — no `activeSessionId` clobbering, no tab trampling, no event cross-fire. Tabs are closed in a `finally` block so they're cleaned up even if the search fails.
 
 ```bash
 gsearch "rust async" 3 &
@@ -84,20 +84,21 @@ if (!session.isConnected()) {
 }
 
 const t = await session.Target.createTarget({ url: "about:blank", background: true })
-const { sessionId } = await session.Target.attachToTarget({ targetId: t.targetId, flatten: true })
+try {
+  const { sessionId } = await session.Target.attachToTarget({ targetId: t.targetId, flatten: true })
 
-await cdp(sessionId, "Page.enable", {})
-await cdp(sessionId, "Page.navigate", { url: "https://www.google.com/search?q=" + encodeURIComponent("your query") + "&num=10" })
-await new Promise(r => {
-  const off = session.onEvent((m, _p, sid) => { if (m === "Page.loadEventFired" && sid === sessionId) { off(); r() } })
-})
+  await cdp(sessionId, "Page.enable", {})
+  await cdp(sessionId, "Page.navigate", { url: "https://www.google.com/search?q=" + encodeURIComponent("your query") + "&num=10" })
+  await session.waitFor('Page.loadEventFired', undefined, 30_000)
 
-const result = await cdp(sessionId, "Runtime.evaluate", {
-  expression: 'JSON.stringify([...document.querySelectorAll(".tF2Cxc")].slice(0, 10).map(el => ({ title: el.querySelector("h3")?.textContent?.trim() || "", url: el.querySelector("a[href]")?.href || "", snippet: el.querySelector(".VwiC3b")?.textContent?.trim() || "" })))',
-  returnByValue: true
-})
-try { await session.Target.closeTarget({ targetId: t.targetId }) } catch {}
-return JSON.parse(result.result.value)
+  const result = await cdp(sessionId, "Runtime.evaluate", {
+    expression: 'JSON.stringify([...document.querySelectorAll(".tF2Cxc")].slice(0, 10).map(el => ({ title: el.querySelector("h3")?.textContent?.trim() || "", url: el.querySelector("a[href]")?.href || "", snippet: el.querySelector(".VwiC3b")?.textContent?.trim() || "" })))',
+    returnByValue: true
+  })
+  return JSON.parse(result.result.value)
+} finally {
+  try { await session.Target.closeTarget({ targetId: t.targetId }) } catch {}
+}
 EOF
 ```
 
@@ -109,7 +110,7 @@ EOF
 | 2 | `Target.createTarget({ background: true })` | Create an isolated background tab |
 | 3 | `Target.attachToTarget` | Get per-call `sessionId` for tab-scoped routing |
 | 4 | `cdp(sessionId, "Page.navigate", …)` | Go to `google.com/search?q=…&num=N` |
-| 5 | Wait for `Page.loadEventFired` (filtered by sessionId) | Ensure the page is fully rendered |
+| 5 | `session.waitFor('Page.loadEventFired', …, 30_000)` | Wait for page load (30s timeout) |
 | 6 | `cdp(sessionId, "Runtime.evaluate", …)` | Single DOM query extracts all results |
 | 7 | `Target.closeTarget` | Tear down tab |
 
@@ -122,6 +123,8 @@ Google's AX tree for a search page has 1300+ nodes — walking it requires per-n
 ## Traps
 
 - **`Page.enable()` must be called once** on each new tab before `Page.loadEventFired` will fire.
+- **Tab cleanup uses `try/finally`** — `Target.closeTarget` runs even if the search fails, so no orphaned tabs under parallel load.
+- **`Page.loadEventFired` wait has a 30s timeout** — uses `session.waitFor()` instead of a raw promise, so a hung page load doesn't leak the tab forever.
 - **Multi-statement heredocs need `return`** — `browser-harness-js` auto-returns single expressions only.
 - **Result count may be less than `num=`** — Google sometimes returns fewer results than requested.
 - **Google may serve a consent/cookie wall** in some regions. Check with a screenshot if results come back empty.

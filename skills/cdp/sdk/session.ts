@@ -52,6 +52,7 @@ export class Session implements Transport {
   private pending = new Map<number, Pending>();
   private activeSessionId: string | undefined;
   private eventListeners: Array<(method: string, params: unknown, sessionId?: string) => void> = [];
+  private connectPromise?: Promise<void>;
 
   // Generated bindings — one per CDP domain.
   // Initialized lazily after construction so `_call` is available.
@@ -78,6 +79,18 @@ export class Session implements Transport {
    * directly to that single URL with a generous timeout.
    */
   async connect(opts: ConnectOptions = {}): Promise<void> {
+    if (this.connectPromise) return this.connectPromise;
+    this.connectPromise = this._connect(opts);
+    try {
+      await this.connectPromise;
+    } catch {
+      this.connectPromise = undefined;
+      throw;
+    }
+    return;
+  }
+
+  private async _connect(opts: ConnectOptions = {}): Promise<void> {
     const timeoutMs = opts.timeoutMs ?? 5_000;
     if (opts.wsUrl || opts.profileDir || opts.port) {
       const wsUrl = await resolveWsUrl(opts);
@@ -122,8 +135,13 @@ export class Session implements Transport {
       ws.addEventListener('error', (e) => finish(new Error(`WS error: ${(e as any)?.message ?? 'connect failed (likely 403, permission not granted, or port closed)'}`)));
       ws.addEventListener('message', (e) => this.onMessage(String(e.data)));
       ws.addEventListener('close', () => {
-        for (const [, p] of this.pending) p.reject(new Error('CDP socket closed'));
-        this.pending.clear();
+        // Only reject pending calls that were sent on this WebSocket.
+        // A parallel connect() can create a phantom WS whose close handler
+        // would otherwise nuke pending entries belonging to the active WS.
+        if (this.ws === ws) {
+          for (const [, p] of this.pending) p.reject(new Error('CDP socket closed'));
+          this.pending.clear();
+        }
         finish(new Error('WS closed before open (likely 403 or port closed)'));
       });
       this.ws = ws;

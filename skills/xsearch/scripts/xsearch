@@ -28,7 +28,9 @@ query="${1:?Usage: xsearch [--json] <query> [count]}"
 count="${2:-10}"
 # Escape for JS single-quoted string inside bash <<EOF heredoc:
 # \ → \\ (bash), $ → \$ (bash), ` → \` (bash), ' → \' (JS)
-js_query=$(printf '%s' "$query" | sed "s/\\\\/\\\\\\\\/g; s/\$/\\\$/g; s/\`/\\\`/g; s/'/\\\\'/g")
+# Each -e arg is single-quoted so bash doesn't mangle the sed expressions.
+# The old "s/\$/\\\$/g" form treated $ as end-of-line anchor, appending $ to every query.
+js_query=$(printf '%s' "$query" | sed -e 's/\\/\\\\/g' -e 's/\$/\\$/g' -e 's/`/\\`/g' -e "s/'/\\\\'/g")
 
 raw=$(browser-harness-js <<EOF
 if (!session.isConnected()) {

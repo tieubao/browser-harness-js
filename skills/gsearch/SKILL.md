@@ -14,7 +14,7 @@ compatibility: Requires browser-harness-js on PATH and a running Chromium browse
 > ⚠️ **Required before first use:** run `bash <skill-dir>/scripts/setup` to put the
 > `gsearch` and `browser-harness-js` CLIs on PATH. Nothing works until this is done.
 
-Search Google and extract structured results via CDP. Each call opens its own tab and WebSocket session — safe for parallel use.
+Search Google and extract structured results via CDP. No external dependencies beyond `browser-harness-js` (which provides the CDP session). Each call opens its own tab and WebSocket session — safe for parallel use.
 
 ## Setup (once)
 
@@ -49,7 +49,7 @@ gsearch --json "your query" 3   # raw JSON
 
 ## Parallel use
 
-Each `gsearch` call reuses the shared WebSocket but attaches to its own tab with a per-call `sessionId`. Tab-specific CDP calls go through `cdp(sessionId, method, params)`, and `loadEventFired` listeners filter by sessionId. Multiple calls can run concurrently without interfering — no `activeSessionId` clobbering, no tab trampling, no event cross-fire. Tabs are closed in a `finally` block so they're cleaned up even if the search fails.
+Each `gsearch` call reuses the shared WebSocket but attaches to its own tab with a per-call `sessionId`. Tab-specific CDP calls go through `cdp(sessionId, method, params)`. Multiple calls can run concurrently without interfering — no `activeSessionId` clobbering, no tab trampling, no event cross-fire. Tabs are closed fire-and-forget via `Target.closeTarget` so the caller isn't blocked waiting for cleanup.
 
 ```bash
 gsearch "rust async" 3 &
@@ -83,22 +83,40 @@ if (!session.isConnected()) {
   }
 }
 
+const count = 10
 const t = await session.Target.createTarget({ url: "about:blank", background: true })
-try {
-  const { sessionId } = await session.Target.attachToTarget({ targetId: t.targetId, flatten: true })
+const { sessionId } = await session.Target.attachToTarget({ targetId: t.targetId, flatten: true })
 
-  await cdp(sessionId, "Page.enable", {})
-  await cdp(sessionId, "Page.navigate", { url: "https://www.google.com/search?q=" + encodeURIComponent("your query") + "&num=10" })
-  await session.waitFor('Page.loadEventFired', undefined, 30_000)
+await cdp(sessionId, "Page.navigate", {
+  url: "https://www.google.com/search?q=" + encodeURIComponent("your query") + "&num=" + count
+})
 
-  const result = await cdp(sessionId, "Runtime.evaluate", {
-    expression: 'JSON.stringify([...document.querySelectorAll(".tF2Cxc")].slice(0, 10).map(el => ({ title: el.querySelector("h3")?.textContent?.trim() || "", url: el.querySelector("a[href]")?.href || "", snippet: el.querySelector(".VwiC3b")?.textContent?.trim() || "" })))',
-    returnByValue: true
-  })
-  return JSON.parse(result.result.value)
-} finally {
-  try { await session.Target.closeTarget({ targetId: t.targetId }) } catch {}
+let results = []
+let polls = 0
+let stableCount = 0
+let lastLen = 0
+while (polls < 100) {
+  polls++
+  await new Promise(r => setTimeout(r, 20))
+  try {
+    const r = await cdp(sessionId, "Runtime.evaluate", {
+      expression: 'JSON.stringify([...document.querySelectorAll(".tF2Cxc")].slice(0,' + count + ').map(el => ({ title: el.querySelector("h3")?.textContent?.trim() || "", url: el.querySelector("a[href]")?.href || "", snippet: el.querySelector(".VwiC3b")?.textContent?.trim() || "" })))',
+      returnByValue: true
+    })
+    if (r.result.value) {
+      const parsed = JSON.parse(r.result.value)
+      if (parsed.length > 0) {
+        results = parsed
+        if (parsed.length >= count) break
+        if (parsed.length === lastLen) { stableCount++; if (stableCount >= 3) break }
+        else { stableCount = 0; lastLen = parsed.length }
+      }
+    }
+  } catch {}
 }
+
+session.closeTab(t.targetId, sessionId).catch(() => {})
+return results.map(r => r.title + "\n  " + r.url + "\n  " + r.snippet).join("\n\n")
 EOF
 ```
 
@@ -109,22 +127,28 @@ EOF
 | 1 | `session.connect()` (once) | Connect shared WebSocket to browser |
 | 2 | `Target.createTarget({ background: true })` | Create an isolated background tab |
 | 3 | `Target.attachToTarget` | Get per-call `sessionId` for tab-scoped routing |
-| 4 | `cdp(sessionId, "Page.navigate", …)` | Go to `google.com/search?q=…&num=N` |
-| 5 | `session.waitFor('Page.loadEventFired', …, 30_000)` | Wait for page load (30s timeout) |
-| 6 | `cdp(sessionId, "Runtime.evaluate", …)` | Single DOM query extracts all results |
-| 7 | `Target.closeTarget` | Tear down tab |
+| 4 | `cdp(sessionId, "Page.navigate", …)` | Go to `google.com/search?q=…&num=N` (URI-encoded via `encodeURIComponent` in JS) |
+| 5 | Poll `Runtime.evaluate` every 20ms | Detect when results render, stop at requested count or when count stabilizes |
+| 6 | `Target.closeTarget` (fire-and-forget) | Tear down tab without blocking the response |
 
-Each call takes ~0.8–1.1s. The shared WebSocket means no repeated permission popups.
+Each call takes ~0.2–0.4s. The shared WebSocket means no repeated permission popups. URI encoding and output formatting happen in JS — no `jq` dependency.
+
+## Why poll-based content detection over `Page.loadEventFired`
+
+Google renders search results progressively via JS — the `.tF2Cxc` result elements appear well before `loadEventFired` fires. Polling with `Runtime.evaluate` every 20ms and stopping when the result count stabilizes (3 consecutive polls with the same count) saves ~500-700ms per query. It also eliminates the need for `Page.enable`, which was only required to subscribe to `Page.loadEventFired` events.
 
 ## Why `Runtime.evaluate` over the accessibility tree
 
 Google's AX tree for a search page has 1300+ nodes — walking it requires per-node parent lookups to reconstruct result hierarchy. A single `Runtime.evaluate` with `querySelectorAll('.tF2Cxc')` returns the same data in one CDP call (~5ms vs ~200ms for AX tree traversal). The CSS selectors (`.tF2Cxc` for result containers, `h3` for titles, `.VwiC3b` for snippets) are stable across Google's current HTML structure.
 
+## No `jq` dependency
+
+URI encoding uses `encodeURIComponent()` in JS and output formatting is done via `.map().join()` in the heredoc. The raw query is escaped for JS string interpolation with `sed` (backslashes, `$`, backticks for bash; single quotes for JS). The REPL's `renderResult` passes string returns through raw — no JSON wrapping — so bash just prints.
+
 ## Traps
 
-- **`Page.enable()` must be called once** on each new tab before `Page.loadEventFired` will fire.
-- **Tab cleanup uses `try/finally`** — `Target.closeTarget` runs even if the search fails, so no orphaned tabs under parallel load.
-- **`Page.loadEventFired` wait has a 30s timeout** — uses `session.waitFor()` instead of a raw promise, so a hung page load doesn't leak the tab forever.
+- **Tab cleanup uses `try/finally` with fire-and-forget `closeTab`** — `closeTab` does `window.close()` + `Target.closeTarget` for thorough cleanup, wrapped in `finally` so it runs even on errors. The call is not awaited so it doesn't block the response. Under rapid parallel calls the close operations serialize in the session's `closeQueue`, but they don't block results.
+- **Poll loop caps at 100 iterations (2s)** — prevents infinite loops if the page never renders results (e.g. consent wall). The stability check (3 consecutive polls with unchanged result count) also bails early.
+- **Result count may be less than `num=`** — Google sometimes returns fewer results than requested. The poll stops once results stabilize regardless.
+- **Google may serve a consent/cookie wall** in some regions — this returns 0 results, same as the old approach. Check with a screenshot if results come back empty.
 - **Multi-statement heredocs need `return`** — `browser-harness-js` auto-returns single expressions only.
-- **Result count may be less than `num=`** — Google sometimes returns fewer results than requested.
-- **Google may serve a consent/cookie wall** in some regions. Check with a screenshot if results come back empty.

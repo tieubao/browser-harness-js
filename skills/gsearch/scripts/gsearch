@@ -26,7 +26,9 @@ fi
 
 query="${1:?Usage: gsearch [--json] <query> [count]}"
 count="${2:-10}"
-encoded_query=$(printf '%s' "$query" | jq -sRr @uri)
+# Escape for JS single-quoted string inside bash <<EOF heredoc:
+# \ → \\ (bash), $ → \$ (bash), ` → \` (bash), ' → \' (JS)
+js_query=$(printf '%s' "$query" | sed "s/\\\\/\\\\\\\\/g; s/\$/\\\$/g; s/\`/\\\`/g; s/'/\\\\'/g")
 
 raw=$(browser-harness-js <<EOF
 if (!session.isConnected()) {
@@ -35,29 +37,52 @@ if (!session.isConnected()) {
   }
 }
 
+const count = ${count}
 const t = await session.Target.createTarget({ url: "about:blank", background: true })
-let sessionId
+const { sessionId } = await session.Target.attachToTarget({ targetId: t.targetId, flatten: true })
+
 try {
-  const attach = await session.Target.attachToTarget({ targetId: t.targetId, flatten: true })
-  sessionId = attach.sessionId
-
-  await cdp(sessionId, "Page.enable", {})
-  await cdp(sessionId, "Page.navigate", { url: "https://www.google.com/search?q=${encoded_query}&num=${count}" })
-  await session.waitFor({ method: 'Page.loadEventFired', sessionId, timeoutMs: 30_000 })
-
-  const result = await cdp(sessionId, "Runtime.evaluate", {
-    expression: 'JSON.stringify([...document.querySelectorAll(".tF2Cxc")].slice(0, ${count}).map(el => ({ title: el.querySelector("h3")?.textContent?.trim() || "", url: el.querySelector("a[href]")?.href || "", snippet: el.querySelector(".VwiC3b")?.textContent?.trim() || "" })))',
-    returnByValue: true
+  await cdp(sessionId, "Page.navigate", {
+    url: "https://www.google.com/search?q=" + encodeURIComponent('${js_query}') + "&num=" + count
   })
-  return JSON.parse(result.result.value)
+
+  // Poll for content instead of waiting for loadEventFired — results appear
+  // well before the full page load, saving ~500-700ms.
+  let results = []
+  let polls = 0
+  let stableCount = 0
+  let lastLen = 0
+  while (polls < 100) {
+    polls++
+    await new Promise(r => setTimeout(r, 20))
+    try {
+      const r = await cdp(sessionId, "Runtime.evaluate", {
+        expression: 'JSON.stringify([...document.querySelectorAll(".tF2Cxc")].slice(0,' + count + ').map(el => ({ title: el.querySelector("h3")?.textContent?.trim() || "", url: el.querySelector("a[href]")?.href || "", snippet: el.querySelector(".VwiC3b")?.textContent?.trim() || "" })))',
+        returnByValue: true
+      })
+      if (r.result.value) {
+        const parsed = JSON.parse(r.result.value)
+        if (parsed.length > 0) {
+          results = parsed
+          if (parsed.length >= count) break
+          if (parsed.length === lastLen) { stableCount++; if (stableCount >= 3) break }
+          else { stableCount = 0; lastLen = parsed.length }
+        }
+      }
+    } catch {}
+  }
+
+  if (${json_output}) {
+    return results
+  } else {
+    return results.map(r => r.title + "\n  " + r.url + "\n  " + r.snippet).join("\n\n")
+  }
 } finally {
-  await session.closeTab(t.targetId, sessionId)
+  // Fire-and-forget closeTab — guaranteed cleanup even on errors,
+  // without blocking the response.
+  session.closeTab(t.targetId, sessionId).catch(() => {})
 }
 EOF
 )
 
-if $json_output; then
-  printf '%s\n' "$raw"
-else
-  printf '%s\n' "$raw" | jq -r '.[] | "\(.title)\n  \(.url)\n  \(.snippet)\n"'
-fi
+printf '%s\n' "$raw"

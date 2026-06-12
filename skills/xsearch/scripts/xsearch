@@ -1,0 +1,102 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Auto-fix: if browser-harness-js isn't on PATH, try to find and symlink it.
+if ! command -v browser-harness-js >/dev/null 2>&1; then
+  _bhjs="$(cd "$(dirname "$0")/.." && pwd)/../cdp/sdk/browser-harness-js"
+  if [ -f "$_bhjs" ]; then
+    _bindir="$HOME/.local/bin"
+    mkdir -p "$_bindir"
+    ln -sf "$_bhjs" "$_bindir/browser-harness-js"
+    export PATH="$_bindir:$PATH"
+  else
+    echo "xsearch: browser-harness-js not found. Run: bash <skill-dir>/scripts/setup" >&2
+    exit 1
+  fi
+fi
+
+usage() { echo "Usage: xsearch [--json] <query> [count]" >&2; exit 1; }
+[ $# -lt 1 ] && usage
+
+json_output=false
+if [ "$1" = "--json" ]; then
+  json_output=true
+  shift
+fi
+
+query="${1:?Usage: xsearch [--json] <query> [count]}"
+count="${2:-10}"
+# Escape for JS single-quoted string inside bash <<EOF heredoc:
+# \ → \\ (bash), $ → \$ (bash), ` → \` (bash), ' → \' (JS)
+js_query=$(printf '%s' "$query" | sed "s/\\\\/\\\\\\\\/g; s/\$/\\\$/g; s/\`/\\\`/g; s/'/\\\\'/g")
+
+raw=$(browser-harness-js <<EOF
+if (!session.isConnected()) {
+  try { await session.connect({ port: 9222, host: "127.0.0.1" }) } catch {
+    try { await session.connect() } catch (e) { throw new Error("Cannot connect to browser: " + e.message) }
+  }
+}
+
+const count = ${count}
+const t = await session.Target.createTarget({ url: "about:blank", background: true })
+const { sessionId } = await session.Target.attachToTarget({ targetId: t.targetId, flatten: true })
+
+try {
+  await cdp(sessionId, "Page.enable", {})
+  await cdp(sessionId, "Page.navigate", {
+    url: "https://x.com/search?q=" + encodeURIComponent('${js_query}') + "&src=typed_query&f=top"
+  })
+  await session.waitFor({ method: 'Page.loadEventFired', sessionId, timeoutMs: 30_000 })
+
+  // Wait for React hydration and tweet rendering
+  await new Promise(r => setTimeout(r, 4000))
+
+  // Scroll to load more tweets if requesting more than initial batch (~6)
+  if (count > 6) {
+    const scrolls = Math.ceil((count - 6) / 3)
+    for (let i = 0; i < scrolls; i++) {
+      await cdp(sessionId, "Runtime.evaluate", {
+        expression: "window.scrollTo(0, document.body.scrollHeight)",
+        returnByValue: true
+      })
+      await new Promise(r => setTimeout(r, 1500))
+    }
+  }
+
+  // Define the DOM extraction as a function to avoid quoting issues
+  const extractExpr = (n) => {
+    const sTweet = "[data-testid=\\"tweet\\"]"
+    const sText = "[data-testid=\\"tweetText\\"]"
+    const sUser = "[data-testid=\\"User-Name\\"]"
+    return "JSON.stringify([...document.querySelectorAll('" + sTweet + "')].slice(0," + n + ").map(el => {"
+      + "const textEl = el.querySelector('" + sText + "');"
+      + "const timeEl = el.querySelector('time');"
+      + "const userNamesEl = el.querySelector('" + sUser + "');"
+      + "const nameLinks = userNamesEl ? [...userNamesEl.querySelectorAll('a[role=\"link\"]')] : [];"
+      + "const author = nameLinks[0] ? nameLinks[0].textContent.trim() : '';"
+      + "const handle = nameLinks[1] ? nameLinks[1].textContent.trim() : '';"
+      + "const url = nameLinks[2] ? nameLinks[2].href : '';"
+      + "const text = textEl ? textEl.innerText.trim() : '';"
+      + "const time = timeEl ? timeEl.getAttribute('datetime') : '';"
+      + "return { author, handle, text, url, time }"
+      + "}))"
+  }
+
+  const result = await cdp(sessionId, "Runtime.evaluate", {
+    expression: extractExpr(count),
+    returnByValue: true
+  })
+  const results = JSON.parse(result.result.value)
+
+  if (${json_output}) {
+    return results
+  } else {
+    return results.map(r => r.author + (r.handle ? " (" + r.handle + ")" : "") + " \u00b7 " + r.time + "\n  " + r.text + "\n  " + r.url).join("\n\n")
+  }
+} finally {
+  session.closeTab(t.targetId, sessionId).catch(() => {})
+}
+EOF
+)
+
+printf '%s\n' "$raw"

@@ -126,6 +126,18 @@ const { root } = await session.DOM.getDocument()
 const { nodeId } = await session.DOM.querySelector({ nodeId: root.nodeId, selector: 'h1' })
 ```
 
+### Finding elements: prefer axTree over selectors
+
+When looking for a named element (a button, link, textbox, heading, etc.), **prefer `Accessibility.queryAXTree` over CSS selectors**. It finds elements by semantic role + accessible name — the same model Playwright's `getByRole`/`getByText` uses — and it crosses shadow boundaries automatically, no `Accessibility.enable` needed:
+
+```js
+const { nodes } = await session.Accessibility.queryAXTree({ role: 'button', accessibleName: 'Submit' })
+const node = nodes.find(n => !n.ignored)
+// node.backendDOMNodeId → DOM.getBoxModel → coordinates for Input.dispatchMouseEvent
+```
+
+Use DOM queries (`DOM.querySelector`, `Runtime.evaluate` with `querySelector`) when you need structural context, when axTree returns nothing (canvas, non-semantic divs), or when you already have a stable selector. See the full guide at `interaction-skills/accessibility-tree.md`.
+
 ### Connecting
 
 **Preferred: connect directly to `127.0.0.1:9222`.** If a Chromium-based browser is already running with `--remote-debugging-port=9222`, this is the fastest and most reliable path — no profile scanning, no guessing which browser. Always try this first:

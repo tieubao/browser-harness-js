@@ -79,15 +79,19 @@ export class Session implements Transport {
    * directly to that single URL with a generous timeout.
    */
   async connect(opts: ConnectOptions = {}): Promise<void> {
+    // Fast path: already connected.
+    if (this.isConnected()) return;
+    // Another connect is in flight — ride on it.
     if (this.connectPromise) return this.connectPromise;
     this.connectPromise = this._connect(opts);
     try {
       await this.connectPromise;
-    } catch {
+    } catch (e) {
       this.connectPromise = undefined;
-      throw;
+      throw e;
     }
-    return;
+    // Clear once settled so future calls can reconnect after a WS drop.
+    this.connectPromise = undefined;
   }
 
   private async _connect(opts: ConnectOptions = {}): Promise<void> {
@@ -156,6 +160,43 @@ export class Session implements Transport {
     this.ws?.close();
   }
 
+  private closeQueue: Promise<void> = Promise.resolve();
+
+  /**
+   * Close a tab by targetId.
+   *
+   *  Uses `window.close()` via Runtime.evaluate first (works on tabs opened
+   *  by script, which includes all tabs created via Target.createTarget), then
+   *  `Target.closeTarget` to tear down the CDP session.
+   *
+   *  Why two steps: `Target.closeTarget` alone succeeds in CDP but some
+   *  Chromium forks (Dia, Arc) don't actually close the tab in the browser
+   *  window — the tab strip stays out of sync. `window.close()` triggers the
+   *  browser's own tab-close path, which reliably removes the tab. The short
+   *  delay gives the browser time to process the close before CDP teardown.
+   *
+   *  Close operations are serialized so that the window.close() → delay →
+   *  Target.closeTarget sequence for one tab completes before the next begins.
+   *  Without serialization, interleaved closes can kill a session before
+   *  window.close() takes effect in the browser.
+   */
+  async closeTab(targetId: string, sessionId?: string): Promise<void> {
+    const doClose = async () => {
+      if (sessionId) {
+        try {
+          await this._call('Runtime.evaluate', { expression: 'window.close()' }, { sessionId });
+        } catch { /* session may already be detaching */ }
+        await new Promise(r => setTimeout(r, 100));
+      }
+      try {
+        await this.Target.closeTarget({ targetId });
+      } catch { /* already gone */ }
+    };
+    // Serialize: each close waits for the previous one to finish.
+    this.closeQueue = this.closeQueue.then(doClose, doClose);
+    return this.closeQueue;
+  }
+
   /**
    * Pick a target and make subsequent calls auto-route to it.
    * Uses Target.attachToTarget with flatten:true (single-WS, sessionId-on-message).
@@ -183,15 +224,36 @@ export class Session implements Transport {
     };
   }
 
-  /** Wait for the next event matching `method` (and optional predicate). */
-  waitFor<T = unknown>(method: string, predicate?: (params: T) => boolean, timeoutMs = 30_000): Promise<T> {
+  /** Wait for the next event matching `method` (and optional predicate).
+   *  If `sessionId` is given, only fires for events from that session —
+   *  critical for avoiding cross-fire in parallel tab use. */
+  waitFor<T = unknown>(method: string, predicate?: (params: T) => boolean, timeoutMs?: number): Promise<T>;
+  waitFor<T = unknown>(opts: { method: string; sessionId?: string; predicate?: (params: T) => boolean; timeoutMs?: number }): Promise<T>;
+  waitFor<T = unknown>(methodOrOpts: string | { method: string; sessionId?: string; predicate?: (params: T) => boolean; timeoutMs?: number }, predicateOrTimeout?: ((params: T) => boolean) | number, timeoutMs = 30_000): Promise<T> {
+    let method: string;
+    let sessionId: string | undefined;
+    let predicate: ((params: T) => boolean) | undefined;
+    if (typeof methodOrOpts === 'string') {
+      method = methodOrOpts;
+      if (typeof predicateOrTimeout === 'function') {
+        predicate = predicateOrTimeout;
+      } else if (typeof predicateOrTimeout === 'number') {
+        timeoutMs = predicateOrTimeout;
+      }
+    } else {
+      method = methodOrOpts.method;
+      sessionId = methodOrOpts.sessionId;
+      predicate = methodOrOpts.predicate;
+      if (methodOrOpts.timeoutMs) timeoutMs = methodOrOpts.timeoutMs;
+    }
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         unsub();
         reject(new Error(`Timeout waiting for ${method}`));
       }, timeoutMs);
-      const unsub = this.onEvent((m, params) => {
+      const unsub = this.onEvent((m, params, sid) => {
         if (m !== method) return;
+        if (sessionId !== undefined && sid !== sessionId) return;
         if (predicate && !predicate(params as T)) return;
         clearTimeout(timer);
         unsub();

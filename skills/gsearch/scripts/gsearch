@@ -36,12 +36,14 @@ if (!session.isConnected()) {
 }
 
 const t = await session.Target.createTarget({ url: "about:blank", background: true })
+let sessionId
 try {
-  const { sessionId } = await session.Target.attachToTarget({ targetId: t.targetId, flatten: true })
+  const attach = await session.Target.attachToTarget({ targetId: t.targetId, flatten: true })
+  sessionId = attach.sessionId
 
   await cdp(sessionId, "Page.enable", {})
   await cdp(sessionId, "Page.navigate", { url: "https://www.google.com/search?q=${encoded_query}&num=${count}" })
-  await session.waitFor('Page.loadEventFired', undefined, 30_000)  // 30s timeout
+  await session.waitFor({ method: 'Page.loadEventFired', sessionId, timeoutMs: 30_000 })
 
   const result = await cdp(sessionId, "Runtime.evaluate", {
     expression: 'JSON.stringify([...document.querySelectorAll(".tF2Cxc")].slice(0, ${count}).map(el => ({ title: el.querySelector("h3")?.textContent?.trim() || "", url: el.querySelector("a[href]")?.href || "", snippet: el.querySelector(".VwiC3b")?.textContent?.trim() || "" })))',
@@ -49,7 +51,7 @@ try {
   })
   return JSON.parse(result.result.value)
 } finally {
-  try { await session.Target.closeTarget({ targetId: t.targetId }) } catch {}
+  await session.closeTab(t.targetId, sessionId)
 }
 EOF
 )

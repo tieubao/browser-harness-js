@@ -126,6 +126,17 @@ const { root } = await session.DOM.getDocument()
 const { nodeId } = await session.DOM.querySelector({ nodeId: root.nodeId, selector: 'h1' })
 ```
 
+### Interaction skills (recipes) — explore the folder
+
+`interaction-skills/` holds pure-CDP recipes for mechanics that aren't obvious from the method list alone — dropdowns, drag-and-drop, OOPIFs, network waits, screenshots, recording cross-tab user actions. The set grows, so **look, don't recall**: when a task isn't a straight method call (a framework that swallows clicks, a shadow-DOM trap, a wait-with-timeout, multi-tab anything), browse before improvising.
+
+```bash
+ls <skill-dir>/interaction-skills/
+grep -l <keyword> <skill-dir>/interaction-skills/*.md
+```
+
+Each recipe leads with the shortest CDP call that works, then the trap — in `session.Domain.method(...)` form, no wrapped helpers — so it drops straight into a snippet. If the mechanic you need isn't there, that's a gap worth filing as a new recipe.
+
 ### Finding elements: prefer axTree over selectors
 
 When looking for a named element (a button, link, textbox, heading, etc.), **prefer `Accessibility.queryAXTree` over CSS selectors**. It finds elements by semantic role + accessible name — the same model Playwright's `getByRole`/`getByText` uses — and it crosses shadow boundaries automatically, no `Accessibility.enable` needed:

@@ -45,10 +45,16 @@ const { sessionId } = await session.Target.attachToTarget({ targetId: t.targetId
 
 try {
   await cdp(sessionId, "Page.enable", {})
+  // setLifecycleEventsEnabled is required — without it Chrome emits zero
+  // Page.lifecycleEvent and networkIdle would never fire.
+  await cdp(sessionId, "Page.setLifecycleEventsEnabled", { enabled: true })
+  // Arm BEFORE Page.navigate: lifecycle events fire once, and a fast load can
+  // fire networkIdle between navigate returning and the listener subscribing.
+  const ready = session.waitFor({ method: 'Page.lifecycleEvent', sessionId, predicate: (p) => p.name === 'networkIdle', timeoutMs: 30_000 })
   await cdp(sessionId, "Page.navigate", {
     url: "https://x.com/search?q=" + encodeURIComponent('${js_query}') + "&src=typed_query&f=top"
   })
-  await session.waitFor({ method: 'Page.loadEventFired', sessionId, timeoutMs: 30_000 })
+  await ready
 
   // Wait for React hydration and tweet rendering
   await new Promise(r => setTimeout(r, 4000))
@@ -65,11 +71,12 @@ try {
     }
   }
 
-  // Inline single-quoted expression, mirroring the gsearch pattern.
-  // CSS attribute values are unquoted ([data-testid=tweet] is valid CSS and
-  // selects the same nodes as [data-testid="tweet"]), so no `"` needs
-  // escaping inside the outer '...' JS string. Same safety story as gsearch:
-  // ' outer, " inner, no $, no backticks — survives both JS and the bash <<EOF heredoc.
+  // Inline single-quoted JS expression, same shape as gsearch. CSS attribute
+  // values are unquoted — [data-testid=tweet] is valid CSS and selects the
+  // same nodes as [data-testid="tweet"] — so no escaped quotes are needed
+  // inside the outer single-quoted JS string. (No backticks anywhere in this
+  // heredoc body: in an unquoted <<EOF, a lone backtick opens command
+  // substitution and trips an EOF parse error.)
   const result = await cdp(sessionId, "Runtime.evaluate", {
     expression: 'JSON.stringify([...document.querySelectorAll("[data-testid=tweet]")].slice(0,' + count + ').map(el => { const textEl = el.querySelector("[data-testid=tweetText]"); const timeEl = el.querySelector("time"); const userNamesEl = el.querySelector("[data-testid=User-Name]"); const nameLinks = userNamesEl ? [...userNamesEl.querySelectorAll("a[role=link]")] : []; const author = nameLinks[0] ? nameLinks[0].textContent.trim() : ""; const handle = nameLinks[1] ? nameLinks[1].textContent.trim() : ""; const url = nameLinks[2] ? nameLinks[2].href : ""; const text = textEl ? textEl.innerText.trim() : ""; const time = timeEl ? timeEl.getAttribute("datetime") : ""; return { author, handle, text, url, time } }))',
     returnByValue: true

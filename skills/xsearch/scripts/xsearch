@@ -65,27 +65,13 @@ try {
     }
   }
 
-  // Define the DOM extraction as a function to avoid quoting issues
-  const extractExpr = (n) => {
-    const sTweet = "[data-testid=\\"tweet\\"]"
-    const sText = "[data-testid=\\"tweetText\\"]"
-    const sUser = "[data-testid=\\"User-Name\\"]"
-    return "JSON.stringify([...document.querySelectorAll('" + sTweet + "')].slice(0," + n + ").map(el => {"
-      + "const textEl = el.querySelector('" + sText + "');"
-      + "const timeEl = el.querySelector('time');"
-      + "const userNamesEl = el.querySelector('" + sUser + "');"
-      + "const nameLinks = userNamesEl ? [...userNamesEl.querySelectorAll('a[role=\"link\"]')] : [];"
-      + "const author = nameLinks[0] ? nameLinks[0].textContent.trim() : '';"
-      + "const handle = nameLinks[1] ? nameLinks[1].textContent.trim() : '';"
-      + "const url = nameLinks[2] ? nameLinks[2].href : '';"
-      + "const text = textEl ? textEl.innerText.trim() : '';"
-      + "const time = timeEl ? timeEl.getAttribute('datetime') : '';"
-      + "return { author, handle, text, url, time }"
-      + "}))"
-  }
-
+  // Inline single-quoted expression, mirroring the gsearch pattern.
+  // CSS attribute values are unquoted ([data-testid=tweet] is valid CSS and
+  // selects the same nodes as [data-testid="tweet"]), so no `"` needs
+  // escaping inside the outer '...' JS string. Same safety story as gsearch:
+  // ' outer, " inner, no $, no backticks — survives both JS and the bash <<EOF heredoc.
   const result = await cdp(sessionId, "Runtime.evaluate", {
-    expression: extractExpr(count),
+    expression: 'JSON.stringify([...document.querySelectorAll("[data-testid=tweet]")].slice(0,' + count + ').map(el => { const textEl = el.querySelector("[data-testid=tweetText]"); const timeEl = el.querySelector("time"); const userNamesEl = el.querySelector("[data-testid=User-Name]"); const nameLinks = userNamesEl ? [...userNamesEl.querySelectorAll("a[role=link]")] : []; const author = nameLinks[0] ? nameLinks[0].textContent.trim() : ""; const handle = nameLinks[1] ? nameLinks[1].textContent.trim() : ""; const url = nameLinks[2] ? nameLinks[2].href : ""; const text = textEl ? textEl.innerText.trim() : ""; const time = timeEl ? timeEl.getAttribute("datetime") : ""; return { author, handle, text, url, time } }))',
     returnByValue: true
   })
   const results = JSON.parse(result.result.value)

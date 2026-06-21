@@ -68,6 +68,60 @@ Each result is `{ author, handle, text, url, time }`:
 ]
 ```
 
+## Viewing an X post by URL
+
+Open a result `url` (or any `x.com/<handle>/status/<id>` permalink) directly through
+`browser-harness-js` — no need to re-search. Same connect/create-tab/evaluate flow
+as ad-hoc search, reusing the `[data-testid="tweet"]` selectors but taking only
+the focus tweet (first in DOM order on a permalink):
+
+```bash
+browser-harness-js <<'EOF'
+if (!session.isConnected()) {
+  try { await session.connect({ port: 9222 }) } catch {
+    try { await session.connect() } catch (e) { throw new Error("Cannot connect: " + e.message) }
+  }
+}
+
+const url = "https://x.com/injaneity/status/2065110712511500620"
+const t = await session.Target.createTarget({ url: "about:blank", background: true })
+const { sessionId } = await session.Target.attachToTarget({ targetId: t.targetId, flatten: true })
+
+try {
+  await cdp(sessionId, "Page.enable", {})
+  await cdp(sessionId, "Page.navigate", { url })
+  await session.waitFor({ method: 'Page.loadEventFired', sessionId, timeoutMs: 30_000 })
+  await new Promise(r => setTimeout(r, 4000))   // React hydration; see Traps
+
+  const result = await cdp(sessionId, "Runtime.evaluate", {
+    expression: `(() => {
+      const el = document.querySelector('[data-testid="tweet"]')
+      if (!el) return JSON.stringify(null)
+      const textEl = el.querySelector('[data-testid="tweetText"]')
+      const timeEl = el.querySelector('time')
+      const userNamesEl = el.querySelector('[data-testid="User-Name"]')
+      const nameLinks = userNamesEl ? [...userNamesEl.querySelectorAll('a[role="link"]')] : []
+      return JSON.stringify({
+        author: nameLinks[0]?.textContent?.trim() || "",
+        handle: nameLinks[1]?.textContent?.trim() || "",
+        text: textEl?.innerText?.trim() || "",
+        time: timeEl?.getAttribute('datetime') || ""
+      })
+    })()`,
+    returnByValue: true
+  })
+  return result.result.value
+} finally {
+  session.closeTab(t.targetId, sessionId).catch(() => {})
+}
+EOF
+```
+
+- The focus tweet (the one the permalink points to) is the first `[data-testid="tweet"]`
+  in DOM order; replies and quoted tweets render below it.
+- The 4s hydration wait matches `xsearch` — `loadEventFired` fires before React renders
+  tweets. Logged-out visitors hit a sign-in wall on permalinks too, same as search.
+
 ## How it works
 
 | Step | CDP call | What it does |

@@ -71,6 +71,40 @@ Each result is `{ title, url, snippet }`:
 ]
 ```
 
+## Following a result link
+
+Open a result `url` directly through `browser-harness-js` — no need to re-search or route through Google. Same connect/create-tab/evaluate flow as ad-hoc search, but navigate to the link and extract page text:
+
+```bash
+browser-harness-js <<'EOF'
+if (!session.isConnected()) {
+  try { await session.connect({ port: 9222 }) } catch {
+    try { await session.connect() } catch (e) { throw new Error("Cannot connect: " + e.message) }
+  }
+}
+
+const url = "https://example.com/some-article"
+const t = await session.Target.createTarget({ url: "about:blank", background: true })
+const { sessionId } = await session.Target.attachToTarget({ targetId: t.targetId, flatten: true })
+
+try {
+  await cdp(sessionId, "Page.enable", {})
+  await cdp(sessionId, "Page.navigate", { url })
+  await session.waitFor({ method: 'Page.loadEventFired', sessionId, timeoutMs: 30_000 })
+  const result = await cdp(sessionId, "Runtime.evaluate", {
+    expression: 'document.querySelector("article, main")?.innerText || document.body.innerText',
+    returnByValue: true
+  })
+  return result.result.value
+} finally {
+  session.closeTab(t.targetId, sessionId).catch(() => {})
+}
+EOF
+```
+
+- `article, main` skips nav/footer chrome; `document.body.innerText` is the fallback.
+- For JS-rendered pages, add a short `await new Promise(r => setTimeout(r, 1000))` before the evaluate — `loadEventFired` fires on initial load, not after client fetches.
+
 ## Ad-hoc search without the script
 
 If `gsearch` isn't on PATH, the same logic runs directly through `browser-harness-js`:

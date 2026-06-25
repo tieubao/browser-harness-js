@@ -1,0 +1,467 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# ttdl — browser-native TikTok downloader.
+#
+#   ttdl <url|id>                          # best quality → ~/Downloads
+#   ttdl <url|id> -q audio                 # audio only (.m4a)
+#   ttdl <url|id> --info                   # title / author / duration / resolution, no download
+#   ttdl <url|id> -o Name -d ~/Videos      # custom name / dir
+#   ttdl <url|id> -v                       # stats to stderr
+#
+# 100% browser-harness-js native: the browser plays the video (signing, CDN
+# tokens, quality selection all done by the page), and ttdl records what the
+# player feeds MediaSource via a SourceBuffer.appendBuffer hook. No yt-dlp, no
+# signature solver, no watermark. ffmpeg is a muxer+trimmer only (-c copy).
+#
+# The capture is the CLEAN, unwatermarked playback stream — TikTok's own
+# "Download" button serves a separately-rendered watermarked file; recording
+# MediaSource gets what the player actually shows, watermark-free.
+
+# Auto-fix: if browser-harness-js isn't on PATH, try to find and symlink it.
+if ! command -v browser-harness-js >/dev/null 2>&1; then
+  _bhjs="$(cd "$(dirname "$0")/.." && pwd)/../cdp/sdk/browser-harness-js"
+  if [ -f "$_bhjs" ]; then
+    _bindir="$HOME/.local/bin"
+    mkdir -p "$_bindir"
+    ln -sf "$_bhjs" "$_bindir/browser-harness-js"
+    export PATH="$_bindir:$PATH"
+  else
+    echo "ttdl: browser-harness-js not found. Run: bash <skill-dir>/scripts/setup" >&2
+    exit 1
+  fi
+fi
+
+usage() {
+  cat >&2 <<'USAGE'
+Usage: ttdl <url|id> [options]
+  -q, --quality <q>   best|audio   (default: best)
+  -o, --out <name>    output filename (without extension)
+  -d, --dir <path>    output directory (default: ~/Downloads)
+  --info              print title / author / duration / resolution, no download
+  -v, --verbose       print capture stats to stderr
+  -h, --help          this message
+USAGE
+  exit 1
+}
+
+[ $# -lt 1 ] && usage
+
+quality="best"
+out=""
+dir="${HOME}/Downloads"
+info_only=false
+verbose=false
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -q|--quality) quality="${2:?missing quality}"; shift 2;;
+    -o|--out) out="${2:?missing out}"; shift 2;;
+    -d|--dir) dir="${2:?missing dir}"; shift 2;;
+    --info) info_only=true; shift;;
+    -v|--verbose) verbose=true; shift;;
+    -h|--help) usage;;
+    -*) echo "ttdl: unknown option '$1'" >&2; usage;;
+    *) [ -n "${input:-}" ] && { echo "ttdl: unexpected argument '$1'" >&2; usage; }; input="$1"; shift;;
+  esac
+done
+
+input="${input:?Usage: ttdl <url|id> [options]}"
+
+# Normalize to a watch URL. Bare numeric ID → a /@_/video/<id> URL (TikTok
+# redirects to the real author); short links (vm.tiktok.com/<code>,
+# tiktok.com/t/<code>) are passed through — the browser follows the redirect
+# and the canonical URL is read back from location.href after load.
+normalize_input() {
+  local u="$1"
+  if [[ "$u" =~ ^[0-9]{6,}$ ]]; then
+    echo "https://www.tiktok.com/@_/video/$u"; return 0
+  fi
+  if [[ "$u" =~ ^https?:// ]]; then echo "$u"; return 0; fi
+  echo "https://$u"; return 0
+}
+watch_url=$(normalize_input "$input")
+
+case "$quality" in
+  best) keep="both";;
+  audio) keep="audio";;
+  *) echo "ttdl: unknown quality '$quality' (best|audio)" >&2; exit 1;;
+esac
+
+# Verbose as JS booleans for the heredoc.
+js_verbose="false"; $verbose && js_verbose="true"
+js_info="false"; $info_only && js_info="true"
+
+if ! command -v ffmpeg >/dev/null 2>&1; then
+  echo "ttdl: ffmpeg not found. Required to mux audio+video, trim to playback duration, and faststart." >&2
+  echo "  brew install ffmpeg   (or your platform's equivalent)" >&2
+  exit 1
+fi
+
+tmpdir=$(mktemp -d 2>/dev/null || mktemp -d -t ttdl)
+trap 'rm -rf "$tmpdir"' EXIT
+
+# Escape the watch URL for a JS single-quoted string inside an unquoted heredoc:
+# \ → \\, $ → \$, ` → \`, ' → \'
+js_url=$(printf '%s' "$watch_url" | sed -e 's/\\/\\\\/g' -e 's/\$/\\$/g' -e 's/`/\\`/g' -e "s/'/\\\\'/g")
+
+raw=$(browser-harness-js <<EOF
+const fs = await import('node:fs')
+const WATCH_URL = '${js_url}'
+const KEEP = '${keep}'
+const TMPDIR = '${tmpdir}'
+const VERBOSE = ${js_verbose}
+const INFO_ONLY = ${js_info}
+
+const _stats = []
+function vlog(s){ _stats.push(s) }
+
+// Title logic: document.title on a logged-out ttdl tab shows the real caption
+// briefly (~1s after load) then REVERTS to "Sign up | TikTok" once the SPA swaps
+// to a sign-up state. So we latch the FIRST "good" title we see (ends with
+// "| TikTok" and isn't a chrome title) during the player-ready poll, and fall
+// back to og:title ("<creator> on TikTok" → creator name), which is stable.
+function isGoodTitle(t){
+  return !!t && t.endsWith("| TikTok") && t !== "Sign up | TikTok" && t !== "Log in | TikTok" && t !== "TikTok - Make Your Day" && t !== "TikTok" && t !== ""
+}
+
+if (!session.isConnected()) {
+  try { await session.connect({ port: 9222, host: '127.0.0.1' }) } catch {
+    try { await session.connect() } catch (e) { throw new Error('Cannot connect to browser: ' + e.message) }
+  }
+}
+
+// Foreground — TikTok autoplays muted on a foreground tab; background tabs have
+// flaky autoplay and MediaSource would never be fed.
+const t = await session.Target.createTarget({ url: 'about:blank' })
+const { sessionId } = await session.Target.attachToTarget({ targetId: t.targetId, flatten: true })
+
+try {
+  await cdp(sessionId, 'Page.enable', {})
+  await cdp(sessionId, 'Page.setLifecycleEventsEnabled', { enabled: true })
+
+  // Inject BEFORE navigate: hook MediaSource.addSourceBuffer + each SourceBuffer's
+  // appendBuffer to record the demuxed ISO-BMFF bytes the player feeds MSE.
+  // appendBuffer is a non-writable native property on the prototype, so we define
+  // an OWN property on each SourceBuffer instance (shadows the prototype method).
+  //
+  // TIKTOK-SPECIFIC: kind must come from the CODEC in codecs=, NOT the container
+  // mime prefix. TikTok puts the AUDIO in a SourceBuffer whose container is
+  // video/mp4 — only the codecs= param ("mp4a.*") reveals it's audio. A naive
+  // mime.startsWith("video") check (the ytdl pattern) mis-tags the audio buffer
+  // as video and you end up with a silent capture.
+  await cdp(sessionId, 'Page.addScriptToEvaluateOnNewDocument', {
+    source: [
+      '(() => {',
+      '  if (window.__ttdlHooked) return;',
+      '  window.__ttdlHooked = true;',
+      '  window.__cap = { buffers: [] };',
+      '  window.__capDone = false;',
+      '  const origAddSB = MediaSource.prototype.addSourceBuffer;',
+      '  // codec fourcc prefixes → stream kind. The container mime is unreliable',
+      '  // on TikTok (audio ships in a video/mp4 container); the codec is the truth.',
+      '  const AUDIO = ["mp4a","opus","ac-3","ac3","ec-3","ec3","dtsc","dtsl","samr","sawp","enca","mha1","mhm1"];',
+      '  const VIDEO = ["avc1","avc3","hvc1","hev1","hvc3","hev3","av01","vp08","vp09","vp8","vp9","encv"];',
+      '  Object.defineProperty(MediaSource.prototype, "addSourceBuffer", {',
+      '    configurable: true, writable: true,',
+      '    value: function(mime) {',
+      '      const sb = origAddSB.call(this, mime);',
+      '      const codec = (mime.match(/codecs="([^"]+)"/)||[])[1] || "";',
+      '      const base = codec.split(".")[0].toLowerCase();',
+      '      const kind = AUDIO.includes(base) ? "audio" : VIDEO.includes(base) ? "video" : (mime.startsWith("audio") ? "audio" : mime.startsWith("video") ? "video" : "other");',
+      '      const entry = { mime: mime, codec: codec, kind: kind, chunks: [], bytes: 0, count: 0 };',
+      '      window.__cap.buffers.push(entry);',
+      '      const origApp = sb.appendBuffer.bind(sb);',
+      '      Object.defineProperty(sb, "appendBuffer", {',
+      '        configurable: true, writable: true,',
+      '        value: function(data) {',
+      '          if (window.__capDone) return origApp(data);',
+      '          const u8 = data instanceof ArrayBuffer ? new Uint8Array(data)',
+      '            : new Uint8Array(data.buffer, data.byteOffset, data.byteLength);',
+      '          entry.chunks.push(u8.slice()); entry.bytes += u8.length; entry.count++;',
+      '          return origApp(data);',
+      '        }',
+      '      });',
+      '      return sb;',
+      '    }',
+      '  });',
+      '  window.__capInfo = function() {',
+      '    return window.__cap.buffers.map((b,i) => ({ i: i, kind: b.kind, mime: b.mime, codec: b.codec, bytes: b.bytes, count: b.count }));',
+      '  };',
+      '  window.__capBytes = function() {',
+      '    return window.__cap.buffers.reduce((s,b) => s + b.bytes, 0);',
+      '  };',
+      '  window.__pullBuffer = function(i, offset, len) {',
+      '    const b = window.__cap.buffers[i];',
+      '    if (!b._all) {',
+      '      b._all = new Uint8Array(b.bytes);',
+      '      let o = 0; for (const c of b.chunks) { b._all.set(c, o); o += c.length; }',
+      '    }',
+      '    const end = Math.min(offset + len, b._all.length);',
+      '    const slice = b._all.subarray(offset, end);',
+      '    // 49998 is divisible by 3 -> no interior base64 padding; fromCharCode.apply',
+      '    // stays under the call-stack arg limit.',
+      '    let b64 = "";',
+      '    for (let i2 = 0; i2 < slice.length; i2 += 49998) {',
+      '      const e2 = Math.min(i2 + 49998, slice.length);',
+      '      b64 += btoa(String.fromCharCode.apply(null, slice.subarray(i2, e2)));',
+      '    }',
+      '    return b64;',
+      '  };',
+      '})();'
+    ].join('\\n')
+  })
+
+  const ready = session.waitFor({ method: 'Page.lifecycleEvent', sessionId, predicate: (p) => p.name === 'networkIdle', timeoutMs: 30_000 })
+  await cdp(sessionId, 'Page.navigate', { url: WATCH_URL })
+  await ready
+  vlog('navigated')
+
+  // Player-ready poll (up to 60s). Bails on a verify/captcha interstitial —
+  // TikTok is aggressive about bot detection; back off and retry, or clear it
+  // manually once in the browser. The same poll latches the first GOOD
+  // document.title (the real caption appears ~1s in, then reverts to
+  // "Sign up | TikTok") and the stable og:title fallback.
+  let playerReady = false
+  let diag = ''
+  let goodTitle = ''
+  let ogTitle = ''
+  for (let i = 0; i < 240; i++) {
+    const r = await cdp(sessionId, 'Runtime.evaluate', {
+      expression: '(() => { const v = document.querySelector("video"); const body = document.body ? document.body.innerText.slice(0,200) : ""; const bot = /verify|robot|human|captcha|something went wrong|unusual|slide to|puzzle/i.test(body); const m = [...document.querySelectorAll("meta")].find(e => e.getAttribute("property") === "og:title"); const og = m ? (m.content || "") : ""; return JSON.stringify({ v: !!v, bot: bot, title: document.title || "", og: og }); })()',
+      returnByValue: true
+    })
+    const s = JSON.parse(r.result.value)
+    if (s.bot) throw new Error('TikTok is showing a "verify you are human" / captcha interstitial — back off and retry later, or open the URL once in the browser to clear it.')
+    if (s.og && !ogTitle) ogTitle = s.og
+    if (!goodTitle && isGoodTitle(s.title)) goodTitle = s.title
+    if (s.v) { playerReady = true; break }
+    diag = s.title || '(no title)'
+    await new Promise(r => setTimeout(r, 250))
+  }
+  if (!playerReady) throw new Error('player did not become ready (no <video>) after 60s — page title: "' + diag + '". If the video is gated/region-locked, make sure a logged-in TikTok tab can play it; if TikTok is rate-limiting, wait and retry.')
+
+  // If the player-ready poll broke just before the caption landed (the <video>
+  // and the real title both arrive ~1s after load and can race), give the title
+  // one more short window to arrive before it reverts to "Sign up | TikTok".
+  if (!goodTitle) {
+    for (let i = 0; i < 8; i++) {
+      const r = await cdp(sessionId, 'Runtime.evaluate', {
+        expression: '(() => { const m = [...document.querySelectorAll("meta")].find(e => e.getAttribute("property") === "og:title"); const og = m ? (m.content || "") : ""; return JSON.stringify({ title: document.title || "", og: og }); })()',
+        returnByValue: true
+      })
+      const s = JSON.parse(r.result.value)
+      if (s.og && !ogTitle) ogTitle = s.og
+      if (!goodTitle && isGoodTitle(s.title)) goodTitle = s.title
+      if (goodTitle) break
+      await new Promise(r => setTimeout(r, 250))
+    }
+  }
+  // og:title is "<creator> on TikTok" → strip the suffix for a clean creator name.
+  const ogName = ogTitle.endsWith(" on TikTok") ? ogTitle.slice(0, ogTitle.length - 10) : ogTitle
+  const title = goodTitle || ogName || ''
+
+  // Read author + video id from the final (post-redirect) URL. Pure string ops —
+  // no backslash-regex, so the unquoted heredoc passes it through untouched.
+  const urlR = await cdp(sessionId, 'Runtime.evaluate', { expression: 'location.href', returnByValue: true })
+  const finalUrl = (urlR.result && urlR.result.value) || WATCH_URL
+  let author = '', id = ''
+  {
+    const at = finalUrl.indexOf('/@')
+    if (at >= 0) { const rest = finalUrl.slice(at + 2); const sl = rest.indexOf('/'); if (sl >= 0) author = rest.slice(0, sl) }
+    const vv = finalUrl.indexOf('/video/')
+    if (vv >= 0) { const rest = finalUrl.slice(vv + 7); let n = ''; for (const ch of rest) { if (ch >= "0" && ch <= "9") { n += ch } else { break } } if (n) id = n }
+  }
+
+  // Wait for metadata (duration>0) — up to 20s after the player exists.
+  let dur = 0
+  for (let i = 0; i < 40; i++) {
+    const r = await cdp(sessionId, 'Runtime.evaluate', { expression: '(() => { const v = document.querySelector("video"); return v && v.duration > 0 ? v.duration : 0; })()', returnByValue: true })
+    if (r.result.value && r.result.value > 0) { dur = r.result.value; break }
+    await new Promise(r => setTimeout(r, 500))
+  }
+  if (!dur) throw new Error('could not read video duration (media never loaded?) — the video may be unavailable or blocked.')
+
+  // --info: poll for the player's intrinsic resolution (it ramps up as the
+  // player bumps quality, so track the max), then return. No download.
+  if (INFO_ONLY) {
+    let w = 0, h = 0, stable = 0
+    for (let i = 0; i < 16; i++) {
+      const r = await cdp(sessionId, 'Runtime.evaluate', { expression: '(() => { const v = document.querySelector("video"); return JSON.stringify({ w: v ? v.videoWidth : 0, h: v ? v.videoHeight : 0 }); })()', returnByValue: true })
+      const s = JSON.parse(r.result.value)
+      if (s.w > w) { w = s.w; h = s.h; stable = 0 } else if (s.w === w) { stable++ } else { stable = 0 }
+      if (w > 0 && stable >= 4) break
+      await new Promise(r => setTimeout(r, 250))
+    }
+    return JSON.stringify({ ok: true, info: true, title: title, author: author, id: id, duration: dur, width: w, height: h })
+  }
+
+  // Play muted at 4x from t=0. Capture on TikTok is append-driven (the player
+  // fetches the whole file up front), so the rate barely matters, but it speeds
+  // any progressively-streamed video and the re-assert each tick keeps the
+  // player muted if it un-mutes on a quality switch / re-init.
+  await cdp(sessionId, 'Runtime.evaluate', {
+    expression: '(() => { const v = document.querySelector("video"); try { v.currentTime = 0; } catch(e){} v.muted = true; v.playbackRate = 4; v.play().catch(()=>{}); return "playing"; })()',
+    returnByValue: true
+  })
+  vlog('playing 4x muted, duration=' + dur.toFixed(1) + 's')
+
+  // Coverage latch. TikTok appends the whole fMP4 up front, so this completes
+  // in seconds. We break when the watched portion is buffered (end >= dur-0.5)
+  // AND append activity has quiesced (total captured bytes unchanged for 2
+  // consecutive ticks = 500ms). The quiescence guard matters on TikTok: the
+  // player's buffered range caps at the edit-listed duration even as the
+  // (longer) raw media keeps appending, so end>=dur alone could fire while
+  // bytes are still flowing. A deadline guards a stalled stream.
+  let lastBytes = -1, stableTicks = 0, lastEnd = -1
+  const deadline = Date.now() + Math.max(60_000, dur * 1000 / 2 + 30_000)
+  let done = false
+  for (;;) {
+    if (Date.now() > deadline) { vlog('coverage timeout'); break }
+    const r = await cdp(sessionId, 'Runtime.evaluate', {
+      expression: '(() => { const v = document.querySelector("video"); if (v) { v.muted = true; v.playbackRate = 4; } return JSON.stringify({ end: v && v.buffered.length ? v.buffered.end(v.buffered.length-1) : 0, ended: v ? v.ended : false, bytes: window.__capBytes() }); })()',
+      returnByValue: true
+    })
+    const s = JSON.parse(r.result.value)
+    if (s.bytes === lastBytes) { stableTicks++ } else { stableTicks = 0; lastBytes = s.bytes }
+    if (VERBOSE && Math.floor(s.end) !== Math.floor(lastEnd)) { lastEnd = Math.floor(s.end); vlog('buffered=' + s.end.toFixed(1) + '/' + dur.toFixed(1) + 's bytes=' + s.bytes) }
+    if (s.end >= dur - 0.5 && stableTicks >= 2) { done = true; break }
+    if (s.ended) { done = true; break }
+    await new Promise(r => setTimeout(r, 250))
+  }
+
+  // Freeze capture + pause atomically. __capDone makes the hook pass appends
+  // through (stop recording), so the looped replay (TikTok auto-loops) and any
+  // further appends never enter the buffers.
+  await cdp(sessionId, 'Runtime.evaluate', { expression: '(() => { window.__capDone = true; const v = document.querySelector("video"); if (v) v.pause(); return "frozen"; })()', returnByValue: true })
+  vlog('coverage ' + (done ? 'complete' : 'timed out'))
+
+  const infoR = await cdp(sessionId, 'Runtime.evaluate', { expression: 'JSON.stringify(window.__capInfo())', returnByValue: true })
+  const buffers = JSON.parse(infoR.result.value)
+  vlog('captured ' + buffers.length + ' source buffer(s): ' + JSON.stringify(buffers.map(b => b.kind + ':' + b.codec + ':' + b.bytes)))
+
+  // The player can create more than one MediaSource (an initial lower-quality
+  // one, then a higher-quality re-init on the quality bump), so there may be
+  // several video/audio buffers. Pick the LARGEST of each kind — that is the
+  // real full capture; the small ones are the abandoned lower-quality pair.
+  let pv = null, pa = null
+  for (const b of buffers) {
+    if (b.kind === 'video' && (!pv || b.bytes > pv.bytes)) pv = b
+    if (b.kind === 'audio' && (!pa || b.bytes > pa.bytes)) pa = b
+  }
+
+  // Pull the chosen buffer(s) to disk in 4MB (3-aligned) base64 slices -> append.
+  const SLICE = 4194300  // divisible by 3 -> each base64 slice is independently decodable
+  const pullOne = async (b, kind) => {
+    if (!b) return null
+    const path = TMPDIR + '/' + kind + '.fmp4'
+    fs.writeFileSync(path, Buffer.alloc(0))
+    let off = 0
+    while (off < b.bytes) {
+      const r = await cdp(sessionId, 'Runtime.evaluate', {
+        expression: 'window.__pullBuffer(' + b.i + ',' + off + ',' + SLICE + ')',
+        returnByValue: true
+      })
+      const b64 = r.result.value
+      if (!b64) break
+      const chunk = Buffer.from(b64, 'base64')
+      fs.appendFileSync(path, chunk)
+      off += chunk.length
+      if (off >= b.bytes) break
+    }
+    vlog('wrote ' + kind + ' ' + off + ' bytes (' + b.codec + ') -> ' + path)
+    return { bytes: off, path: path, codec: b.codec }
+  }
+
+  const result = {}
+  if (KEEP === 'audio') {
+    result.audio = await pullOne(pa, 'audio')
+  } else {
+    result.video = await pullOne(pv, 'video')
+    result.audio = await pullOne(pa, 'audio')
+  }
+
+  return JSON.stringify({ ok: true, _stats: _stats, title: title, author: author, id: id, duration: dur, videoPath: result.video ? result.video.path : null, videoCodec: result.video ? result.video.codec : null, audioPath: result.audio ? result.audio.path : null, audioCodec: result.audio ? result.audio.codec : null, tmpdir: TMPDIR })
+} finally {
+  // Fire-and-forget closeTab — guaranteed cleanup even on errors, without blocking.
+  session.closeTab(t.targetId, sessionId).catch(() => {})
+}
+EOF
+)
+
+# The REPL returns a JSON string (or an error blob). Parse defensively —
+# without jq, and without BSD-incompatible sed alternation.
+case "$raw" in
+  *'"ok":true'*) ;;
+  *)
+    echo "ttdl: capture failed:" >&2
+    printf '%s\n' "$raw" >&2
+    exit 1
+    ;;
+esac
+
+# -v: print the in-snippet stats (the REPL daemon's stderr isn't wired here).
+if $verbose; then
+  printf '%s\n' "$raw" | grep -oE '"_stats":\[[^]]*\]' | sed 's/"_stats":\[//; s/\]$//; s/,/\n/g' \
+    | sed -e 's/^"//' -e 's/"$//' -e 's/^/ttdl: /' >&2 || true
+fi
+
+# --info path: print and exit.
+if $info_only; then
+  title=$(printf '%s\n' "$raw" | sed -n 's/.*"title":"\([^"]*\)".*/\1/p' | head -1)
+  author=$(printf '%s\n' "$raw" | sed -n 's/.*"author":"\([^"]*\)".*/\1/p' | head -1)
+  id=$(printf '%s\n' "$raw" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p' | head -1)
+  dur=$(printf '%s\n' "$raw" | sed -n 's/.*"duration":\([0-9.]*\).*/\1/p' | head -1)
+  w=$(printf '%s\n' "$raw" | sed -n 's/.*"width":\([0-9]*\).*/\1/p' | head -1)
+  h=$(printf '%s\n' "$raw" | sed -n 's/.*"height":\([0-9]*\).*/\1/p' | head -1)
+  printf 'title:      %s\n' "$title"
+  [ -n "$author" ] && printf 'author:     @%s\n' "$author"
+  [ -n "$id" ] && printf 'id:         %s\n' "$id"
+  printf 'duration:   %ss\n' "$dur"
+  [ -n "$w" ] && [ "$w" != "0" ] && printf 'resolution: %sx%s\n' "$w" "$h"
+  exit 0
+fi
+
+# Derive the output name from the title (strip " | TikTok", sanitize), else
+# author_id, else a generic fallback.
+title=$(printf '%s' "$raw" | sed -n 's/.*"title":"\([^"]*\)".*/\1/p' | head -1)
+author=$(printf '%s' "$raw" | sed -n 's/.*"author":"\([^"]*\)".*/\1/p' | head -1)
+id=$(printf '%s' "$raw" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p' | head -1)
+dur=$(printf '%s' "$raw" | sed -n 's/.*"duration":\([0-9.]*\).*/\1/p' | head -1)
+video_path=$(printf '%s' "$raw" | sed -n 's/.*"videoPath":"\([^"]*\)".*/\1/p' | head -1)
+video_codec=$(printf '%s' "$raw" | sed -n 's/.*"videoCodec":"\([^"]*\)".*/\1/p' | head -1)
+audio_path=$(printf '%s' "$raw" | sed -n 's/.*"audioPath":"\([^"]*\)".*/\1/p' | head -1)
+audio_codec=$(printf '%s' "$raw" | sed -n 's/.*"audioCodec":"\([^"]*\)".*/\1/p' | head -1)
+
+[ -n "$out" ] || out=$(printf '%s' "$title" | sed -e 's/ *| TikTok$//' -e 's/[^A-Za-z0-9._-]/_/g')
+[ -n "$out" ] || out="${author:+${author}_}${id}"
+[ -n "$out" ] || out="tiktok"
+mkdir -p "$dir"
+
+if $verbose; then
+  printf 'ttdl: video=%s(%s) audio=%s(%s) dur=%ss\n' "${video_path:-none}" "${video_codec:-?}" "${audio_path:-none}" "${audio_codec:-?}" "$dur" >&2
+fi
+
+# TikTok serves audio and video as SEPARATE SourceBuffers, so ffmpeg is always
+# needed (mux + trim + faststart). The trim is the key TikTok step: the player
+# plays an edit-listed <duration> (e.g. 27.8s) but the raw MSE media is longer
+# (the source file has a trailing section the player excludes). Trimming to
+# <duration> makes the output match what the user actually watched.
+if [ "$keep" = "audio" ]; then
+  if [ -z "$audio_path" ]; then echo "ttdl: no audio buffer captured" >&2; exit 1; fi
+  final="$dir/${out}.m4a"
+  ffmpeg -hide_banner -y -loglevel error -i "$audio_path" ${dur:+-t "$dur"} -c copy -movflags +faststart "$final"
+elif [ -n "$video_path" ] && [ -n "$audio_path" ]; then
+  final="$dir/${out}.mp4"
+  ffmpeg -hide_banner -y -loglevel error -i "$video_path" -i "$audio_path" ${dur:+-t "$dur"} -c copy -movflags +faststart "$final"
+elif [ -n "$video_path" ]; then
+  # Rare: a single muxed buffer (A/V together). Trim + faststart still applies.
+  final="$dir/${out}.mp4"
+  ffmpeg -hide_banner -y -loglevel error -i "$video_path" ${dur:+-t "$dur"} -c copy -movflags +faststart "$final"
+else
+  echo "ttdl: no media captured (is the video playable in a logged-in tab? does it load in the browser?)" >&2
+  exit 1
+fi
+
+sz=$(wc -c < "$final" | tr -d ' ')
+echo "saved $final ($(( sz / 1024 / 1024 )) MB, $(( ${dur%.*} ))s)"

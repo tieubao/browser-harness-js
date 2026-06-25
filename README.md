@@ -51,6 +51,7 @@ This repo contains four skills installable via `npx skills add`:
 | **gsearch** | Search the web via Google through CDP — structured results in under 1 second |
 | **xsearch** | Search X (Twitter) via CDP — structured results (requires an active X login) |
 | **ytdl** | Download YouTube videos browser-natively via CDP — records MediaSource output, no `yt-dlp` binary |
+| **ttdl** | Download TikTok videos browser-natively via CDP — records MediaSource output, no watermark, no signer |
 
 ## Files
 
@@ -66,6 +67,8 @@ This repo contains four skills installable via `npx skills add`:
 - `skills/xsearch/scripts/xsearch` — X Search CLI
 - `skills/ytdl/SKILL.md` — YouTube download skill instructions
 - `skills/ytdl/scripts/ytdl` — YouTube download CLI (a `browser-harness-js` heredoc, no runtime)
+- `skills/ttdl/SKILL.md` — TikTok download skill instructions
+- `skills/ttdl/scripts/ttdl` — TikTok download CLI (a `browser-harness-js` heredoc, no runtime)
 
 No helpers file. No `click()`, no `goto()`, no `upload_file()` — just the protocol, typed.
 

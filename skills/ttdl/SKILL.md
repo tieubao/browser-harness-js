@@ -107,10 +107,15 @@ All inside one `browser-harness-js <<EOF` heredoc, ytdl-style:
    and if the player never starts, MediaSource is never fed.
 4. **Read the author + video id** from the final (post-redirect) `location.href`
    — short links (`vm.tiktok.com/…`, `tiktok.com/t/…`) have redirected by now.
-5. **Play muted at 4×** from `currentTime = 0`. Capture on TikTok is
-   **append-driven** (the player fetches the whole file up front), so the rate
-   barely matters; it only speeds any progressively-streamed video. The coverage
-   poll re-asserts `muted` + `playbackRate` each tick.
+5. **Play muted** from `currentTime = 0`. Unlike ytdl (16×, because YouTube's
+   SABR fetches-as-it-plays and playback rate bounds capture), TikTok capture is
+   **append-driven**: the player fetches+appends the whole fMP4 up front, so
+   `buffered.end` reaches the full duration before `currentTime` moves at all.
+   Playback rate is therefore **cosmetic** for capture — and TikTok's player
+   resets `playbackRate` to 1× while the tab is foregrounded, so fighting it is
+   pointless. ttdl doesn't set `playbackRate`. It does re-assert `muted` each
+   coverage tick: the player can un-mute on a quality switch / re-init and blast
+   audio mid-capture.
 6. **Wait until the watched portion is buffered AND append activity quiesces**
    (`buffered.end >= duration-0.5` *and* total captured bytes unchanged for 2
    ticks), then **freeze capture + pause atomically**. A `__capDone` flag makes
@@ -178,7 +183,7 @@ All paths relative to `<skill-dir>`.
 - **Coverage is append-driven, but latch on quiescence, not just `buffered.end`.** TikTok appends the whole fMP4 up front, so capture completes in seconds — but `buffered.end` *caps at the edit-listed duration* even as the (longer) raw media keeps appending. Latching on `end >= dur-0.5` alone can fire while bytes are still flowing. ttdl additionally requires total captured bytes to be unchanged for 2 consecutive ticks (500 ms) before breaking. The `__capDone` freeze-on-latch keeps the auto-loop's re-appends out of the buffers.
 - **Pick the largest buffer of each kind — the player re-inits MediaSource on a quality bump.** TikTok ramps quality mid-playback (e.g. HEVC `hvc1.1.6.L186` → `hvc1.1.6.L150`), creating a *second* MediaSource with its own audio+video SourceBuffers. You'll see 4 buffers (2 video, 2 audio); the largest of each kind is the real full capture, the small pair is the abandoned lower-quality one. Don't assume one buffer per kind.
 - **TikTok auto-loops; never rely on `ended`.** The `<video>` loops back to 0 instead of firing `ended`, so an `ended`-based latch would spin forever. The `__capDone` flag is what stops the loop's re-appends from doubling the capture. (An `ended` check is kept as a safety for non-looping edge cases, but the real exit is the quiescence+coverage latch.)
-- **Re-assert `muted` + `playbackRate` every poll tick.** TikTok's player can reset them on a quality switch or re-init; a one-shot set at play-start gets clobbered and you'll hear the sped-up audio. The coverage poll re-asserts both each 250 ms.
+- **Re-assert `muted` every poll tick (but NOT `playbackRate`).** TikTok's player can un-mute on a quality switch / re-init; a one-shot `muted = true` at play-start gets clobbered and you'll hear audio mid-capture. The coverage poll re-asserts `muted` each 250 ms. Don't re-assert `playbackRate`: capture is append-driven (the whole file is buffered before playback advances), so the rate is cosmetic, and TikTok's player resets `playbackRate` to 1× on a foregrounded tab anyway — fighting it is pointless. ytdl re-asserts 16× because YouTube coverage *is* playback-bound (SABR fetches-as-it-plays); ttdl isn't, so the divergence is deliberate.
 - **Read the title AFTER coverage, with a `data-e2e=video-desc` fallback.** `document.title` is the generic `"TikTok - Make Your Day"` until SRM/hydration finishes (a few seconds in). Reading it right after `networkIdle` gives the generic title. ttdl reads it after the coverage loop completes, and falls back to the `[data-e2e=video-desc]` element's text if the title is still generic.
 - **Detect the "verify you are human" / captcha interstitial and back off.** TikTok is aggressive about bot detection. ttdl scans `document.body.innerText` for `verify|robot|human|captcha|unusual|slide to|puzzle` during the player-ready poll and throws a clear error if it hits one. Open the URL once manually in the browser to clear it, then retry — don't hammer it.
 - **Borrow a logged-in tab for gated content.** Region-locked, age-gated, and followers-only videos may require an active TikTok login. ttdl opens its own tab but reuses the browser's cookie jar; if you can watch it in the browser, ttdl can record it.

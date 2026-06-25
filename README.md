@@ -33,7 +33,7 @@ my browser: look at all the tabs I have open, group them by topic, and screensho
 interesting one.
 ```
 
-(The CLI auto-installs [`bun`](https://bun.sh) on first run if it's missing. Set `BROWSER_HARNESS_SKIP_BUN_INSTALL=1` to opt out.)
+(The CLI requires [`node`](https://nodejs.org) on PATH — TypeScript type stripping is on by default from Node 23.6. No runtime is auto-installed.)
 
 If Chrome asks you to tick a remote-debugging checkbox, do it — that's how the agent attaches:
 
@@ -50,13 +50,13 @@ This repo contains four skills installable via `npx skills add`:
 | **cdp** | Drive any Chromium-based browser via CDP — 56 domains, 652 typed methods |
 | **gsearch** | Search the web via Google through CDP — structured results in under 1 second |
 | **xsearch** | Search X (Twitter) via CDP — structured results (requires an active X login) |
-| **ytdl** | Download YouTube videos as a self-contained Bun CLI — client impersonation + n-signature solver, no `yt-dlp` binary |
+| **ytdl** | Download YouTube videos browser-natively via CDP — records MediaSource output, no `yt-dlp` binary |
 
 ## Files
 
 - `skills/cdp/SKILL.md` — day-to-day usage; how to connect, pick a tab, call methods, persist state
 - `skills/cdp/sdk/browser-harness-js` — tiny CLI that auto-spawns the server and forwards snippets
-- `skills/cdp/sdk/repl.ts` — Bun HTTP server holding one persistent `Session`
+- `skills/cdp/sdk/repl.ts` — Node HTTP server holding one persistent `Session`
 - `skills/cdp/sdk/session.ts` — the `Session` class: transport, connect, target routing, events
 - `skills/cdp/sdk/gen.ts` — codegen: reads `browser_protocol.json` + `js_protocol.json` → typed wrappers
 - `skills/cdp/sdk/generated.ts` — every CDP method as `session.<Domain>.<method>(params)` (generated)
@@ -65,9 +65,7 @@ This repo contains four skills installable via `npx skills add`:
 - `skills/xsearch/SKILL.md` — X (Twitter) Search skill instructions
 - `skills/xsearch/scripts/xsearch` — X Search CLI
 - `skills/ytdl/SKILL.md` — YouTube download skill instructions
-- `skills/ytdl/scripts/ytdl` — self-contained YouTube download CLI (Bun)
-- `skills/ytdl/lib/ytdl.ts` — client table, player API, n/sig solver, multi-connection download
-- `skills/ytdl/lib/solver/` — vendored EJS solver (Unlicense) + meriyah (ISC) + astring (MIT)
+- `skills/ytdl/scripts/ytdl` — YouTube download CLI (a `browser-harness-js` heredoc, no runtime)
 
 No helpers file. No `click()`, no `goto()`, no `upload_file()` — just the protocol, typed.
 

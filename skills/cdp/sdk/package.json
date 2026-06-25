@@ -4,11 +4,11 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "gen": "bun gen.ts",
-    "repl": "bun repl.ts"
+    "gen": "node gen.ts",
+    "repl": "node repl.ts"
   },
   "devDependencies": {
-    "@types/bun": "latest",
+    "@types/node": "latest",
     "typescript": "^5.5.0"
   }
 }

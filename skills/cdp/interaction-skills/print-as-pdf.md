@@ -17,7 +17,8 @@ const { data } = await session.Page.printToPDF({
 })
 // Cross-platform temp dir: /tmp on Linux, /var/folders/… on macOS, %TEMP% on Windows
 const { tmpdir } = await import('node:os')
-await Bun.write(`${tmpdir()}/page.pdf`, Buffer.from(data, 'base64'))
+const { writeFile } = await import('node:fs/promises')
+await writeFile(`${tmpdir()}/page.pdf`, Buffer.from(data, 'base64'))
 ```
 
 Works **without** any visible print dialog — Chrome renders the PDF server-side in the process. Undetectable by the page.

@@ -7,8 +7,10 @@ Two modes: let Chrome write the file to a directory you control, or intercept th
 ```js
 // Cross-platform temp dir: /tmp on Linux, /var/folders/… on macOS, %TEMP% on Windows
 const { tmpdir } = await import('node:os')
+const { mkdir, writeFile } = await import('node:fs/promises')
 const downloadDir = `${tmpdir()}/cdp-downloads`
-await Bun.write(`${downloadDir}/.keep`, '')  // ensure dir exists
+await mkdir(downloadDir, { recursive: true })
+await writeFile(`${downloadDir}/.keep`, '')  // ensure dir exists
 
 await session.Browser.setDownloadBehavior({
   behavior: 'allow',
@@ -45,12 +47,13 @@ console.log(done.receivedBytes, done.totalBytes)
 
 ## Skip the browser entirely for plain HTTP downloads
 
-If the download URL is a plain HTTP GET with no auth/cookie state the browser added, `fetch` directly from the Bun snippet:
+If the download URL is a plain HTTP GET with no auth/cookie state the browser added, `fetch` directly from the REPL snippet:
 
 ```js
 const { tmpdir } = await import('node:os')
+const { writeFile } = await import('node:fs/promises')
 const res = await fetch('https://example.com/report.pdf')
-await Bun.write(`${tmpdir()}/report.pdf`, await res.arrayBuffer())
+await writeFile(`${tmpdir()}/report.pdf`, Buffer.from(await res.arrayBuffer()))
 ```
 
 This is often 10× faster than driving the browser. But it **loses cookie-based auth** — for logged-in downloads, either:

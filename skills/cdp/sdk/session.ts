@@ -7,6 +7,7 @@
  */
 
 import { bindDomains, type Domains, type Transport } from './generated.ts';
+import { readFile, stat } from 'node:fs/promises';
 
 type Pending = {
   resolve: (v: unknown) => void;
@@ -297,9 +298,13 @@ export class Session implements Transport {
 }
 
 export class CdpError extends Error {
-  constructor(public code: number, message: string, public data?: unknown) {
+  code: number;
+  data?: unknown;
+  constructor(code: number, message: string, data?: unknown) {
     super(`CDP ${code}: ${message}`);
     this.name = 'CdpError';
+    this.code = code;
+    this.data = data;
   }
 }
 
@@ -365,7 +370,7 @@ async function readDevToolsActivePort(profileDir: string): Promise<{ port: numbe
   let lastErr: unknown;
   while (Date.now() < deadline) {
     try {
-      const text = (await Bun.file(`${profileDir}/DevToolsActivePort`).text()).trim();
+      const text = (await readFile(`${profileDir}/DevToolsActivePort`, 'utf8')).trim();
       const [portStr, path] = text.split('\n');
       const port = Number(portStr);
       if (!Number.isFinite(port)) throw new Error(`malformed port line: ${portStr}`);
@@ -376,7 +381,7 @@ async function readDevToolsActivePort(profileDir: string): Promise<{ port: numbe
       return { port, path };
     } catch (e) {
       lastErr = e;
-      await Bun.sleep(250);
+      await new Promise(r => setTimeout(r, 250));
     }
   }
   throw new Error(`Could not read ${profileDir}/DevToolsActivePort after 30s: ${lastErr}`);
@@ -481,13 +486,13 @@ async function tryReadDevToolsActivePort(
   profileDir: string,
 ): Promise<{ port: number; path: string; mtimeMs: number } | undefined> {
   try {
-    const file = Bun.file(`${profileDir}/DevToolsActivePort`);
-    const [text, mtimeMs] = await Promise.all([file.text(), file.lastModified]);
+    const p = `${profileDir}/DevToolsActivePort`;
+    const [text, st] = await Promise.all([readFile(p, 'utf8'), stat(p)]);
     const [portStr, path] = text.trim().split('\n');
     const port = Number(portStr);
     if (!Number.isFinite(port)) return undefined;
     if (!path || !path.startsWith('/devtools/')) return undefined;
-    return { port, path, mtimeMs: mtimeMs as number };
+    return { port, path, mtimeMs: st.mtimeMs };
   } catch {
     return undefined;
   }

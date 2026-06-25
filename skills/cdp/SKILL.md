@@ -3,7 +3,7 @@ name: cdp
 description: >-
   Drive any Chromium-based browser via the DevTools Protocol from JavaScript.
   Run JS snippets through the `browser-harness-js` CLI — it auto-spawns a
-  long-lived bun HTTP server holding a fully-typed CDP `Session`, and every call
+  long-lived Node HTTP server holding a fully-typed CDP `Session`, and every call
   (`browser-harness-js 'await session.Page.navigate(...)'`) executes against the
   same persistent connection. Session, active target, and globals survive across
   calls. Use when the user wants to automate, script, or inspect a
@@ -42,7 +42,7 @@ mkdir -p ~/.local/bin
 ln -sf <skill-dir>/sdk/browser-harness-js ~/.local/bin/browser-harness-js
 ```
 
-The CLI auto-installs `bun` on first run if it's missing (the server is Bun-native). Set `BROWSER_HARNESS_SKIP_BUN_INSTALL=1` to opt out.
+The CLI requires `node` on PATH (the server is Node-native — TypeScript type stripping is on by default from Node 23.6). It prints a clear error if `node` is missing; no runtime is auto-installed.
 
 ## How to use
 
@@ -291,7 +291,7 @@ grep -n "navigate" <skill-dir>/sdk/generated.ts | head
 When the upstream protocol JSONs change, replace `sdk/browser_protocol.json` and/or `sdk/js_protocol.json` and re-run:
 
 ```bash
-cd <skill-dir>/sdk && bun gen.ts
+cd <skill-dir>/sdk && node gen.ts
 browser-harness-js --restart   # pick up the new bindings
 ```
 
@@ -300,7 +300,7 @@ browser-harness-js --restart   # pick up the new bindings
 All paths are relative to `<skill-dir>` (the install path — see top of this doc).
 
 - `/usr/local/bin/browser-harness-js` → `<skill-dir>/sdk/browser-harness-js` (the CLI)
-- `sdk/repl.ts` — HTTP server (`Bun.serve` on `127.0.0.1:9876`)
+- `sdk/repl.ts` — HTTP server (`node:http` on `127.0.0.1:9876`)
 - `sdk/session.ts` — `Session` class (transport, connect, target routing, events)
 - `sdk/generated.ts` — codegen output: every CDP method as a typed wrapper
 - `sdk/gen.ts` — codegen script

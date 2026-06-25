@@ -15,6 +15,7 @@
 
 import { Session, listPageTargets, resolveWsUrl, detectBrowsers } from './session.ts';
 import * as Generated from './generated.ts';
+import { createServer, type IncomingMessage } from 'node:http';
 
 const session = new Session();
 (globalThis as any).session = session;
@@ -70,49 +71,75 @@ function renderResult(v: unknown): string {
   return JSON.stringify(s);
 }
 
-const server = Bun.serve({
-  port: PORT,
-  hostname: '127.0.0.1',
-  async fetch(req) {
-    const url = new URL(req.url);
+function readBody(req: IncomingMessage): Promise<string> {
+  return new Promise((resolve, reject) => {
+    let data = '';
+    req.setEncoding('utf8');
+    req.on('data', (c: string) => { data += c; });
+    req.on('end', () => resolve(data));
+    req.on('error', reject);
+  });
+}
 
-    if (req.method === 'GET' && url.pathname === '/health') {
-      return Response.json({
-        ok: true,
-        uptime: Math.floor((Date.now() - startedAt) / 1000),
-        connected: session.isConnected(),
-        sessionId: session.getActiveSession() ?? null,
-      });
-    }
+const server = createServer((req, res) => {
+  const url = new URL(req.url ?? '/', `http://${req.headers.host ?? '127.0.0.1'}`);
 
-    if (req.method === 'POST' && url.pathname === '/eval') {
-      const code = await req.text();
+  if (req.method === 'GET' && url.pathname === '/health') {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({
+      ok: true,
+      uptime: Math.floor((Date.now() - startedAt) / 1000),
+      connected: session.isConnected(),
+      sessionId: session.getActiveSession() ?? null,
+    }));
+    return;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/eval') {
+    readBody(req).then(async (code) => {
       if (!code.trim()) {
-        return new Response('empty body\n', { status: 400, headers: TEXT });
+        res.writeHead(400, TEXT);
+        res.end('empty body\n');
+        return;
       }
       try {
         const result = await runSnippet(code);
         const body = renderResult(result);
-        return new Response(body, { status: 200, headers: TEXT });
+        res.writeHead(200, TEXT);
+        res.end(body);
       } catch (e: any) {
         const msg = (e?.stack ?? e?.message ?? String(e)) + '\n';
-        return new Response(msg, { status: 500, headers: TEXT });
+        res.writeHead(500, TEXT);
+        res.end(msg);
       }
-    }
+    }).catch((e) => {
+      if (!res.headersSent) {
+        res.writeHead(500, TEXT);
+        res.end(String(e?.message ?? e) + '\n');
+      }
+    });
+    return;
+  }
 
-    if (req.method === 'POST' && url.pathname === '/quit') {
-      // Delay shutdown so the response flushes over the wire first.
-      setTimeout(() => { server.stop(true); session.close(); process.exit(0); }, 50);
-      return Response.json({ ok: true });
-    }
+  if (req.method === 'POST' && url.pathname === '/quit') {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ ok: true }));
+    // Delay shutdown so the response flushes over the wire first.
+    setTimeout(() => { server.close(); session.close(); process.exit(0); }, 50);
+    return;
+  }
 
-    return new Response('not found', { status: 404 });
-  },
+  res.writeHead(404, TEXT);
+  res.end('not found');
 });
 
-console.log(JSON.stringify({
-  ok: true,
-  ready: true,
-  port: server.port,
-  message: `CDP REPL listening on http://127.0.0.1:${server.port}`,
-}));
+server.listen(PORT, '127.0.0.1', () => {
+  const addr = server.address();
+  const port = typeof addr === 'object' && addr ? addr.port : PORT;
+  console.log(JSON.stringify({
+    ok: true,
+    ready: true,
+    port,
+    message: `CDP REPL listening on http://127.0.0.1:${port}`,
+  }));
+});

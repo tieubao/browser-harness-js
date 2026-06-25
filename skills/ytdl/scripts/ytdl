@@ -162,10 +162,16 @@ try {
       '      return sb;',
       '    }',
       '  });',
-      '  // page-side helpers used by the post-pause pull. __pullBuffer returns a',
-      '  // base64 slice of one buffer; the REPL pulls in SMALL (256KB) slices after',
-      '  // the hook is frozen — a single 4MB returnByValue frame closes the debug',
-      '  // socket on some browsers (proven), so each CDP response stays well under that.',
+      '  // page-side helpers used by the drain + final-tail pull. __drainNew',
+      '  // returns chunks appended since the last call, base64-encoded, for the',
+      '  // during-playback drain so bytes are on disk by latch-time. __pullBuffer',
+      '  // is the absolute-offset slice pull used for the final tail after the hook',
+      '  // is frozen. Both cap each CDP response at a SMALL slice: a single 4MB',
+      '  // returnByValue frame closes the debug socket on some browsers (proven),',
+      '  // so each response stays well under that. __drainNew never emits more than',
+      '  // maxBytes even if a single appended fmp4 segment exceeds it — it slices',
+      '  // a too-big chunk across drains (a 1440p segment is often 1-4MB), so the',
+      '  // old force-one-whole-chunk-through path that dropped the socket is gone.',,
       '  window.__capInfo = function() {',
       '    return window.__cap.buffers.map((b,i) => ({ i: i, kind: b.kind, mime: b.mime, bytes: b.bytes, count: b.count }));',
       '  };',
@@ -185,6 +191,38 @@ try {
       '      b64 += btoa(String.fromCharCode.apply(null, slice.subarray(i2, e2)));',
       '    }',
       '    return b64;',
+      '  };',
+      '  // Incremental drain: return up to maxBytes of the chunks appended since',
+      '  // the last call, advancing a per-buffer (_chunkIdx,_chunkOff) cursor.',
+      '  // A chunk larger than maxBytes is sliced: this call returns its head and',
+      '  // leaves _chunkOff pointing into it for the next call. NEVER emits more than',
+      '  // maxBytes — the crash that dropped the socket was the old force-one-',
+      '  // whole-chunk-through path (emitting a multi-MB frame for a big segment).',
+      '  window.__drainNew = function(i, maxBytes) {',
+      '    maxBytes = maxBytes || 262143;',
+      '    const b = window.__cap.buffers[i];',
+      '    if (!b) return { done: true, b64: "" };',
+      '    if (b._chunkIdx === undefined) { b._chunkIdx = 0; b._chunkOff = 0; }',
+      '    let remaining = maxBytes;',
+      '    const parts = [];',
+      '    while (remaining > 0 && b._chunkIdx < b.chunks.length) {',
+      '      const c = b.chunks[b._chunkIdx];',
+      '      const take = Math.min(remaining, c.length - b._chunkOff);',
+      '      parts.push(b._chunkOff === 0 && take === c.length ? c : c.subarray(b._chunkOff, b._chunkOff + take));',
+      '      b._chunkOff += take; remaining -= take;',
+      '      if (b._chunkOff >= c.length) { b._chunkIdx++; b._chunkOff = 0; }',
+      '    }',
+      '    const done = b._chunkIdx >= b.chunks.length;',
+      '    if (parts.length === 0) return { done: true, b64: "" };',
+      '    let total = 0; for (const p of parts) total += p.length;',
+      '    const u8 = new Uint8Array(total);',
+      '    let o = 0; for (const p of parts) { u8.set(p, o); o += p.length; }',
+      '    let b64 = "";',
+      '    for (let k = 0; k < u8.length; k += 49998) {',
+      '      const e = Math.min(k + 49998, u8.length);',
+      '      b64 += btoa(String.fromCharCode.apply(null, u8.subarray(k, e)));',
+      '    }',
+      '    return { done: done, b64: b64, bytes: total };',
       '  };',
       '})();'
     ].join('\\n')
@@ -231,6 +269,17 @@ try {
     return JSON.stringify({ ok: true, info: true, title: m.title, duration: m.dur, qualities: m.qualities })
   }
 
+  // Disable YouTube autonav BEFORE play so the player can never autoplay into
+  // the next video. The toggle is .ytp-autonav-toggle; its state is in
+  // aria-label/data-tooltip-title ("Autoplay is on" vs "... off"). Best-effort:
+  // a missing or already-off toggle is a no-op. This is the real fix for the
+  // background-tab case — even if the tab is throttled and the coverage poll
+  // never latches, there is no next-video autoplay to run away to.
+  await cdp(sessionId, 'Runtime.evaluate', {
+    expression: '(() => { const b = document.querySelector(".ytp-autonav-toggle"); if (!b) return "no-toggle"; const lbl = (b.getAttribute("aria-label") || b.getAttribute("data-tooltip-title") || ""); if (/off/i.test(lbl)) return "already-off"; b.click(); return "clicked"; })()',
+    returnByValue: true
+  })
+
   // Force the requested quality (best-effort — SABR may ignore it) and play
   // muted at 16x so the player fetches+appends every segment fast. The model
   // is just "view it, sped up"; capture happens in the MSE hook as it plays.
@@ -253,6 +302,61 @@ try {
   let last = -1
   const deadline = Date.now() + Math.max(60_000, dur * 1000 / 12 + 60_000)
   let done = false
+  let tick = 0
+
+  // --- Streaming drain helpers ---
+  // drainFiles: buffer index -> { path, bytes, kind, ext }. One temp file per
+  // captured SourceBuffer, appended as the hook records DURING playback. By
+  // latch-time nearly all the media is already on disk, so the post-pause pull
+  // is just the tail and the tab closes immediately at the latch signal — the
+  // bytes live in page memory and the tab can't close until they're off, which
+  // is why pulling everything after pause kept the tab open ~30s.
+  // SLICE is SMALL: a single 4MB returnByValue frame closes the debug socket on
+  // some browsers (proven on Dia), so each CDP response stays well under that.
+  // (Divisible by 3 so each base64 slice is independently decodable.)
+  const SLICE = 262143  // 256KB - 1, divisible by 3
+  const extOf = (mime) => mime.includes('webm') ? 'webm' : 'fmp4'
+  const drainFiles = new Map()
+  // drainOne: pull every new byte of buffer i to its file since the last call.
+  // __drainNew never emits more than SLICE even for a multi-MB fmp4 segment
+  // (it slices a too-big chunk across drains), so this loop is socket-safe.
+  const drainOne = async (i) => {
+    for (;;) {
+      const r = await cdp(sessionId, 'Runtime.evaluate', {
+        expression: 'window.__drainNew(' + i + ',' + SLICE + ')',
+        returnByValue: true
+      })
+      const s = r.result.value
+      if (!s) return
+      // __drainNew returns done:true WITH a non-empty b64 for the final slice
+      // (it sets done when the cursor reaches the end on the same call that
+      // yields the last bytes). Append BEFORE testing done, or that last slice
+      // is silently dropped and the muxed file ends up truncated/corrupt.
+      if (s.b64) {
+        const chunk = Buffer.from(s.b64, 'base64')
+        fs.appendFileSync(drainFiles.get(i).path, chunk)
+        drainFiles.get(i).bytes += chunk.length
+      }
+      if (s.done) return
+    }
+  }
+  // drainTick: discover all current buffers, open a file for each new one, and
+  // drain them. Audio-only skips the (large) video stream.
+  const drainTick = async () => {
+    const infoR = await cdp(sessionId, 'Runtime.evaluate', { expression: 'JSON.stringify(window.__capInfo())', returnByValue: true })
+    const buffers = JSON.parse(infoR.result.value)
+    for (const b of buffers) {
+      if (b.kind !== 'video' && b.kind !== 'audio') continue
+      if (KEEP === 'audio' && b.kind === 'video') continue
+      if (!drainFiles.has(b.i)) {
+        const path = TMPDIR + '/' + b.kind + b.i + '.' + extOf(b.mime)
+        fs.writeFileSync(path, Buffer.alloc(0))
+        drainFiles.set(b.i, { i: b.i, path: path, bytes: 0, kind: b.kind, ext: extOf(b.mime) })
+      }
+      await drainOne(b.i)
+    }
+  }
+  // --- end drain helpers ---
 
   for (;;) {
     if (Date.now() > deadline) { vlog('coverage timeout'); break }
@@ -263,6 +367,11 @@ try {
     const s = JSON.parse(r.result.value)
     if (VERBOSE && Math.floor(s.t) !== Math.floor(last)) { last = Math.floor(s.t); vlog('t=' + s.t.toFixed(0) + '/' + dur.toFixed(0) + 's buffered=' + s.end.toFixed(0) + 's') }
     if (s.end >= dur - 0.5 || s.ended) { done = true; break }
+    // Streaming drain during playback: flush whatever the hook has recorded so
+    // far to disk. Runs ~every 1s (every 4th 250ms tick). By latch-time nearly
+    // all the capture is on disk, so the post-pause pull is just the tail and
+    // the tab closes immediately. __drainNew caps each CDP response at 256KB.
+    if (++tick % 4 === 0) { try { await drainTick() } catch (e) { vlog('drain tick err: ' + (e?.message || e)) } }
     await new Promise(r => setTimeout(r, 250))
   }
 
@@ -277,50 +386,31 @@ try {
   vlog('captured ' + buffers.length + ' source buffer(s): ' + JSON.stringify(buffers.map(b => b.kind + ':' + b.bytes)))
 
   // The player can create more than one MediaSource (quality-switch re-init,
-  // mini-player, etc.), so there may be several video/audio buffers. Pick the
-  // LARGEST of each kind — that is the real full capture; the small ones are
-  // init-segment duplicates. Robust regardless of how many buffers exist.
+  // mini-player, etc.), so there may be several video/audio drained files. Pick
+  // the LARGEST of each kind — that is the real full capture; the small
+  // init-segment duplicates get unlinked.
   let pv = null, pa = null
-  for (const b of buffers) {
-    if (b.kind === 'video' && (!pv || b.bytes > pv.bytes)) pv = b
-    if (b.kind === 'audio' && (!pa || b.bytes > pa.bytes)) pa = b
+  for (const f of drainFiles.values()) {
+    if (f.kind === 'video' && (!pv || f.bytes > pv.bytes)) pv = f
+    if (f.kind === 'audio' && (!pa || f.bytes > pa.bytes)) pa = f
   }
-  const extOf = (mime) => mime.includes('webm') ? 'webm' : 'fmp4'
+  for (const f of drainFiles.values()) {
+    if (f !== pv && f !== pa) { try { fs.unlinkSync(f.path) } catch {} }
+  }
 
-  // Pull the chosen buffer(s) to disk AFTER pause in SMALL (256KB, 3-aligned)
-  // base64 slices -> append. __capDone is set so no further appends arrive;
-  // the hook is frozen, this is a one-shot pull. SLICE stays small: a single
-  // 4MB returnByValue frame closes the debug socket on some browsers (proven
-  // on Dia), so each CDP response is well under that. (Divisible by 3 so each
-  // base64 slice is independently decodable.)
-  const SLICE = 262143  // 256KB - 1, divisible by 3
-  const pullOne = async (b, kind) => {
-    if (!b) return null
-    const path = TMPDIR + '/' + kind + '.' + extOf(b.mime)
-    fs.writeFileSync(path, Buffer.alloc(0))
-    let off = 0
-    while (off < b.bytes) {
-      const r = await cdp(sessionId, 'Runtime.evaluate', {
-        expression: 'window.__pullBuffer(' + b.i + ',' + off + ',' + SLICE + ')',
-        returnByValue: true
-      })
-      const b64 = r.result.value
-      if (!b64) break
-      const chunk = Buffer.from(b64, 'base64')
-      fs.appendFileSync(path, chunk)
-      off += chunk.length
-      if (off >= b.bytes) break
-    }
-    vlog('wrote ' + kind + ' ' + off + ' bytes -> ' + path)
-    return { bytes: off, path: path, ext: extOf(b.mime) }
-  }
+  // Final tail drain: __capDone is set, so no further appends can arrive — one
+  // pass per chosen buffer pulls only what arrived since the last in-loop drain.
+  // By now nearly all the capture is already on disk, so this is fast and the
+  // tab closes right after the snippet returns.
+  const drainTail = async (f) => { if (f) { try { await drainOne(f.i) } catch (e) { vlog('tail drain err: ' + (e?.message || e)) } } }
+  await drainTail(pv); await drainTail(pa)
 
   const primary = {}
   if (KEEP === 'audio') {
-    primary.audio = await pullOne(pa, 'audio')
+    primary.audio = pa ? { path: pa.path, ext: pa.ext, bytes: pa.bytes } : null
   } else {
-    primary.video = await pullOne(pv, 'video')
-    primary.audio = await pullOne(pa, 'audio')
+    primary.video = pv ? { path: pv.path, ext: pv.ext, bytes: pv.bytes } : null
+    primary.audio = pa ? { path: pa.path, ext: pa.ext, bytes: pa.bytes } : null
   }
 
   // Best-effort read of the actual played quality.

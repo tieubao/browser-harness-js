@@ -244,7 +244,9 @@ try {
   // latch done. We break the FIRST time buffered.end >= dur-0.5 and never
   // re-check — so autoplay advancing to the next video (and resetting
   // currentTime) doesn't matter: we've already stopped. A deadline guards a
-  // stalled stream.
+  // stalled stream. Each tick re-asserts muted + 16x: the player can clobber
+  // them on a quality switch, ad, or player re-init, which would un-mute the
+  // 16x chipmunk audio mid-capture.
   const dur = m.dur
   let last = -1
   const deadline = Date.now() + Math.max(60_000, dur * 1000 / 12 + 60_000)
@@ -252,7 +254,7 @@ try {
   for (;;) {
     if (Date.now() > deadline) { vlog('coverage timeout'); break }
     const r = await cdp(sessionId, 'Runtime.evaluate', {
-      expression: '(() => { const v = document.querySelector("video"); return JSON.stringify({ t: v ? v.currentTime : 0, end: v && v.buffered.length ? v.buffered.end(v.buffered.length-1) : 0, ended: v ? v.ended : false }); })()',
+      expression: '(() => { const v = document.querySelector("video"); if (v) { v.muted = true; v.playbackRate = 16; } return JSON.stringify({ t: v ? v.currentTime : 0, end: v && v.buffered.length ? v.buffered.end(v.buffered.length-1) : 0, ended: v ? v.ended : false }); })()',
       returnByValue: true
     })
     const s = JSON.parse(r.result.value)
@@ -386,9 +388,9 @@ if [ -n "$video_path" ] && [ -n "$audio_path" ]; then
   ext="mp4"; [ "$video_ext" = "webm" ] && ext="webm"
   final="$dir/${out}.${ext}"
   if [ "$ext" = "webm" ]; then
-    ffmpeg -hide_banner -loglevel error -i "$video_path" -i "$audio_path" -c copy "$final"
+    ffmpeg -hide_banner -y -loglevel error -i "$video_path" -i "$audio_path" -c copy "$final"
   else
-    ffmpeg -hide_banner -loglevel error -i "$video_path" -i "$audio_path" -c copy -movflags +faststart "$final"
+    ffmpeg -hide_banner -y -loglevel error -i "$video_path" -i "$audio_path" -c copy -movflags +faststart "$final"
   fi
 elif [ -n "$video_path" ]; then
   ext="mp4"; [ "$video_ext" = "webm" ] && ext="webm"

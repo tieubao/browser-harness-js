@@ -67,7 +67,9 @@ it in the browser, ytdl can record it.
 
 ffmpeg is a **muxer only** here — the player delivers video and audio as
 separate ISO-BMFF (fragmented-MP4) streams, so they need combining into one
-file. It never re-encodes (`-c copy`).
+file. It never re-encodes (`-c copy`); the output stays pure (lossless) at
+YouTube's own codecs. If you need a QuickTime/iOS-friendly file, re-encode the
+output yourself in one step — see Traps.
 
 ## How it works
 
@@ -96,7 +98,9 @@ All inside one `browser-harness-js <<EOF` heredoc, gsearch-style:
    re-check, so autoplay advancing to the next video doesn't matter — we've
    already stopped. A `__capDone` flag makes the hook pass appends through (stop
    recording) the instant coverage completes, so nothing after this enters the
-   captured buffers.
+   captured buffers. The same poll **re-asserts `muted` + `playbackRate=16` each
+   tick** — the player can clobber them on a quality switch, ad, or re-init,
+   which would un-mute the 16× audio mid-capture.
 6. **Pick the largest video + largest audio buffer** (the player can create
    more than one MediaSource on a quality switch), then pull each to disk in
    4 MB (byte-count divisible by 3, so each base64 slice is independently
@@ -143,5 +147,7 @@ All paths relative to `<skill-dir>`.
 - **`--info` opens the watch page** (one page load) to read title/duration/qualities — it's not free, but it's a normal watch-page hit, not a probe storm.
 - **Bytes cross the CDP boundary as base64** in 4 MB (3-aligned) slices via `Runtime.evaluate` `returnByValue`, decoded with `Buffer.from(b64,'base64')` and appended. The slice size is divisible by 3 so each slice's base64 is independently decodable (no interior `=` padding). Don't slice at a non-multiple-of-3 offset or the concatenation decodes to garbage.
 - **Output container follows the video mime.** `video/mp4` → `.mp4`; `video/webm` → `.webm`. ffmpeg is invoked with `-c copy`, so a webm video is muxed to `.webm`. If codecs mismatch the container, ffmpeg copy will fail — that's a codec/container issue, not a capture issue.
-- **Gated content needs a logged-in tab.** ytdl opens its own tab but shares the browser session. If a video is unplayable in your browser (sign-in wall, members-only), ytdl can't record it either — by design.
+- **The pure output isn't QuickTime/iOS-friendly.** YouTube typically serves AV1 video + Opus audio; `-c copy` preserves those (VLC/browsers play them fine), but QuickTime / AVFoundation / iOS refuse them (no AV1-in-MP4 decoder, no Opus-at-all). The skill stays pure on purpose — lossless stream-copy, no size/quality penalty (a re-encode quadrupled the size and is lossy in testing). If you need QuickTime/iOS, re-encode the output yourself in one step: `ffmpeg -y -i "out.mp4" -c:v libx264 -crf 18 -preset veryfast -pix_fmt yuv420p -c:a aac -b:a 192k "out-qt.mp4"`.
+- **Re-assert `muted` + `playbackRate` every poll tick.** YouTube's player resets `muted`/`playbackRate` on a quality switch, ad, or player re-init; a one-shot set at play-start gets clobbered and you'll hear the 16× chipmunk audio. The coverage poll re-asserts both each 250 ms — keep that if you touch the loop.
+- **ffmpeg runs with `-y` (overwrite).** Re-running the same video overwrites the prior output instead of hitting ffmpeg's interactive `Overwrite? [y/N]` prompt, which fails non-interactively and silently leaves a stale file. Don't drop `-y`.
 - **Live / Premiere uses HLS**, not MediaSource segments — not supported by this skill.

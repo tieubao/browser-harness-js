@@ -89,15 +89,14 @@ All inside one `browser-harness-js <<EOF` heredoc, gsearch-style:
 4. **Force quality** (`player.setPlaybackQualityRange(q,q)`, best-effort) and
    **play muted at 16×** so the player fetches+appends every segment fast. The
    player's own SABR client requests the whole timeline as it plays through.
-   Autonav is disabled (`player.setAutonavState(0)`, best-effort) so the player
-   stops at the end instead of auto-advancing to the next video.
-5. **Drive coverage** — poll `buffered.end` / `currentTime` until the whole
-   timeline is buffered, then **freeze capture + pause atomically** in one
-   page-side call. This is the anti-autoplay guard (see Traps): the loop breaks
-   the FIRST time `buffered.end >= duration-0.5` OR `currentTime` jumps
-   backward (the autoplay-reset signal). A `__capDone` flag makes the hook pass
-   appends through (stop recording) the instant coverage completes, so the next
-   video's segments never enter the captured buffers.
+   This is the whole model: view the video, sped up.
+5. **Wait until the whole timeline is buffered** (`buffered.end >= duration-0.5`;
+   the player buffers ahead), then **freeze capture + pause atomically** in one
+   page-side call. We break the FIRST time the timeline is full and never
+   re-check, so autoplay advancing to the next video doesn't matter — we've
+   already stopped. A `__capDone` flag makes the hook pass appends through (stop
+   recording) the instant coverage completes, so nothing after this enters the
+   captured buffers.
 6. **Pick the largest video + largest audio buffer** (the player can create
    more than one MediaSource on a quality switch), then pull each to disk in
    4 MB (byte-count divisible by 3, so each base64 slice is independently
@@ -138,7 +137,7 @@ All paths relative to `<skill-dir>`.
 - **Patch `appendBuffer` as an OWN property on each `SourceBuffer` instance, never on the prototype.** `SourceBuffer.prototype.appendBuffer` is a non-writable native method — `sb.appendBuffer = fn` on the prototype silently no-ops; `Object.defineProperty(SourceBuffer.prototype, 'appendBuffer', …)` fails to take effect. Defining an own property on the instance shadows the prototype method correctly. (`addSourceBuffer` *can* be patched on the prototype via `defineProperty` — it's writable.)
 - **Use a foreground tab.** Background-tab autoplay is unreliable; if the player doesn't start, MediaSource is never fed and capture is empty. `createTarget({ url: 'about:blank' })` (no `background: true`).
 - **Coverage is driven by playback, not by range requests.** The player only appends segments it plays, so ytdl plays through at 16× and waits for the whole timeline to be buffered (`buffered.end >= duration-0.5`). Don't try to harvest a URL and range-fetch — see "Why capture at MediaSource." For very long videos this is bounded by real-time/16; a 1h video takes ~4 min of 16× playback.
-- **YouTube autoplays into the next video on end — the coverage loop must not require the end-state to persist.** Autoplay resets `currentTime` to ~0 (the next video's timeline), so a naive "wait until `currentTime ≈ duration`" check goes false again and the loop spins until the watchdog. ytdl breaks the FIRST time the timeline is fully buffered OR `currentTime` jumps backward (the autoplay-reset signal), disables autonav up front (`setAutonavState(0)`, best-effort), and sets a `__capDone` flag the hook honors so the next video's segments are never recorded. If you touch the coverage loop, keep the backward-jump guard.
+- **The coverage loop must latch, not re-check.** We break the FIRST time the timeline is fully buffered and never re-evaluate — so YouTube autoplaying into the next video (which resets `currentTime`) doesn't matter: capture is already frozen. Don't rewrite the loop to poll `currentTime ≈ duration` every tick; autoplay will reset `currentTime` to ~0 and the check goes false again, spinning until a watchdog. The `__capDone` freeze-on-latch keeps the next video's segments out of the buffers.
 - **A fragmented-webm capture may log `[matroska,webm] File ended prematurely` from ffmpeg — it's benign.** MSE-captured opus/vp9 segments end mid-EBML-element (there's no graceful close on a live capture). ffmpeg still muxes the full duration correctly (decode-tested, exit 0); the warning is about the input container's framing, not missing data. mp4-captured (AV1/H264) buffers don't hit this.
 - **Quality forcing is best-effort.** `player.setPlaybackQualityRange(q,q)` is honored on most content, but SABR manages bitrate server-side and may ignore it. `--info` shows `getAvailableQualityLevels()`; the returned JSON includes `actualQuality` so you can see what was really played. If the forced quality wasn't honored, the capture is whatever the player chose.
 - **`--info` opens the watch page** (one page load) to read title/duration/qualities — it's not free, but it's a normal watch-page hit, not a probe storm.

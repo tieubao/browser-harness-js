@@ -232,42 +232,38 @@ try {
     return JSON.stringify({ ok: true, info: true, title: m.title, duration: m.dur, qualities: m.qualities })
   }
 
-  // Force the requested quality (best-effort — SABR may ignore it), disable
-  // autonav so the player stops at the end instead of advancing to the next
-  // video, and start playback muted at 16x so the player fetches+appends every
-  // segment fast.
+  // Force the requested quality (best-effort — SABR may ignore it) and play
+  // muted at 16x so the player fetches+appends every segment fast. The model
+  // is just "view it, sped up"; capture happens in the MSE hook as it plays.
   await cdp(sessionId, 'Runtime.evaluate', {
-    expression: '(() => { const p = document.querySelector("#movie_player"); const v = document.querySelector("video"); try { if (p && p.setPlaybackQualityRange) p.setPlaybackQualityRange("' + YTQ + '","' + YTQ + '"); if (p && p.setPlaybackQuality) p.setPlaybackQuality("' + YTQ + '"); } catch(e){} try { if (p && p.setAutonavState) p.setAutonavState(0); } catch(e){} v.muted = true; try { v.playbackRate = 16; } catch(e){} v.play().catch(()=>{}); return "playing"; })()',
+    expression: '(() => { const p = document.querySelector("#movie_player"); const v = document.querySelector("video"); try { if (p && p.setPlaybackQualityRange) p.setPlaybackQualityRange("' + YTQ + '","' + YTQ + '"); if (p && p.setPlaybackQuality) p.setPlaybackQuality("' + YTQ + '"); } catch(e){} v.muted = true; v.playbackRate = 16; v.play().catch(()=>{}); return "playing"; })()',
     returnByValue: true
   })
 
-  // Drive coverage. Break the FIRST time the player reaches the end — do NOT
-  // require it to stay there, because YouTube autoplays into the next video on
-  // end and resets currentTime (which would make a "t near dur" check false
-  // again and the loop would spin until the watchdog). A backward jump in
-  // currentTime IS the autoplay signal; treat it as "target done, freeze now."
-  // Breaking on buffered.end>=dur-0.5 fires as soon as the whole timeline is
-  // appended (the player buffers ahead), even before playback finishes.
+  // Wait until the whole timeline is buffered (the player buffers ahead), then
+  // latch done. We break the FIRST time buffered.end >= dur-0.5 and never
+  // re-check — so autoplay advancing to the next video (and resetting
+  // currentTime) doesn't matter: we've already stopped. A deadline guards a
+  // stalled stream.
   const dur = m.dur
-  let last_t = -1
+  let last = -1
   const deadline = Date.now() + Math.max(60_000, dur * 1000 / 12 + 60_000)
   let done = false
   for (;;) {
     if (Date.now() > deadline) { vlog('coverage timeout'); break }
     const r = await cdp(sessionId, 'Runtime.evaluate', {
-      expression: '(() => { const v = document.querySelector("video"); const b = v && v.buffered.length ? v.buffered.end(v.buffered.length-1) : 0; return JSON.stringify({ t: v ? v.currentTime : 0, end: b, ended: v ? v.ended : false, rate: v ? v.playbackRate : 0 }); })()',
+      expression: '(() => { const v = document.querySelector("video"); return JSON.stringify({ t: v ? v.currentTime : 0, end: v && v.buffered.length ? v.buffered.end(v.buffered.length-1) : 0, ended: v ? v.ended : false }); })()',
       returnByValue: true
     })
     const s = JSON.parse(r.result.value)
-    if (VERBOSE && Math.floor(s.t) !== Math.floor(last_t)) { vlog('t=' + s.t.toFixed(0) + '/' + dur.toFixed(0) + 's buffered=' + s.end.toFixed(0) + 's rate=' + s.rate) }
-    if (s.end >= dur - 0.5 || s.ended || (last_t >= 0 && s.t < last_t - 1)) { done = true; break }
-    last_t = s.t
+    if (VERBOSE && Math.floor(s.t) !== Math.floor(last)) { last = Math.floor(s.t); vlog('t=' + s.t.toFixed(0) + '/' + dur.toFixed(0) + 's buffered=' + s.end.toFixed(0) + 's') }
+    if (s.end >= dur - 0.5 || s.ended) { done = true; break }
     await new Promise(r => setTimeout(r, 250))
   }
 
-  // Freeze capture + pause in ONE atomic page-side call. The hook passes
-  // through (no recording) once __capDone is set, so autoplay can't sneak the
-  // next video's segments into our buffers between detect and pause.
+  // Freeze capture + pause atomically. __capDone makes the hook pass appends
+  // through (stop recording), so nothing the player does after this enters the
+  // buffers — autoplay included.
   await cdp(sessionId, 'Runtime.evaluate', { expression: '(() => { window.__capDone = true; const v = document.querySelector("video"); if (v) v.pause(); return "frozen"; })()', returnByValue: true })
   vlog('coverage ' + (done ? 'complete' : 'timed out'))
 

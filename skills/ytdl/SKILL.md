@@ -101,11 +101,16 @@ All inside one `browser-harness-js <<EOF` heredoc, gsearch-style:
    captured buffers. The same poll **re-asserts `muted` + `playbackRate=16` each
    tick** — the player can clobber them on a quality switch, ad, or re-init,
    which would un-mute the 16× audio mid-capture.
-6. **Pick the largest video + largest audio buffer** (the player can create
-   more than one MediaSource on a quality switch), then pull each to disk in
-   4 MB (byte-count divisible by 3, so each base64 slice is independently
-   decodable) chunks: page-side `__pullBuffer(i,offset,len)` returns base64;
-   the REPL decodes with `Buffer.from(b64,'base64')` and `fs.appendFileSync`s it.
+6. **Drain captured buffers to disk DURING playback** (interleaved with the
+   coverage poll, ~every 1 s). Page-side `__drainNew(i,maxBytes)` returns the
+   chunks appended since the last call (advancing a per-buffer `_drainedTo`
+   cursor), base64-encoded; the REPL decodes with `Buffer.from(b64,'base64')`
+   and `fs.appendFileSync`s each slice to a per-buffer temp file. By latch-time
+   nearly all the media is already on disk, so the post-pause pass pulls only
+   the tail and the tab closes right after. **Pick the largest drained video +
+   largest audio file** (the player can create more than one MediaSource on a
+   quality switch; the small init-segment duplicates get unlinked) and hand
+   their paths to ffmpeg.
 7. **ffmpeg** `-i video -i audio -c copy -movflags +faststart out.mp4` (bash,
    after the heredoc returns the temp-file paths).
 8. **`closeTab`** in `try/finally`, fire-and-forget — exact gsearch/xsearch
@@ -145,7 +150,9 @@ All paths relative to `<skill-dir>`.
 - **A fragmented-webm capture may log `[matroska,webm] File ended prematurely` from ffmpeg — it's benign.** MSE-captured opus/vp9 segments end mid-EBML-element (there's no graceful close on a live capture). ffmpeg still muxes the full duration correctly (decode-tested, exit 0); the warning is about the input container's framing, not missing data. mp4-captured (AV1/H264) buffers don't hit this.
 - **Quality forcing is best-effort.** `player.setPlaybackQualityRange(q,q)` is honored on most content, but SABR manages bitrate server-side and may ignore it. `--info` shows `getAvailableQualityLevels()`; the returned JSON includes `actualQuality` so you can see what was really played. If the forced quality wasn't honored, the capture is whatever the player chose.
 - **`--info` opens the watch page** (one page load) to read title/duration/qualities — it's not free, but it's a normal watch-page hit, not a probe storm.
-- **Bytes cross the CDP boundary as base64** in 4 MB (3-aligned) slices via `Runtime.evaluate` `returnByValue`, decoded with `Buffer.from(b64,'base64')` and appended. The slice size is divisible by 3 so each slice's base64 is independently decodable (no interior `=` padding). Don't slice at a non-multiple-of-3 offset or the concatenation decodes to garbage.
+- **Bytes cross the CDP boundary as base64** in **256 KB** (3-aligned) slices via `Runtime.evaluate` `returnByValue`, decoded with `Buffer.from(b64,'base64')` and appended. The slice size is divisible by 3 so each slice's base64 is independently decodable (no interior `=` padding). Don't slice at a non-multiple-of-3 offset or the concatenation decodes to garbage.
+- **Drain captured buffers to disk DURING playback, not after, and keep each CDP response SMALL.** `__drainNew(i,maxBytes)` is called on a ~1 s cadence inside the coverage loop — a page-side `_drainedTo` cursor tracks "chunks already flushed," so each call returns only what was appended since the last, base64-encoded, and the REPL appends to a per-buffer temp file. By latch-time nearly all the media is on disk; the post-pause pass pulls only the tail, so the tab closes immediately after the video finishes (closeTab is fire-and-forget in `finally`, so it can't fire until the snippet returns — draining during the loop keeps that return fast). Doing the whole pull *after* pausing blocks the return and left the tab open for the entire multi-MB drain — this was the "tab stays open ~30 s after the video stops" symptom.
+- **Never send a 4 MB `returnByValue` frame.** A single 4 MB base64 response (~5.6 MB JSON in one CDP frame) **closes the debug WebSocket** on some browsers (reproduced on Dia: the socket drops `rs→3` on the very first 4 MB slice, while a 256 KB slice survives). This masqueraded as a "capture stops before the video finishes" failure because the post-pause pull — which used 4 MB slices — killed the socket immediately. The slice size is now **256 KB** (`262143`, 3-aligned); keep it small. `__pullBuffer` (the original full-buffer slice pull) is retained for any future single-shot tail pull but is no longer on the hot path.
 - **Output container follows the video mime.** `video/mp4` → `.mp4`; `video/webm` → `.webm`. ffmpeg is invoked with `-c copy`, so a webm video is muxed to `.webm`. If codecs mismatch the container, ffmpeg copy will fail — that's a codec/container issue, not a capture issue.
 - **The pure output isn't QuickTime/iOS-friendly.** YouTube typically serves AV1 video + Opus audio; `-c copy` preserves those (VLC/browsers play them fine), but QuickTime / AVFoundation / iOS refuse them (no AV1-in-MP4 decoder, no Opus-at-all). The skill stays pure on purpose — lossless stream-copy, no size/quality penalty (a re-encode quadrupled the size and is lossy in testing). If you need QuickTime/iOS, re-encode the output yourself in one step: `ffmpeg -y -i "out.mp4" -c:v libx264 -crf 18 -preset veryfast -pix_fmt yuv420p -c:a aac -b:a 192k "out-qt.mp4"`.
 - **Re-assert `muted` + `playbackRate` every poll tick.** YouTube's player resets `muted`/`playbackRate` on a quality switch, ad, or player re-init; a one-shot set at play-start gets clobbered and you'll hear the 16× chipmunk audio. The coverage poll re-asserts both each 250 ms — keep that if you touch the loop.

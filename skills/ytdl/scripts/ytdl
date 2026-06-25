@@ -235,8 +235,11 @@ try {
   // Force the requested quality (best-effort — SABR may ignore it) and play
   // muted at 16x so the player fetches+appends every segment fast. The model
   // is just "view it, sped up"; capture happens in the MSE hook as it plays.
+  // Reset currentTime to 0: a signed-in account resumes from the last watch
+  // position ("resume from where you left off") even on a bare watch?v=ID URL
+  // with no t= — without this the capture only covers from the resume point on.
   await cdp(sessionId, 'Runtime.evaluate', {
-    expression: '(() => { const p = document.querySelector("#movie_player"); const v = document.querySelector("video"); try { if (p && p.setPlaybackQualityRange) p.setPlaybackQualityRange("' + YTQ + '","' + YTQ + '"); if (p && p.setPlaybackQuality) p.setPlaybackQuality("' + YTQ + '"); } catch(e){} v.muted = true; v.playbackRate = 16; v.play().catch(()=>{}); return "playing"; })()',
+    expression: '(() => { const p = document.querySelector("#movie_player"); const v = document.querySelector("video"); try { if (p && p.setPlaybackQualityRange) p.setPlaybackQualityRange("' + YTQ + '","' + YTQ + '"); if (p && p.setPlaybackQuality) p.setPlaybackQuality("' + YTQ + '"); } catch(e){} try { v.currentTime = 0; } catch(e){} v.muted = true; v.playbackRate = 16; v.play().catch(()=>{}); return "playing"; })()',
     returnByValue: true
   })
 

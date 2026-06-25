@@ -30,30 +30,20 @@ mkdir -p "$target_dir"
 ln -sf "$cli" "$target_dir/ytdl"
 echo "Linked: $target_dir/ytdl"
 
-# ytdl runs on bun (the CLI is a bun-shebang script). Bun is already required by
-# the cdp skill's REPL, but ensure it's discoverable for a standalone install.
-if ! command -v bun >/dev/null 2>&1; then
-  if [ -x "$HOME/.bun/bin/bun" ]; then
-    ln -sf "$HOME/.bun/bin/bun" "$target_dir/bun"
-    echo "Linked: $target_dir/bun"
-  else
-    echo "Warning: bun not found. The cdp skill installs it (run its setup), or:" >&2
-    echo "  curl -fsSL https://bun.sh/install | bash" >&2
-  fi
-fi
-
-# ytdl can optionally read cookies/STS from a live YouTube tab via browser-harness-js.
-# Symlink it if the cdp skill is installed and it isn't already on PATH.
+# ytdl is a browser-harness-js heredoc (no bun program). Symlink
+# browser-harness-js if the cdp skill is installed and it isn't on PATH.
 if ! command -v browser-harness-js >/dev/null 2>&1; then
   bhjs="$skill_dir/../cdp/sdk/browser-harness-js"
   if [ -f "$bhjs" ]; then
     ln -sf "$bhjs" "$target_dir/browser-harness-js"
-    echo "Linked: $target_dir/browser-harness-js (optional; for gated content)"
+    echo "Linked: $target_dir/browser-harness-js (required)"
+  else
+    echo "Warning: browser-harness-js not found. Install the cdp skill, or run its setup." >&2
   fi
 fi
 
-# HD (720p+) needs ffmpeg for the video+audio mux.
+# ytdl muxes video+audio into MP4 with ffmpeg -c copy (muxer only, no re-encode).
 if ! command -v ffmpeg >/dev/null 2>&1; then
-  echo "Warning: ffmpeg not found. Required for 720p+ (HD) downloads; 360p muxed works without it." >&2
+  echo "Warning: ffmpeg not found. Required to mux video+audio into MP4." >&2
   echo "  brew install ffmpeg   (or your platform's equivalent)" >&2
 fi

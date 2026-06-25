@@ -1,84 +1,380 @@
-#!/usr/bin/env bun
-/**
- * ytdl — self-contained YouTube downloader CLI.
- *
- *   ytdl <url|id>                          # download best quality to ~/Downloads
- *   ytdl <url|id> -q 360p                  # 360p muxed (no ffmpeg needed)
- *   ytdl <url|id> -q 1080p                 # 1080p adaptive (video+audio, ffmpeg mux)
- *   ytdl <url|id> -q audio                 # audio only
- *   ytdl <url|id> -q best -o My_Video.mp4  # custom name
- *   ytdl <url|id> --info                   # print formats, don't download
- *   ytdl <url|id> --formats                # one itag per line
- *   ytdl <url|id> --client web_embedded    # force the gated-content client
- *   ytdl <url|id> -v                       # verbose progress to stderr
- *
- * Engine is Bun (HTTP + n-signature solver + multi-connection download). If the
- * `browser-harness-js` CLI is on PATH and a YouTube tab is connected, ytdl reads
- * the authed cookie jar + signature timestamp from it to crack made-for-kids /
- * age-gated / members-only content. Without a browser, public videos still work
- * via the unauthed `android_vr` client.
- *
- * HD (720p+) needs `ffmpeg` on PATH for the video+audio mux. 360p muxed does not.
- */
-import { info, download, formats, getVideoId, type YtdlOpts } from '../lib/ytdl.ts';
+#!/usr/bin/env bash
+set -euo pipefail
 
-const args = process.argv.slice(2);
+# ytdl — browser-native YouTube downloader.
+#
+#   ytdl <url|id>                          # best quality → ~/Downloads
+#   ytdl <url|id> -q 360p                  # 360p
+#   ytdl <url|id> -q 1080p                 # 1080p (ffmpeg mux)
+#   ytdl <url|id> -q audio                 # audio only
+#   ytdl <url|id> --info                   # title / duration / qualities, no download
+#   ytdl <url|id> -o Name -d ~/Videos      # custom name / dir
+#   ytdl <url|id> -v                       # stats to stderr
+#
+# 100% browser-harness-js native: the browser plays the video (auth, poToken,
+# n-solving, SABR demux all done by the page), and ytdl records what the player
+# feeds MediaSource via a SourceBuffer.appendBuffer hook. No yt-dlp, no client
+# impersonation, no n-signature solver. ffmpeg is a muxer only (HD video+audio).
 
-function usage(): never {
-  process.stderr.write(`\
+# Auto-fix: if browser-harness-js isn't on PATH, try to find and symlink it.
+if ! command -v browser-harness-js >/dev/null 2>&1; then
+  _bhjs="$(cd "$(dirname "$0")/.." && pwd)/../cdp/sdk/browser-harness-js"
+  if [ -f "$_bhjs" ]; then
+    _bindir="$HOME/.local/bin"
+    mkdir -p "$_bindir"
+    ln -sf "$_bhjs" "$_bindir/browser-harness-js"
+    export PATH="$_bindir:$PATH"
+  else
+    echo "ytdl: browser-harness-js not found. Run: bash <skill-dir>/scripts/setup" >&2
+    exit 1
+  fi
+fi
+
+usage() {
+  cat >&2 <<'USAGE'
 Usage: ytdl <url|id> [options]
-  -q, --quality <q>   360p | 720p | 1080p | best | audio   (default: best)
+  -q, --quality <q>   360p|480p|720p|1080p|1440p|2160p|best|audio  (default: best)
   -o, --out <name>    output filename (without extension)
   -d, --dir <path>    output directory (default: ~/Downloads)
-  -c, --client <c>    android_vr | web_embedded             (default: auto)
-  --formats           list available itags, don't download
-  --info              print video info + formats as JSON, don't download
-  --embed-url <url>   embedder for web_embedded             (default: https://www.reddit.com/)
-  -v, --verbose       progress to stderr
-  -h, --help          this message
-`);
-  process.exit(1);
+  --info              print title / duration / available qualities, no download
+  -v, --verbose        print capture stats to stderr
+  -h, --help           this message
+USAGE
+  exit 1
 }
 
-if (args.length === 0 || args.includes('-h') || args.includes('--help')) usage();
+[ $# -lt 1 ] && usage
 
-const pos: string[] = [];
-const opts: YtdlOpts & { showFormats?: boolean; showInfo?: boolean } = {};
+quality="best"
+out=""
+dir="${HOME}/Downloads"
+info_only=false
+verbose=false
 
-for (let i = 0; i < args.length; i++) {
-  const a = args[i];
-  switch (a) {
-    case '-q': case '--quality': opts.quality = args[++i]; break;
-    case '-o': case '--out': opts.outName = args[++i]; break;
-    case '-d': case '--dir': opts.outDir = args[++i]; break;
-    case '-c': case '--client': opts.client = args[++i] as any; break;
-    case '--embed-url': opts.embedUrl = args[++i]; break;
-    case '-v': case '--verbose': opts.verbose = true; break;
-    case '--formats': opts.showFormats = true; break;
-    case '--info': opts.showInfo = true; break;
-    default:
-      if (a.startsWith('-')) { process.stderr.write(`ytdl: unknown option ${a}\n`); usage(); }
-      pos.push(a);
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -q|--quality) quality="${2:?missing quality}"; shift 2;;
+    -o|--out) out="${2:?missing out}"; shift 2;;
+    -d|--dir) dir="${2:?missing dir}"; shift 2;;
+    --info) info_only=true; shift;;
+    -v|--verbose) verbose=true; shift;;
+    -h|--help) usage;;
+    -*) echo "ytdl: unknown option '$1'" >&2; usage;;
+    *) [ -n "${input:-}" ] && { echo "ytdl: unexpected argument '$1'" >&2; usage; }; input="$1"; shift;;
+  esac
+done
+
+input="${input:?Usage: ytdl <url|id> [options]}"
+
+# Normalize to an 11-char video ID, then to a watch URL.
+extract_id() {
+  local u="$1"
+  if [[ "$u" =~ ^[A-Za-z0-9_-]{11}$ ]]; then echo "$u"; return 0; fi
+  local id
+  id=$(printf '%s' "$u" | sed -nE 's/.*[?&]v=([A-Za-z0-9_-]{11}).*/\1/p' | head -1)
+  [ -n "$id" ] && { echo "$id"; return 0; }
+  id=$(printf '%s' "$u" | sed -nE 's#.*youtu\.be/([A-Za-z0-9_-]{11}).*#\1#p' | head -1)
+  [ -n "$id" ] && { echo "$id"; return 0; }
+  id=$(printf '%s' "$u" | sed -nE 's#.*youtube\.com/embed/([A-Za-z0-9_-]{11}).*#\1#p' | head -1)
+  [ -n "$id" ] && { echo "$id"; return 0; }
+  return 1
+}
+vid=$(extract_id "$input") || { echo "ytdl: could not parse a video ID from '$input'" >&2; exit 1; }
+watch_url="https://www.youtube.com/watch?v=${vid}"
+
+# Map -q to a YouTube player quality label and what to keep.
+case "$quality" in
+  360p)  ytq="medium";  keep="both";;
+  480p)  ytq="large";   keep="both";;
+  720p)  ytq="hd720";   keep="both";;
+  1080p) ytq="hd1080";  keep="both";;
+  1440p) ytq="hd1440";  keep="both";;
+  2160p|4k) ytq="hd2160"; keep="both";;
+  best|max) ytq="max";  keep="both";;
+  audio) ytq="tiny";  keep="audio";;
+  *) echo "ytdl: unknown quality '$quality' (360p|480p|720p|1080p|1440p|2160p|best|audio)" >&2; exit 1;;
+esac
+
+# Verbose as a JS boolean for the heredoc.
+js_verbose="false"; $verbose && js_verbose="true"
+js_info="false"; $info_only && js_info="true"
+
+tmpdir=$(mktemp -d 2>/dev/null || mktemp -d -t ytdl)
+trap 'rm -rf "$tmpdir"' EXIT
+
+# Escape the watch URL for a JS single-quoted string inside an unquoted heredoc:
+# \ → \\, $ → \$, ` → \`, ' → \'
+js_url=$(printf '%s' "$watch_url" | sed -e 's/\\/\\\\/g' -e 's/\$/\\$/g' -e 's/`/\\`/g' -e "s/'/\\\\'/g")
+
+raw=$(browser-harness-js <<EOF
+const fs = await import('node:fs')
+const WATCH_URL = '${js_url}'
+const YTQ = '${ytq}'
+const KEEP = '${keep}'
+const TMPDIR = '${tmpdir}'
+const VERBOSE = ${js_verbose}
+const INFO_ONLY = ${js_info}
+
+const _stats = []
+function vlog(s){ _stats.push(s) }
+
+if (!session.isConnected()) {
+  try { await session.connect({ port: 9222, host: '127.0.0.1' }) } catch {
+    try { await session.connect() } catch (e) { throw new Error('Cannot connect to browser: ' + e.message) }
   }
 }
 
-if (pos.length !== 1) { process.stderr.write('ytdl: exactly one <url|id> required\n'); usage(); }
-const target = pos[0];
+const t = await session.Target.createTarget({ url: 'about:blank' })  // foreground — autoplay needs it
+const { sessionId } = await session.Target.attachToTarget({ targetId: t.targetId, flatten: true })
 
 try {
-  if (opts.showFormats) {
-    const fs = await formats(target, opts);
-    for (const f of fs) {
-      process.stdout.write(`${f.itag}\t${f.container}\t${f.hasVideo ? (f.height || '?') + 'p' : 'audio'}\t${f.hasAudio ? 'A' : '-'}${f.hasVideo ? 'V' : '-'}\t${(f.filesize ? (f.filesize / 1024 / 1024).toFixed(1) + 'MB' : '?')}\n`);
-    }
-  } else if (opts.showInfo) {
-    const inf = await info(target, opts);
-    process.stdout.write(JSON.stringify(inf, null, 2) + '\n');
-  } else {
-    const out = await download(target, opts);
-    process.stdout.write(out + '\n');
+  await cdp(sessionId, 'Page.enable', {})
+  await cdp(sessionId, 'Page.setLifecycleEventsEnabled', { enabled: true })
+
+  // Inject BEFORE navigate: hook MediaSource.addSourceBuffer + each SourceBuffer's
+  // appendBuffer to record the demuxed ISO-BMFF bytes the player feeds MSE.
+  // appendBuffer is a non-writable native property on the prototype, so we define
+  // an OWN property on each SourceBuffer instance (shadows the prototype method).
+  await cdp(sessionId, 'Page.addScriptToEvaluateOnNewDocument', {
+    source: [
+      '(() => {',
+      '  if (window.__ytdlHooked) return;',
+      '  window.__ytdlHooked = true;',
+      '  window.__cap = { buffers: [] };',
+      '  const bySb = new WeakMap();',
+      '  const origAddSB = MediaSource.prototype.addSourceBuffer;',
+      '  Object.defineProperty(MediaSource.prototype, "addSourceBuffer", {',
+      '    configurable: true, writable: true,',
+      '    value: function(mime) {',
+      '      const sb = origAddSB.call(this, mime);',
+      '      const entry = { mime: mime, chunks: [], bytes: 0, count: 0,',
+      '        kind: mime.startsWith("video") ? "video" : mime.startsWith("audio") ? "audio" : "other" };',
+      '      window.__cap.buffers.push(entry);',
+      '      bySb.set(sb, entry);',
+      '      const origApp = sb.appendBuffer.bind(sb);',
+      '      Object.defineProperty(sb, "appendBuffer", {',
+      '        configurable: true, writable: true,',
+      '        value: function(data) {',
+      '          const u8 = data instanceof ArrayBuffer ? new Uint8Array(data)',
+      '            : new Uint8Array(data.buffer, data.byteOffset, data.byteLength);',
+      '          entry.chunks.push(u8.slice()); entry.bytes += u8.length; entry.count++;',
+      '          return origApp(data);',
+      '        }',
+      '      });',
+      '      return sb;',
+      '    }',
+      '  });',
+      '  // page-side helpers used by the pull loop',
+      '  window.__capInfo = function() {',
+      '    return window.__cap.buffers.map((b,i) => ({ i: i, kind: b.kind, mime: b.mime, bytes: b.bytes, count: b.count }));',
+      '  };',
+      '  window.__pullBuffer = function(i, offset, len) {',
+      '    const b = window.__cap.buffers[i];',
+      '    if (!b._all) {',
+      '      b._all = new Uint8Array(b.bytes);',
+      '      let o = 0; for (const c of b.chunks) { b._all.set(c, o); o += c.length; }',
+      '    }',
+      '    const end = Math.min(offset + len, b._all.length);',
+      '    const slice = b._all.subarray(offset, end);',
+      '    // 49998 is divisible by 3 -> no interior base64 padding; fromCharCode.apply',
+      '    // stays under the call-stack arg limit.',
+      '    let b64 = "";',
+      '    for (let i2 = 0; i2 < slice.length; i2 += 49998) {',
+      '      const e2 = Math.min(i2 + 49998, slice.length);',
+      '      b64 += btoa(String.fromCharCode.apply(null, slice.subarray(i2, e2)));',
+      '    }',
+      '    return b64;',
+      '  };',
+      '})();'
+    ].join('\\n')
+  })
+
+  const ready = session.waitFor({ method: 'Page.lifecycleEvent', sessionId, predicate: (p) => p.name === 'networkIdle', timeoutMs: 30_000 })
+  await cdp(sessionId, 'Page.navigate', { url: WATCH_URL })
+  await ready
+  vlog('navigated')
+
+  // Wait for the player + <video> element (up to 60s — the player can be slow
+  // to boot on a cold tab, and we must not require duration>0 yet: metadata
+  // loads only once the player starts fetching, which may need the play nudge).
+  let playerReady = false
+  let diag = ''
+  for (let i = 0; i < 120; i++) {
+    const r = await cdp(sessionId, 'Runtime.evaluate', {
+      expression: '(() => { const v = document.querySelector("video"); const p = document.querySelector("#movie_player"); const body = document.body ? document.body.innerText.slice(0,200) : ""; const bot = /unusual traffic|Our systems have detected|Are you a robot|not a robot/i.test(body); return JSON.stringify({ v: !!v, p: !!p, bot, title: document.title || "" }); })()',
+      returnByValue: true
+    })
+    const s = JSON.parse(r.result.value)
+    if (s.bot) throw new Error('YouTube is showing an "unusual traffic / are you a robot" interstitial — back off and retry later (or open the URL manually once in the browser to clear it).')
+    if (s.v && s.p) { playerReady = true; break }
+    diag = s.title || '(no title)'
+    await new Promise(r => setTimeout(r, 500))
   }
-} catch (e: any) {
-  process.stderr.write(`ytdl: ${e?.message ?? e}\n`);
-  process.exit(1);
+  if (!playerReady) throw new Error('player did not become ready (no <video>/#movie_player) after 60s — page title: "' + diag + '". If the video is gated, make sure a logged-in YouTube tab can play it; if YouTube is rate-limiting, wait and retry.')
+
+  // Wait for metadata (duration>0) separately — up to 20s after the player exists.
+  for (let i = 0; i < 40; i++) {
+    const r = await cdp(sessionId, 'Runtime.evaluate', { expression: '(() => { const v = document.querySelector("video"); return v && v.duration > 0 ? v.duration : 0; })()', returnByValue: true })
+    if (r.result.value && r.result.value > 0) break
+    await new Promise(r => setTimeout(r, 500))
+  }
+
+  // Read title + available qualities (for --info and for the filename).
+  const meta = await cdp(sessionId, 'Runtime.evaluate', {
+    expression: '(() => { const p = document.querySelector("#movie_player"); const v = document.querySelector("video"); return JSON.stringify({ title: document.title || "", dur: v ? v.duration : 0, qualities: (p && p.getAvailableQualityLevels) ? p.getAvailableQualityLevels() : [] }); })()',
+    returnByValue: true
+  })
+  const m = JSON.parse(meta.result.value)
+
+  if (INFO_ONLY) {
+    return JSON.stringify({ ok: true, info: true, title: m.title, duration: m.dur, qualities: m.qualities })
+  }
+
+  // Force the requested quality (best-effort — SABR may ignore it) and start
+  // playback muted at 16x so the player fetches+appends every segment fast.
+  await cdp(sessionId, 'Runtime.evaluate', {
+    expression: '(() => { const p = document.querySelector("#movie_player"); const v = document.querySelector("video"); try { if (p && p.setPlaybackQualityRange) p.setPlaybackQualityRange("' + YTQ + '","' + YTQ + '"); if (p && p.setPlaybackQuality) p.setPlaybackQuality("' + YTQ + '"); } catch(e){} v.muted = true; try { v.playbackRate = 16; } catch(e){} v.play().catch(()=>{}); return "playing"; })()',
+    returnByValue: true
+  })
+
+  // Drive coverage: wait until the player has played through (currentTime near
+  // duration / ended). Capture happens in the hook as it plays.
+  const dur = m.dur
+  let last = 0
+  const deadline = Date.now() + Math.max(60_000, Math.min(dur * 1000 / 4 + 60_000, 900_000))
+  for (;;) {
+    if (Date.now() > deadline) { vlog('coverage timeout'); break }
+    const r = await cdp(sessionId, 'Runtime.evaluate', {
+      expression: '(() => { const v = document.querySelector("video"); const b = v && v.buffered.length ? v.buffered.end(v.buffered.length-1) : 0; return JSON.stringify({ t: v ? v.currentTime : 0, end: b, ended: v ? v.ended : false, rate: v ? v.playbackRate : 0 }); })()',
+      returnByValue: true
+    })
+    const s = JSON.parse(r.result.value)
+    if (VERBOSE && Math.floor(s.t) !== last) { last = Math.floor(s.t); vlog('t=' + s.t.toFixed(0) + '/' + dur.toFixed(0) + 's buffered=' + s.end.toFixed(0) + 's rate=' + s.rate) }
+    if (s.ended || (s.t >= dur - 0.5 && s.end >= dur - 0.5) || (s.t >= dur - 1 && Date.now() - deadline > -60_000 && s.end >= dur - 0.5)) break
+    await new Promise(r => setTimeout(r, 500))
+  }
+
+  // Stop the player's own streaming now that we have what we need.
+  await cdp(sessionId, 'Runtime.evaluate', { expression: '(() => { const v = document.querySelector("video"); if (v) v.pause(); return "paused"; })()', returnByValue: true })
+
+  const infoR = await cdp(sessionId, 'Runtime.evaluate', { expression: 'JSON.stringify(window.__capInfo())', returnByValue: true })
+  const buffers = JSON.parse(infoR.result.value)
+  vlog('captured ' + buffers.length + ' source buffer(s): ' + JSON.stringify(buffers.map(b => b.kind + ':' + b.bytes)))
+
+  // Pull each kept buffer to disk in 4MB (3-aligned) base64 slices -> append.
+  const SLICE = 4194300  // divisible by 3
+  const out = []
+  for (const b of buffers) {
+    if (KEEP === 'audio' && b.kind !== 'audio') continue
+    if (KEEP === 'both' && b.kind === 'other') continue
+    const path = TMPDIR + '/' + b.kind + (b.mime.includes('webm') ? '.webm' : '.fmp4')
+    fs.writeFileSync(path, Buffer.alloc(0))
+    let off = 0
+    while (off < b.bytes) {
+      const r = await cdp(sessionId, 'Runtime.evaluate', {
+        expression: 'window.__pullBuffer(' + b.i + ',' + off + ',' + SLICE + ')',
+        returnByValue: true
+      })
+      const b64 = r.result.value
+      if (!b64) break
+      const chunk = Buffer.from(b64, 'base64')
+      fs.appendFileSync(path, chunk)
+      off += chunk.length
+      if (off >= b.bytes) break
+    }
+    out.push({ kind: b.kind, mime: b.mime, bytes: off, path: path })
+    vlog('wrote ' + b.kind + ' ' + off + ' bytes -> ' + path)
+  }
+
+  // Best-effort read of the actual played quality.
+  const qR = await cdp(sessionId, 'Runtime.evaluate', {
+    expression: '(() => { const p = document.querySelector("#movie_player"); try { return (p && p.getPlaybackQuality) ? p.getPlaybackQuality() : ""; } catch(e){ return ""; } })()',
+    returnByValue: true
+  })
+
+  return JSON.stringify({ ok: true, _stats: _stats, title: m.title, duration: dur, qualities: m.qualities, forcedQuality: YTQ, actualQuality: qR.result.value, buffers: out, tmpdir: TMPDIR })
+} finally {
+  // Fire-and-forget closeTab — guaranteed cleanup even on errors, without blocking.
+  session.closeTab(t.targetId, sessionId).catch(() => {})
 }
+EOF
+)
+
+# The REPL returns a JSON string (or an error blob). Parse defensively —
+# without jq, and without BSD-incompatible sed alternation.
+case "$raw" in
+  *'"ok":true'*) ;;
+  *)
+    echo "ytdl: capture failed:" >&2
+    printf '%s\n' "$raw" >&2
+    exit 1
+    ;;
+esac
+
+# -v: print the in-snippet stats. (The REPL daemon's stderr isn't wired to this
+# CLI, so the snippet collects stats and returns them in the JSON.)
+if $verbose; then
+  printf '%s\n' "$raw" | grep -oE '"_stats":\[[^]]*\]' | sed 's/"_stats":\[//; s/\]$//; s/,/\n/g' \
+    | sed -e 's/^"//' -e 's/"$//' -e 's/^/ytdl: /' >&2 || true
+fi
+
+# --info path: print and exit.
+if $info_only; then
+  printf 'title:     %s\n' "$(printf '%s\n' "$raw" | grep -oE '"title":"[^"]*"' | head -1 | sed 's/"title":"//; s/"$//')"
+  printf 'duration:  %ss\n' "$(printf '%s\n' "$raw" | grep -oE '"duration":[0-9.]+' | head -1 | sed 's/"duration"://')"
+  printf 'qualities: %s\n' "$(printf '%s\n' "$raw" | grep -oE '"qualities":\[[^]]*\]' | head -1 | sed 's/"qualities"://')"
+  exit 0
+fi
+
+# Derive the output name + container from the captured buffers.
+title=$(printf '%s' "$raw" | sed -n 's/.*"title":"\([^"]*\)".*/\1/p' | head -1)
+[ -n "$out" ] || out=$(printf '%s' "$title" | sed -e 's/ - YouTube$//' -e 's/[^A-Za-z0-9._-]/_/g')
+[ -n "$out" ] || out="video"
+mkdir -p "$dir"
+
+# Find the video + audio temp files the heredoc wrote.
+video_path=$(printf '%s' "$raw" | sed -n 's/.*"kind":"video","mime":"[^"]*","bytes":[0-9]*,"path":"\([^"]*\)".*/\1/p' | head -1)
+audio_path=$(printf '%s' "$raw" | sed -n 's/.*"kind":"audio","mime":"[^"]*","bytes":[0-9]*,"path":"\([^"]*\)".*/\1/p' | head -1)
+# Detect webm vs mp4 from the video mime for the output container.
+video_mime=$(printf '%s' "$raw" | sed -n 's/.*"kind":"video","mime":"\([^"]*\)".*/\1/p' | head -1)
+ext="mp4"
+case "$video_mime" in
+  *webm*) ext="webm";;
+esac
+
+if $verbose; then
+  printf 'ytdl: video=%s audio=%s ext=%s\n' "${video_path:-none}" "${audio_path:-none}" "$ext" >&2
+fi
+
+if [ "$keep" = "audio" ]; then
+  # audio-only: keep the audio buffer in its own container.
+  if [ -z "$audio_path" ]; then echo "ytdl: no audio buffer captured" >&2; exit 1; fi
+  aext="m4a"; case "$(printf '%s' "$raw" | sed -n 's/.*"kind":"audio","mime":"\([^"]*\)".*/\1/p' | head -1)" in *webm*) aext="webm";; esac
+  final="$dir/${out}.${aext}"
+  cp "$audio_path" "$final"
+  sz=$(wc -c < "$final" | tr -d ' ')
+  echo "saved $final ($(( sz / 1024 )) KB, audio)"
+  exit 0
+fi
+
+if [ -n "$video_path" ] && [ -n "$audio_path" ]; then
+  final="$dir/${out}.${ext}"
+  if [ "$ext" = "webm" ]; then
+    ffmpeg -hide_banner -loglevel error -i "$video_path" -i "$audio_path" -c copy "$final"
+  else
+    ffmpeg -hide_banner -loglevel error -i "$video_path" -i "$audio_path" -c copy -movflags +faststart "$final"
+  fi
+elif [ -n "$video_path" ]; then
+  final="$dir/${out}.${ext}"
+  cp "$video_path" "$final"
+elif [ -n "$audio_path" ]; then
+  aext="m4a"; case "$(printf '%s' "$raw" | sed -n 's/.*"kind":"audio","mime":"\([^"]*\)".*/\1/p' | head -1)" in *webm*) aext="webm";; esac
+  final="$dir/${out}.${aext}"
+  cp "$audio_path" "$final"
+else
+  echo "ytdl: no media captured (is the video playable in a logged-in tab?)" >&2
+  exit 1
+fi
+
+sz=$(wc -c < "$final" | tr -d ' ')
+echo "saved $final ($(( sz / 1024 / 1024 )) MB)"

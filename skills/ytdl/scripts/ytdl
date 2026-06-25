@@ -141,6 +141,7 @@ try {
       '  if (window.__ytdlHooked) return;',
       '  window.__ytdlHooked = true;',
       '  window.__cap = { buffers: [] };',
+      '  window.__capDone = false;',
       '  const bySb = new WeakMap();',
       '  const origAddSB = MediaSource.prototype.addSourceBuffer;',
       '  Object.defineProperty(MediaSource.prototype, "addSourceBuffer", {',
@@ -155,6 +156,7 @@ try {
       '      Object.defineProperty(sb, "appendBuffer", {',
       '        configurable: true, writable: true,',
       '        value: function(data) {',
+      '          if (window.__capDone) return origApp(data);',
       '          const u8 = data instanceof ArrayBuffer ? new Uint8Array(data)',
       '            : new Uint8Array(data.buffer, data.byteOffset, data.byteLength);',
       '          entry.chunks.push(u8.slice()); entry.bytes += u8.length; entry.count++;',
@@ -230,18 +232,26 @@ try {
     return JSON.stringify({ ok: true, info: true, title: m.title, duration: m.dur, qualities: m.qualities })
   }
 
-  // Force the requested quality (best-effort — SABR may ignore it) and start
-  // playback muted at 16x so the player fetches+appends every segment fast.
+  // Force the requested quality (best-effort — SABR may ignore it), disable
+  // autonav so the player stops at the end instead of advancing to the next
+  // video, and start playback muted at 16x so the player fetches+appends every
+  // segment fast.
   await cdp(sessionId, 'Runtime.evaluate', {
-    expression: '(() => { const p = document.querySelector("#movie_player"); const v = document.querySelector("video"); try { if (p && p.setPlaybackQualityRange) p.setPlaybackQualityRange("' + YTQ + '","' + YTQ + '"); if (p && p.setPlaybackQuality) p.setPlaybackQuality("' + YTQ + '"); } catch(e){} v.muted = true; try { v.playbackRate = 16; } catch(e){} v.play().catch(()=>{}); return "playing"; })()',
+    expression: '(() => { const p = document.querySelector("#movie_player"); const v = document.querySelector("video"); try { if (p && p.setPlaybackQualityRange) p.setPlaybackQualityRange("' + YTQ + '","' + YTQ + '"); if (p && p.setPlaybackQuality) p.setPlaybackQuality("' + YTQ + '"); } catch(e){} try { if (p && p.setAutonavState) p.setAutonavState(0); } catch(e){} v.muted = true; try { v.playbackRate = 16; } catch(e){} v.play().catch(()=>{}); return "playing"; })()',
     returnByValue: true
   })
 
-  // Drive coverage: wait until the player has played through (currentTime near
-  // duration / ended). Capture happens in the hook as it plays.
+  // Drive coverage. Break the FIRST time the player reaches the end — do NOT
+  // require it to stay there, because YouTube autoplays into the next video on
+  // end and resets currentTime (which would make a "t near dur" check false
+  // again and the loop would spin until the watchdog). A backward jump in
+  // currentTime IS the autoplay signal; treat it as "target done, freeze now."
+  // Breaking on buffered.end>=dur-0.5 fires as soon as the whole timeline is
+  // appended (the player buffers ahead), even before playback finishes.
   const dur = m.dur
-  let last = 0
-  const deadline = Date.now() + Math.max(60_000, Math.min(dur * 1000 / 4 + 60_000, 900_000))
+  let last_t = -1
+  const deadline = Date.now() + Math.max(60_000, dur * 1000 / 12 + 60_000)
+  let done = false
   for (;;) {
     if (Date.now() > deadline) { vlog('coverage timeout'); break }
     const r = await cdp(sessionId, 'Runtime.evaluate', {
@@ -249,25 +259,38 @@ try {
       returnByValue: true
     })
     const s = JSON.parse(r.result.value)
-    if (VERBOSE && Math.floor(s.t) !== last) { last = Math.floor(s.t); vlog('t=' + s.t.toFixed(0) + '/' + dur.toFixed(0) + 's buffered=' + s.end.toFixed(0) + 's rate=' + s.rate) }
-    if (s.ended || (s.t >= dur - 0.5 && s.end >= dur - 0.5) || (s.t >= dur - 1 && Date.now() - deadline > -60_000 && s.end >= dur - 0.5)) break
-    await new Promise(r => setTimeout(r, 500))
+    if (VERBOSE && Math.floor(s.t) !== Math.floor(last_t)) { vlog('t=' + s.t.toFixed(0) + '/' + dur.toFixed(0) + 's buffered=' + s.end.toFixed(0) + 's rate=' + s.rate) }
+    if (s.end >= dur - 0.5 || s.ended || (last_t >= 0 && s.t < last_t - 1)) { done = true; break }
+    last_t = s.t
+    await new Promise(r => setTimeout(r, 250))
   }
 
-  // Stop the player's own streaming now that we have what we need.
-  await cdp(sessionId, 'Runtime.evaluate', { expression: '(() => { const v = document.querySelector("video"); if (v) v.pause(); return "paused"; })()', returnByValue: true })
+  // Freeze capture + pause in ONE atomic page-side call. The hook passes
+  // through (no recording) once __capDone is set, so autoplay can't sneak the
+  // next video's segments into our buffers between detect and pause.
+  await cdp(sessionId, 'Runtime.evaluate', { expression: '(() => { window.__capDone = true; const v = document.querySelector("video"); if (v) v.pause(); return "frozen"; })()', returnByValue: true })
+  vlog('coverage ' + (done ? 'complete' : 'timed out'))
 
   const infoR = await cdp(sessionId, 'Runtime.evaluate', { expression: 'JSON.stringify(window.__capInfo())', returnByValue: true })
   const buffers = JSON.parse(infoR.result.value)
   vlog('captured ' + buffers.length + ' source buffer(s): ' + JSON.stringify(buffers.map(b => b.kind + ':' + b.bytes)))
 
-  // Pull each kept buffer to disk in 4MB (3-aligned) base64 slices -> append.
-  const SLICE = 4194300  // divisible by 3
-  const out = []
+  // The player can create more than one MediaSource (quality-switch re-init,
+  // mini-player, etc.), so there may be several video/audio buffers. Pick the
+  // LARGEST of each kind — that is the real full capture; the small ones are
+  // init-segment duplicates. Robust regardless of how many buffers exist.
+  let pv = null, pa = null
   for (const b of buffers) {
-    if (KEEP === 'audio' && b.kind !== 'audio') continue
-    if (KEEP === 'both' && b.kind === 'other') continue
-    const path = TMPDIR + '/' + b.kind + (b.mime.includes('webm') ? '.webm' : '.fmp4')
+    if (b.kind === 'video' && (!pv || b.bytes > pv.bytes)) pv = b
+    if (b.kind === 'audio' && (!pa || b.bytes > pa.bytes)) pa = b
+  }
+  const extOf = (mime) => mime.includes('webm') ? 'webm' : 'fmp4'
+
+  // Pull the chosen buffer(s) to disk in 4MB (3-aligned) base64 slices -> append.
+  const SLICE = 4194300  // divisible by 3 -> each base64 slice is independently decodable
+  const pullOne = async (b, kind) => {
+    if (!b) return null
+    const path = TMPDIR + '/' + kind + '.' + extOf(b.mime)
     fs.writeFileSync(path, Buffer.alloc(0))
     let off = 0
     while (off < b.bytes) {
@@ -282,8 +305,16 @@ try {
       off += chunk.length
       if (off >= b.bytes) break
     }
-    out.push({ kind: b.kind, mime: b.mime, bytes: off, path: path })
-    vlog('wrote ' + b.kind + ' ' + off + ' bytes -> ' + path)
+    vlog('wrote ' + kind + ' ' + off + ' bytes -> ' + path)
+    return { bytes: off, path: path, ext: extOf(b.mime) }
+  }
+
+  const primary = {}
+  if (KEEP === 'audio') {
+    primary.audio = await pullOne(pa, 'audio')
+  } else {
+    primary.video = await pullOne(pv, 'video')
+    primary.audio = await pullOne(pa, 'audio')
   }
 
   // Best-effort read of the actual played quality.
@@ -292,7 +323,7 @@ try {
     returnByValue: true
   })
 
-  return JSON.stringify({ ok: true, _stats: _stats, title: m.title, duration: dur, qualities: m.qualities, forcedQuality: YTQ, actualQuality: qR.result.value, buffers: out, tmpdir: TMPDIR })
+  return JSON.stringify({ ok: true, _stats: _stats, title: m.title, duration: dur, qualities: m.qualities, forcedQuality: YTQ, actualQuality: qR.result.value, videoPath: primary.video ? primary.video.path : null, videoExt: primary.video ? primary.video.ext : null, audioPath: primary.audio ? primary.audio.path : null, audioExt: primary.audio ? primary.audio.ext : null, tmpdir: TMPDIR })
 } finally {
   // Fire-and-forget closeTab — guaranteed cleanup even on errors, without blocking.
   session.closeTab(t.targetId, sessionId).catch(() => {})
@@ -328,29 +359,27 @@ fi
 
 # Derive the output name + container from the captured buffers.
 title=$(printf '%s' "$raw" | sed -n 's/.*"title":"\([^"]*\)".*/\1/p' | head -1)
-[ -n "$out" ] || out=$(printf '%s' "$title" | sed -e 's/ - YouTube$//' -e 's/[^A-Za-z0-9._-]/_/g')
+[ -n "$out" ] || out=$(printf '%s' "$title" | sed -e 's/^([^)]*)[[:space:]]*//' -e 's/ - YouTube$//' -e 's/[^A-Za-z0-9._-]/_/g')
 [ -n "$out" ] || out="video"
 mkdir -p "$dir"
 
-# Find the video + audio temp files the heredoc wrote.
-video_path=$(printf '%s' "$raw" | sed -n 's/.*"kind":"video","mime":"[^"]*","bytes":[0-9]*,"path":"\([^"]*\)".*/\1/p' | head -1)
-audio_path=$(printf '%s' "$raw" | sed -n 's/.*"kind":"audio","mime":"[^"]*","bytes":[0-9]*,"path":"\([^"]*\)".*/\1/p' | head -1)
-# Detect webm vs mp4 from the video mime for the output container.
-video_mime=$(printf '%s' "$raw" | sed -n 's/.*"kind":"video","mime":"\([^"]*\)".*/\1/p' | head -1)
-ext="mp4"
-case "$video_mime" in
-  *webm*) ext="webm";;
-esac
+# Extract the chosen temp files + container from flat fields the snippet returns
+# (videoPath/videoExt/audioPath/audioExt). null -> no match -> empty. These
+# fields carry no escaped quotes, so grep+sed is safe and brace-free.
+video_path=$(printf '%s' "$raw" | sed -n 's/.*"videoPath":"\([^"]*\)".*/\1/p' | head -1)
+video_ext=$(printf '%s' "$raw" | sed -n 's/.*"videoExt":"\([^"]*\)".*/\1/p' | head -1)
+audio_path=$(printf '%s' "$raw" | sed -n 's/.*"audioPath":"\([^"]*\)".*/\1/p' | head -1)
+audio_ext=$(printf '%s' "$raw" | sed -n 's/.*"audioExt":"\([^"]*\)".*/\1/p' | head -1)
 
 if $verbose; then
-  printf 'ytdl: video=%s audio=%s ext=%s\n' "${video_path:-none}" "${audio_path:-none}" "$ext" >&2
+  printf 'ytdl: video=%s audio=%s vext=%s aext=%s\n' "${video_path:-none}" "${audio_path:-none}" "${video_ext:-?}" "${audio_ext:-?}" >&2
 fi
 
 if [ "$keep" = "audio" ]; then
   # audio-only: keep the audio buffer in its own container.
   if [ -z "$audio_path" ]; then echo "ytdl: no audio buffer captured" >&2; exit 1; fi
-  aext="m4a"; case "$(printf '%s' "$raw" | sed -n 's/.*"kind":"audio","mime":"\([^"]*\)".*/\1/p' | head -1)" in *webm*) aext="webm";; esac
-  final="$dir/${out}.${aext}"
+  aout="m4a"; [ "$audio_ext" = "webm" ] && aout="webm"
+  final="$dir/${out}.${aout}"
   cp "$audio_path" "$final"
   sz=$(wc -c < "$final" | tr -d ' ')
   echo "saved $final ($(( sz / 1024 )) KB, audio)"
@@ -358,6 +387,7 @@ if [ "$keep" = "audio" ]; then
 fi
 
 if [ -n "$video_path" ] && [ -n "$audio_path" ]; then
+  ext="mp4"; [ "$video_ext" = "webm" ] && ext="webm"
   final="$dir/${out}.${ext}"
   if [ "$ext" = "webm" ]; then
     ffmpeg -hide_banner -loglevel error -i "$video_path" -i "$audio_path" -c copy "$final"
@@ -365,11 +395,12 @@ if [ -n "$video_path" ] && [ -n "$audio_path" ]; then
     ffmpeg -hide_banner -loglevel error -i "$video_path" -i "$audio_path" -c copy -movflags +faststart "$final"
   fi
 elif [ -n "$video_path" ]; then
+  ext="mp4"; [ "$video_ext" = "webm" ] && ext="webm"
   final="$dir/${out}.${ext}"
   cp "$video_path" "$final"
 elif [ -n "$audio_path" ]; then
-  aext="m4a"; case "$(printf '%s' "$raw" | sed -n 's/.*"kind":"audio","mime":"\([^"]*\)".*/\1/p' | head -1)" in *webm*) aext="webm";; esac
-  final="$dir/${out}.${aext}"
+  aout="m4a"; [ "$audio_ext" = "webm" ] && aout="webm"
+  final="$dir/${out}.${aout}"
   cp "$audio_path" "$final"
 else
   echo "ytdl: no media captured (is the video playable in a logged-in tab?)" >&2

@@ -104,9 +104,9 @@ export function getVideoId(urlOrId: string): string {
 // Optional bridge to a live browser tab via the `browser-harness-js` CLI.
 // Returns null if the CLI is absent or no YouTube tab is connected — caller
 // falls back to standalone scraping. Never throws.
-function bhjs(snippet: string): string | null {
+function bhjs(snippet: string, timeoutMs = 20000): string | null {
   try {
-    const r = spawnSync('browser-harness-js', [snippet], { encoding: 'utf8', timeout: 20000 });
+    const r = spawnSync('browser-harness-js', [snippet], { encoding: 'utf8', timeout: timeoutMs });
     if (r.status === 0 && r.stdout && r.stdout.trim()) return r.stdout.trim();
     return null;
   } catch {
@@ -114,29 +114,51 @@ function bhjs(snippet: string): string | null {
   }
 }
 
-async function readTabCookiesAndSts(): Promise<{ cookies: string | null; sts: number | null; playerJsUrl: string | null }> {
-  // First ensure a connection; ignore failures (standalone path will scrape instead).
-  bhjs('try { if(!session.isConnected()){ try{await session.connect({port:9222}) }catch{ try{await session.connect()}catch{} } } } catch(e){}');
-  const out = bhjs(`(() => {
-    const tabs = (globalThis.listPageTargets || (()=>[]))();
-    const yt = tabs.find(t => t.url && t.url.includes('youtube.com'));
-    if (!yt) return JSON.stringify(null);
-    return JSON.stringify({ targetId: yt.targetId });
-  })()`);
-  if (!out) return { cookies: null, sts: null, playerJsUrl: null };
-  let tab: { targetId: string };
-  try { tab = JSON.parse(out); } catch { return { cookies: null, sts: null, playerJsUrl: null }; }
-  if (!tab?.targetId) return { cookies: null, sts: null, playerJsUrl: null };
-
-  const cookieStr = bhjs(`(async () => { await session.use(${JSON.stringify(tab.targetId)}); const { cookies } = await session.Network.getCookies({ urls: ['https://www.youtube.com/'] }); return cookies.map(c => c.name + '=' + c.value).join('; '); })()`);
-  const cfgStr = bhjs(`(async () => { await session.use(${JSON.stringify(tab.targetId)}); const ev = await session.Runtime.evaluate({ expression: 'JSON.stringify({ STS: window.ytcfg.data_?.STS ?? null, PLAYER_JS_URL: window.ytcfg.data_?.PLAYER_JS_URL ?? null })', returnByValue: true }); return ev.result.value; })()`);
-  let cfg: { STS: number | null; PLAYER_JS_URL: string | null } | null = null;
-  try { cfg = cfgStr ? JSON.parse(cfgStr) : null; } catch { cfg = null; }
-  return {
-    cookies: cookieStr || null,
-    sts: cfg?.STS ?? null,
-    playerJsUrl: cfg?.PLAYER_JS_URL ?? null,
-  };
+// One browser round-trip: open the (optionally logged-in) watch page and read the
+// inlined ytInitialPlayerResponse — the player data the page rendered with full
+// auth (cookies, poToken's effect, the real client context). Zero client
+// impersonation, zero header spoofing: the page *is* the client. Also returns the
+// player JS URL (for n-solve) and the cookie jar (for the HD web_embedded fallback).
+//
+// The inlined web response carries a discrete itag 18 (360p muxed) but adaptive
+// formats are SABR-only (no discrete HD URLs) — so this is primary for 360p; for
+// HD we still need the Bun-side web_embedded client, which uses these cookies.
+// Returns null if the browser isn't available; caller falls back to android_vr.
+function browserResolve(vid: string): { pr: any; playerJsUrl: string | null; cookies: string | null; loggedIn: boolean } | null {
+  // Open the watch page in the background and poll for ytInitialPlayerResponse —
+  // it's inlined in the initial HTML, available before the player boots, so we
+  // don't wait for networkIdle. Pause any <video> ASAP to stop the page's own
+  // googlevideo streaming (which would rate-limit collide with our download on
+  // the same IP). Then grab the cookie jar. One round-trip, minimal autoplay.
+  const snippet = `
+if (!session.isConnected()) { try { await session.connect({ port: 9222, host: "127.0.0.1" }) } catch { try { await session.connect() } catch (e) { throw new Error("connect: " + e.message) } } }
+const VID = ${JSON.stringify(vid)};
+const t = await session.Target.createTarget({ url: "https://www.youtube.com/watch?v=" + VID, background: true })
+const { sessionId } = await session.Target.attachToTarget({ targetId: t.targetId, flatten: true })
+try {
+  await cdp(sessionId, "Network.enable", {})
+  await cdp(sessionId, "Page.enable", {})
+  const probe = "window.ytInitialPlayerResponse ? JSON.stringify({ pr: window.ytInitialPlayerResponse, playerJsUrl: (window.ytcfg && window.ytcfg.data_ && window.ytcfg.data_.PLAYER_JS_URL) || null, loggedIn: !!document.cookie.match(/SAPISID/) }) : null"
+  let pageData = null
+  for (let i = 0; i < 40; i++) {
+    try { const ev = await cdp(sessionId, "Runtime.evaluate", { expression: probe, returnByValue: true }); if (ev.result.value) { pageData = JSON.parse(ev.result.value); break } } catch {}
+    await new Promise(r => setTimeout(r, 250))
+  }
+  try { await cdp(sessionId, "Runtime.evaluate", { expression: "document.querySelectorAll('video').forEach(v => v.pause())" }) } catch {}
+  let cookies = ""
+  try { const r = await cdp(sessionId, "Network.getCookies", { urls: ["https://www.youtube.com/"] }); cookies = r.cookies.map(c => c.name + "=" + c.value).join("; ") } catch {}
+  return JSON.stringify({ page: pageData, cookies })
+} finally {
+  session.closeTab(t.targetId, sessionId).catch(() => {})
+}`
+  const out = bhjs(snippet, 30000);
+  if (!out) return null;
+  try {
+    const parsed = JSON.parse(out);
+    const page = parsed.page;
+    if (!page?.pr) return null;
+    return { pr: page.pr, playerJsUrl: page.playerJsUrl, cookies: parsed.cookies || null, loggedIn: !!page.loggedIn };
+  } catch { return null; }
 }
 
 async function fetchText(url: string, headers: Record<string, string> = {}): Promise<string> {
@@ -291,15 +313,48 @@ function toYtFormat(fmt: any, url: string): YtFormat {
   };
 }
 
-export async function getPlayerResponse(videoId: string, opts: YtdlOpts = {}): Promise<{ pr: any; client: string; baseJs: string | null }> {
+export async function getPlayerResponse(videoId: string, opts: YtdlOpts = {}): Promise<{ pr: any; client: string; baseJs: string | null; cookies: string | null }> {
   const vid = getVideoId(videoId);
   const verbose = opts.verbose;
-  // Best-effort live-tab bridge: cookies + STS help with gated content.
-  const tab = await readTabCookiesAndSts();
-  const cookies = opts.cookies || tab.cookies || undefined;
+  const quality = opts.quality || 'best';
+
+  // The inlined browser response yields a discrete itag 18 (360p muxed) only —
+  // adaptive is SABR-only on the web client, so no discrete HD/audio. It's primary
+  // for 360p (native: full auth, poToken's effect, zero impersonation). For HD/audio
+  // we lead with the discrete-URL clients (android_vr for public, web_embedded for
+  // gated) and use the inlined response only as a last-resort 360p fallback.
+  const isSd = quality === '360p';
+  let order: string[];
+  if (opts.client) {
+    order = [opts.client];
+  } else if (isSd) {
+    // android_vr is fast + headless for public 360p; inlined (native, full auth) is
+    // the gated-content fallback when android_vr returns UNPLAYABLE; web_embedded last.
+    order = ['android_vr', 'inlined', 'web_embedded'];
+  } else {
+    order = ['android_vr', 'web_embedded', 'inlined'];
+  }
+
+  // Lazy browser resolve: only run when a client in the order needs it. For HD on a
+  // public video, android_vr succeeds first and the browser is never touched.
+  let browser: ReturnType<typeof browserResolve> | undefined;  // undefined = not yet attempted
+  const getBrowser = (): ReturnType<typeof browserResolve> | null => {
+    if (browser === undefined) browser = browserResolve(vid);
+    return browser;
+  };
 
   const tryClient = async (client: string): Promise<any | null> => {
+    if (client === 'inlined') {
+      const b = getBrowser();
+      if (!b?.pr) return null;
+      const pr = b.pr;
+      const ok = pr.playabilityStatus?.status === 'OK' && (pr.streamingData?.formats || []).some((f: any) => f.itag === 18 && f.url);
+      log(`inlined: ${ok ? 'OK (itag 18 discrete)' : (pr.playabilityStatus?.status + ' / no itag-18 discrete')}`, verbose);
+      return ok ? pr : null;
+    }
     if (client === 'android_vr') {
+      const b = getBrowser();
+      const cookies = opts.cookies || b?.cookies || undefined;
       const visitorData = opts.visitorData || await scrapeVisitorData(vid);
       log(`android_vr player call`, verbose);
       const pr = await callAndroidVr(vid, visitorData, cookies);
@@ -308,8 +363,10 @@ export async function getPlayerResponse(videoId: string, opts: YtdlOpts = {}): P
       return null;
     }
     if (client === 'web_embedded') {
+      const b = getBrowser();
+      const cookies = opts.cookies || b?.cookies || undefined;
       log(`web_embedded player call`, verbose);
-      const pr = await callWebEmbedded(vid, opts, cookies, tab.sts);
+      const pr = await callWebEmbedded(vid, opts, cookies, null);
       if (pr.playabilityStatus?.status === 'OK') return pr;
       log(`web_embedded: ${pr.playabilityStatus?.status} ${pr.playabilityStatus?.reason || ''}`, verbose);
       return null;
@@ -317,7 +374,6 @@ export async function getPlayerResponse(videoId: string, opts: YtdlOpts = {}): P
     return null;
   };
 
-  const order = opts.client ? [opts.client] : ['android_vr', 'web_embedded'];
   let pr: any = null, client = '';
   for (const c of order) {
     try { pr = await tryClient(c); if (pr) { client = c; break; } }
@@ -327,8 +383,9 @@ export async function getPlayerResponse(videoId: string, opts: YtdlOpts = {}): P
 
   const all = [...(pr.streamingData?.formats || []), ...(pr.streamingData?.adaptiveFormats || [])];
   const needsSolver = all.some((f) => f.url && new URL(f.url).searchParams.has('n')) || all.some((f) => f.signatureCipher);
-  const baseJs = needsSolver ? (await getBaseJs(vid, tab.sts, tab.playerJsUrl)).src : null;
-  return { pr, client, baseJs };
+  const baseJs = needsSolver ? (await getBaseJs(vid, null, getBrowser()?.playerJsUrl)).src : null;
+  const cookies = opts.cookies || getBrowser()?.cookies || null;
+  return { pr, client, baseJs, cookies };
 }
 
 export async function info(urlOrId: string, opts: YtdlOpts = {}): Promise<YtInfo> {
@@ -337,6 +394,7 @@ export async function info(urlOrId: string, opts: YtdlOpts = {}): Promise<YtInfo
   const raw = [...(pr.streamingData?.formats || []), ...(pr.streamingData?.adaptiveFormats || [])];
   const formats: YtFormat[] = [];
   for (const f of raw) {
+    if (!f.url && !f.signatureCipher) continue;  // SABR-only (no discrete URL) — expected on the inlined web response, skip silently
     try {
       const url = baseJs ? await solveFormatUrl(f, baseJs) : f.url;
       if (!url) continue;
@@ -473,9 +531,11 @@ export async function download(urlOrId: string, opts: YtdlOpts = {}): Promise<st
   const inf = await info(vid, opts);
   const pick = pickFormats(inf.formats, quality);
   const safe = sanitizeTitle(opts.outName || inf.title);
-  // web_embedded URLs are signed against the embedder identity; send it as Referer.
-  // android_vr URLs need no Referer.
-  const referer = inf.clientUsed === 'web_embedded' ? (opts.embedUrl || 'https://www.reddit.com/') : undefined;
+  // Referer per client: inlined/web URLs are signed to youtube.com; web_embedded
+  // URLs to the embedder; android_vr URLs need none.
+  const referer = inf.clientUsed === 'web_embedded' ? (opts.embedUrl || 'https://www.reddit.com/')
+    : inf.clientUsed === 'inlined' ? 'https://www.youtube.com/'
+    : undefined;
 
   if (pick.muxed) {
     const out = `${outDir}/${safe}.${pick.muxed.container}`;

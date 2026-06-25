@@ -162,14 +162,10 @@ try {
       '      return sb;',
       '    }',
       '  });',
-      '  // page-side helpers used by the drain loop. __drainNew returns the chunks',
-      '  // appended since the last call (cursor _drainedTo), base64-encoded — used',
-      '  // during playback to flush captured media to disk incrementally so the',
-      '  // post-pause pull is just the tail. __pullBuffer is the original full-buffer',
-      '  // slice pull, used only for the final tail after __capDone freezes the hook.',
-      '  // Both cap each CDP response at a SMALL slice: a single 4MB returnByValue',
-      '  // frame closes the debug socket on some browsers (proven), so slices stay',
-      '  // well under that.',
+      '  // page-side helpers used by the post-pause pull. __pullBuffer returns a',
+      '  // base64 slice of one buffer; the REPL pulls in SMALL (256KB) slices after',
+      '  // the hook is frozen — a single 4MB returnByValue frame closes the debug',
+      '  // socket on some browsers (proven), so each CDP response stays well under that.',
       '  window.__capInfo = function() {',
       '    return window.__cap.buffers.map((b,i) => ({ i: i, kind: b.kind, mime: b.mime, bytes: b.bytes, count: b.count }));',
       '  };',
@@ -189,29 +185,6 @@ try {
       '      b64 += btoa(String.fromCharCode.apply(null, slice.subarray(i2, e2)));',
       '    }',
       '    return b64;',
-      '  };',
-      '  // Incremental drain: return chunks appended since the last call, advancing',
-      '  // a per-buffer _drainedTo cursor. Same small-slice cap + base64 encoding',
-      '  // as __pullBuffer. Called from the REPL during playback so the on-disk',
-      '  // file stays current and the post-pause pull is just the tail.',
-      '  window.__drainNew = function(i, maxBytes) {',
-      '    maxBytes = maxBytes || 262143;',
-      '    const b = window.__cap.buffers[i];',
-      '    if (!b) return { done: true, b64: "" };',
-      '    const from = b._drainedTo || 0;',
-      '    if (from >= b.chunks.length) return { done: true, b64: "" };',
-      '    let to = from, bytes = 0;',
-      '    while (to < b.chunks.length && bytes + b.chunks[to].length <= maxBytes) { bytes += b.chunks[to].length; to++; }',
-      '    if (to === from) { bytes = b.chunks[from].length; to = from + 1; }',
-      '    const u8 = new Uint8Array(bytes);',
-      '    let o = 0; for (let j = from; j < to; j++) { u8.set(b.chunks[j], o); o += b.chunks[j].length; }',
-      '    let b64 = "";',
-      '    for (let k = 0; k < u8.length; k += 49998) {',
-      '      const e = Math.min(k + 49998, u8.length);',
-      '      b64 += btoa(String.fromCharCode.apply(null, u8.subarray(k, e)));',
-      '    }',
-      '    b._drainedTo = to;',
-      '    return { done: false, b64: b64, bytes: bytes };',
       '  };',
       '})();'
     ].join('\\n')
@@ -280,50 +253,6 @@ try {
   let last = -1
   const deadline = Date.now() + Math.max(60_000, dur * 1000 / 12 + 60_000)
   let done = false
-  let tick = 0
-
-  // --- Streaming drain helpers (simple) ---
-  // drainFiles: buffer index -> { path, bytes, kind, ext }. One temp file per
-  // captured SourceBuffer, appended as the hook records during playback. By
-  // latch-time nearly all the media is already on disk, so the post-pause
-  // final drain is just the tail and the tab closes immediately after.
-  // SLICE is SMALL: a single 4MB returnByValue frame closes the debug socket
-  // on some browsers (proven), so each CDP response stays well under that.
-  // (Divisible by 3 so each base64 slice is independently decodable.)
-  const SLICE = 262143  // 256KB - 1, divisible by 3
-  const extOf = (mime) => mime.includes('webm') ? 'webm' : 'fmp4'
-  const drainFiles = new Map()
-  // drainOne: pull every new chunk of buffer i to its file since the last call.
-  const drainOne = async (i) => {
-    for (;;) {
-      const r = await cdp(sessionId, 'Runtime.evaluate', {
-        expression: 'window.__drainNew(' + i + ',' + SLICE + ')',
-        returnByValue: true
-      })
-      const s = r.result.value
-      if (!s || s.done) return
-      const chunk = Buffer.from(s.b64, 'base64')
-      fs.appendFileSync(drainFiles.get(i).path, chunk)
-      drainFiles.get(i).bytes += chunk.length
-    }
-  }
-  // drainTick: discover all current buffers, open a file for each new one, and
-  // drain them. Audio-only skips the (large) video stream.
-  const drainTick = async () => {
-    const infoR = await cdp(sessionId, 'Runtime.evaluate', { expression: 'JSON.stringify(window.__capInfo())', returnByValue: true })
-    const buffers = JSON.parse(infoR.result.value)
-    for (const b of buffers) {
-      if (b.kind !== 'video' && b.kind !== 'audio') continue
-      if (KEEP === 'audio' && b.kind === 'video') continue
-      if (!drainFiles.has(b.i)) {
-        const path = TMPDIR + '/' + b.kind + b.i + '.' + extOf(b.mime)
-        fs.writeFileSync(path, Buffer.alloc(0))
-        drainFiles.set(b.i, { path: path, bytes: 0, kind: b.kind, ext: extOf(b.mime) })
-      }
-      await drainOne(b.i)
-    }
-  }
-  // --- end drain helpers ---
 
   for (;;) {
     if (Date.now() > deadline) { vlog('coverage timeout'); break }
@@ -334,12 +263,6 @@ try {
     const s = JSON.parse(r.result.value)
     if (VERBOSE && Math.floor(s.t) !== Math.floor(last)) { last = Math.floor(s.t); vlog('t=' + s.t.toFixed(0) + '/' + dur.toFixed(0) + 's buffered=' + s.end.toFixed(0) + 's') }
     if (s.end >= dur - 0.5 || s.ended) { done = true; break }
-    // Streaming drain during playback: flush whatever the hook has recorded so
-    // far to disk, so the on-disk files stay current and the post-pause pull is
-    // just the tail. Runs ~every 1s (every 4th 250ms tick). Small slices only
-    // — a single 4MB returnByValue frame closes the debug socket on some
-    // browsers, so __drainNew caps each CDP response at 256KB.
-    if (++tick % 4 === 0) { try { await drainTick() } catch (e) { vlog('drain tick err: ' + (e?.message || e)) } }
     await new Promise(r => setTimeout(r, 250))
   }
 
@@ -353,31 +276,51 @@ try {
   const buffers = JSON.parse(infoR.result.value)
   vlog('captured ' + buffers.length + ' source buffer(s): ' + JSON.stringify(buffers.map(b => b.kind + ':' + b.bytes)))
 
-  // Final drain: __capDone is set, so no further appends can arrive — one
-  // pass per buffer pulls only the tail (chunks since the last in-loop drain).
-  // By now nearly all the capture is already on disk, so this is fast and the
-  // tab closes right after.
-  try { await drainTick() } catch (e) { vlog('final drain err: ' + (e?.message || e)) }
-
   // The player can create more than one MediaSource (quality-switch re-init,
-  // mini-player, etc.), so there may be several video/audio drained files. Pick
-  // the LARGEST of each kind — that is the real full capture; the small
-  // init-segment duplicates get unlinked.
+  // mini-player, etc.), so there may be several video/audio buffers. Pick the
+  // LARGEST of each kind — that is the real full capture; the small ones are
+  // init-segment duplicates. Robust regardless of how many buffers exist.
   let pv = null, pa = null
-  for (const f of drainFiles.values()) {
-    if (f.kind === 'video' && (!pv || f.bytes > pv.bytes)) pv = f
-    if (f.kind === 'audio' && (!pa || f.bytes > pa.bytes)) pa = f
+  for (const b of buffers) {
+    if (b.kind === 'video' && (!pv || b.bytes > pv.bytes)) pv = b
+    if (b.kind === 'audio' && (!pa || b.bytes > pa.bytes)) pa = b
   }
-  for (const f of drainFiles.values()) {
-    if (f !== pv && f !== pa) { try { fs.unlinkSync(f.path) } catch {} }
+  const extOf = (mime) => mime.includes('webm') ? 'webm' : 'fmp4'
+
+  // Pull the chosen buffer(s) to disk AFTER pause in SMALL (256KB, 3-aligned)
+  // base64 slices -> append. __capDone is set so no further appends arrive;
+  // the hook is frozen, this is a one-shot pull. SLICE stays small: a single
+  // 4MB returnByValue frame closes the debug socket on some browsers (proven
+  // on Dia), so each CDP response is well under that. (Divisible by 3 so each
+  // base64 slice is independently decodable.)
+  const SLICE = 262143  // 256KB - 1, divisible by 3
+  const pullOne = async (b, kind) => {
+    if (!b) return null
+    const path = TMPDIR + '/' + kind + '.' + extOf(b.mime)
+    fs.writeFileSync(path, Buffer.alloc(0))
+    let off = 0
+    while (off < b.bytes) {
+      const r = await cdp(sessionId, 'Runtime.evaluate', {
+        expression: 'window.__pullBuffer(' + b.i + ',' + off + ',' + SLICE + ')',
+        returnByValue: true
+      })
+      const b64 = r.result.value
+      if (!b64) break
+      const chunk = Buffer.from(b64, 'base64')
+      fs.appendFileSync(path, chunk)
+      off += chunk.length
+      if (off >= b.bytes) break
+    }
+    vlog('wrote ' + kind + ' ' + off + ' bytes -> ' + path)
+    return { bytes: off, path: path, ext: extOf(b.mime) }
   }
 
   const primary = {}
   if (KEEP === 'audio') {
-    primary.audio = pa ? { path: pa.path, ext: pa.ext, bytes: pa.bytes } : null
+    primary.audio = await pullOne(pa, 'audio')
   } else {
-    primary.video = pv ? { path: pv.path, ext: pv.ext, bytes: pv.bytes } : null
-    primary.audio = pa ? { path: pa.path, ext: pa.ext, bytes: pa.bytes } : null
+    primary.video = await pullOne(pv, 'video')
+    primary.audio = await pullOne(pa, 'audio')
   }
 
   // Best-effort read of the actual played quality.

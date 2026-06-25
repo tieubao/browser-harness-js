@@ -1,0 +1,84 @@
+#!/usr/bin/env bun
+/**
+ * ytdl — self-contained YouTube downloader CLI.
+ *
+ *   ytdl <url|id>                          # download best quality to ~/Downloads
+ *   ytdl <url|id> -q 360p                  # 360p muxed (no ffmpeg needed)
+ *   ytdl <url|id> -q 1080p                 # 1080p adaptive (video+audio, ffmpeg mux)
+ *   ytdl <url|id> -q audio                 # audio only
+ *   ytdl <url|id> -q best -o My_Video.mp4  # custom name
+ *   ytdl <url|id> --info                   # print formats, don't download
+ *   ytdl <url|id> --formats                # one itag per line
+ *   ytdl <url|id> --client web_embedded    # force the gated-content client
+ *   ytdl <url|id> -v                       # verbose progress to stderr
+ *
+ * Engine is Bun (HTTP + n-signature solver + multi-connection download). If the
+ * `browser-harness-js` CLI is on PATH and a YouTube tab is connected, ytdl reads
+ * the authed cookie jar + signature timestamp from it to crack made-for-kids /
+ * age-gated / members-only content. Without a browser, public videos still work
+ * via the unauthed `android_vr` client.
+ *
+ * HD (720p+) needs `ffmpeg` on PATH for the video+audio mux. 360p muxed does not.
+ */
+import { info, download, formats, getVideoId, type YtdlOpts } from '../lib/ytdl.ts';
+
+const args = process.argv.slice(2);
+
+function usage(): never {
+  process.stderr.write(`\
+Usage: ytdl <url|id> [options]
+  -q, --quality <q>   360p | 720p | 1080p | best | audio   (default: best)
+  -o, --out <name>    output filename (without extension)
+  -d, --dir <path>    output directory (default: ~/Downloads)
+  -c, --client <c>    android_vr | web_embedded             (default: auto)
+  --formats           list available itags, don't download
+  --info              print video info + formats as JSON, don't download
+  --embed-url <url>   embedder for web_embedded             (default: https://www.reddit.com/)
+  -v, --verbose       progress to stderr
+  -h, --help          this message
+`);
+  process.exit(1);
+}
+
+if (args.length === 0 || args.includes('-h') || args.includes('--help')) usage();
+
+const pos: string[] = [];
+const opts: YtdlOpts & { showFormats?: boolean; showInfo?: boolean } = {};
+
+for (let i = 0; i < args.length; i++) {
+  const a = args[i];
+  switch (a) {
+    case '-q': case '--quality': opts.quality = args[++i]; break;
+    case '-o': case '--out': opts.outName = args[++i]; break;
+    case '-d': case '--dir': opts.outDir = args[++i]; break;
+    case '-c': case '--client': opts.client = args[++i] as any; break;
+    case '--embed-url': opts.embedUrl = args[++i]; break;
+    case '-v': case '--verbose': opts.verbose = true; break;
+    case '--formats': opts.showFormats = true; break;
+    case '--info': opts.showInfo = true; break;
+    default:
+      if (a.startsWith('-')) { process.stderr.write(`ytdl: unknown option ${a}\n`); usage(); }
+      pos.push(a);
+  }
+}
+
+if (pos.length !== 1) { process.stderr.write('ytdl: exactly one <url|id> required\n'); usage(); }
+const target = pos[0];
+
+try {
+  if (opts.showFormats) {
+    const fs = await formats(target, opts);
+    for (const f of fs) {
+      process.stdout.write(`${f.itag}\t${f.container}\t${f.hasVideo ? (f.height || '?') + 'p' : 'audio'}\t${f.hasAudio ? 'A' : '-'}${f.hasVideo ? 'V' : '-'}\t${(f.filesize ? (f.filesize / 1024 / 1024).toFixed(1) + 'MB' : '?')}\n`);
+    }
+  } else if (opts.showInfo) {
+    const inf = await info(target, opts);
+    process.stdout.write(JSON.stringify(inf, null, 2) + '\n');
+  } else {
+    const out = await download(target, opts);
+    process.stdout.write(out + '\n');
+  }
+} catch (e: any) {
+  process.stderr.write(`ytdl: ${e?.message ?? e}\n`);
+  process.exit(1);
+}

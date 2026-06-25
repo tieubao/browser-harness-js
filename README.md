@@ -43,12 +43,14 @@ See [skills/cdp/interaction-skills/](skills/cdp/interaction-skills/) for recipes
 
 ## Skills
 
-This repo contains two skills installable via `npx skills add`:
+This repo contains four skills installable via `npx skills add`:
 
 | Skill | Description |
 |-------|------------|
 | **cdp** | Drive any Chromium-based browser via CDP — 56 domains, 652 typed methods |
 | **gsearch** | Search the web via Google through CDP — structured results in under 1 second |
+| **xsearch** | Search X (Twitter) via CDP — structured results (requires an active X login) |
+| **ytdl** | Download YouTube videos as a self-contained Bun CLI — client impersonation + n-signature solver, no `yt-dlp` binary |
 
 ## Files
 
@@ -60,6 +62,12 @@ This repo contains two skills installable via `npx skills add`:
 - `skills/cdp/sdk/generated.ts` — every CDP method as `session.<Domain>.<method>(params)` (generated)
 - `skills/gsearch/SKILL.md` — Google Search skill instructions
 - `skills/gsearch/scripts/gsearch` — Google Search CLI
+- `skills/xsearch/SKILL.md` — X (Twitter) Search skill instructions
+- `skills/xsearch/scripts/xsearch` — X Search CLI
+- `skills/ytdl/SKILL.md` — YouTube download skill instructions
+- `skills/ytdl/scripts/ytdl` — self-contained YouTube download CLI (Bun)
+- `skills/ytdl/lib/ytdl.ts` — client table, player API, n/sig solver, multi-connection download
+- `skills/ytdl/lib/solver/` — vendored EJS solver (Unlicense) + meriyah (ISC) + astring (MIT)
 
 No helpers file. No `click()`, no `goto()`, no `upload_file()` — just the protocol, typed.
 

@@ -363,8 +363,13 @@ try {
     if (b.kind === 'audio' && (!pa || b.bytes > pa.bytes)) pa = b
   }
 
-  // Pull the chosen buffer(s) to disk in 4MB (3-aligned) base64 slices -> append.
-  const SLICE = 4194300  // divisible by 3 -> each base64 slice is independently decodable
+  // Pull the chosen buffer(s) to disk in 256KB (3-aligned) base64 slices -> append.
+  // 256KB, NOT 4MB: a single returnByValue frame carrying base64 of a 4MB slice
+  // is ~5.6MB of JSON on ONE CDP frame, which closes Dia's debug WebSocket on
+  // the first call (reproduced in ytdl — a 256KB slice from the same buffer
+  // survives, the 4MB slice drops rs->3 instantly). Keep slices small so no CDP
+  // response is oversized; ttdl buffers are small so throughput is a non-issue.
+  const SLICE = 262143  // 256KB, divisible by 3 -> each base64 slice is independently decodable
   const pullOne = async (b, kind) => {
     if (!b) return null
     const path = TMPDIR + '/' + kind + '.fmp4'

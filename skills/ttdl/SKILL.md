@@ -127,10 +127,12 @@ All inside one `browser-harness-js <<EOF` heredoc, ytdl-style:
    higher-quality one when it ramps up — yielding 4 buffers (2 video, 2 audio).
    The largest of each kind is the real capture; the small ones are the
    abandoned lower-quality pair.
-8. **Pull each to disk** in 4 MB (byte-count divisible by 3, so each base64
+8. **Pull each to disk** in 256 KB (byte-count divisible by 3, so each base64
    slice is independently decodable) chunks: page-side `__pullBuffer(i,offset,len)`
    returns base64; the REPL decodes with `Buffer.from(b64,'base64')` and
-   `fs.appendFileSync`s it.
+   `fs.appendFileSync`s it. 256 KB, not 4 MB — see the Traps below: a single
+   `returnByValue` frame carrying base64 of a 4 MB slice closes Dia's debug
+   WebSocket on the first call.
 9. **ffmpeg** `-i video -i audio -t <duration> -c copy -movflags +faststart out.mp4`
    (bash, after the heredoc returns the temp-file paths).
 10. **`closeTab`** in `try/finally`, fire-and-forget — exact ytdl teardown.
@@ -188,6 +190,6 @@ All paths relative to `<skill-dir>`.
 - **Detect the "verify you are human" / captcha interstitial and back off.** TikTok is aggressive about bot detection. ttdl scans `document.body.innerText` for `verify|robot|human|captcha|unusual|slide to|puzzle` during the player-ready poll and throws a clear error if it hits one. Open the URL once manually in the browser to clear it, then retry — don't hammer it.
 - **Borrow a logged-in tab for gated content.** Region-locked, age-gated, and followers-only videos may require an active TikTok login. ttdl opens its own tab but reuses the browser's cookie jar; if you can watch it in the browser, ttdl can record it.
 - **`ffmpeg` is always required.** Unlike ytdl (where ffmpeg is only needed for HD muxing), ttdl needs it for every download: TikTok serves separate audio+video buffers (mux), the edit-list tail (trim), and fragmented-MP4 capture (faststart). The CLI refuses to run if `ffmpeg` isn't on PATH. Don't drop `-y` (overwrite) — without it ffmpeg's interactive `Overwrite? [y/N]` prompt fails non-interactively and leaves a stale file.
-- **Bytes cross the CDP boundary as base64** in 4 MB (3-aligned) slices via `Runtime.evaluate` `returnByValue`, decoded with `Buffer.from(b64,'base64')` and appended. The slice size is divisible by 3 so each slice's base64 is independently decodable (no interior `=` padding). Don't slice at a non-multiple-of-3 offset or the concatenation decodes to garbage.
+- **Bytes cross the CDP boundary as base64** in 256 KB (3-aligned) slices via `Runtime.evaluate` `returnByValue`, decoded with `Buffer.from(b64,'base64')` and appended. The slice size is divisible by 3 so each slice's base64 is independently decodable (no interior `=` padding). Don't slice at a non-multiple-of-3 offset or the concatenation decodes to garbage. **256 KB, NOT 4 MB:** a single `returnByValue` frame carrying base64 of a 4 MB slice is ~5.6 MB of JSON on one CDP frame, which **closes Dia's debug WebSocket on the first call** (reproduced in ytdl — a 256 KB slice from the same buffer survives, the 4 MB slice drops `rs→3` instantly). This was latent in ttdl because TikTok buffers are usually <4 MB, but any longer/higher-quality HEVC TikTok exceeds it and the first pull slice kills the socket. Keep slices small; throughput is a non-issue at these sizes.
 - **Output is HEVC + AAC, which is QuickTime/iOS-friendly as-is.** TikTok typically serves HEVC (`hvc1`) video + AAC (`mp4a`) audio; `-c copy` preserves those and iOS/macOS play them natively (no re-encode needed, unlike ytdl's AV1/Opus). If a video comes back as AV1/VP9+Opus and you need QuickTime/iOS, re-encode in one step: `ffmpeg -y -i "out.mp4" -c:v libx264 -crf 18 -preset veryfast -pix_fmt yuv420p -c:a aac -b:a 192k "out-qt.mp4"`.
 - **No backticks anywhere in the heredoc body.** In an unquoted `<<EOF`, a lone backtick opens bash command substitution and trips an EOF parse error. Use string concatenation (`'...' + var + '...'`) and double-quoted JS strings, never template literals. Likewise avoid `$` in JS (only intentional `${bash_var}` interpolations belong) and avoid backslash-regex for URL parsing (use `indexOf`/`slice`) so the unquoted heredoc passes it through untouched.

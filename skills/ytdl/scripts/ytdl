@@ -4,6 +4,7 @@ set -euo pipefail
 # ytdl — browser-native YouTube downloader.
 #
 #   ytdl <url|id>                          # best quality → ~/Downloads
+#   ytdl youtube.com/shorts/<id>           # Shorts (→ watch?v=)
 #   ytdl <url|id> -q 360p                  # 360p
 #   ytdl <url|id> -q 1080p                 # 1080p (ffmpeg mux)
 #   ytdl <url|id> -q audio                 # audio only
@@ -76,6 +77,12 @@ extract_id() {
   id=$(printf '%s' "$u" | sed -nE 's#.*youtu\.be/([A-Za-z0-9_-]{11}).*#\1#p' | head -1)
   [ -n "$id" ] && { echo "$id"; return 0; }
   id=$(printf '%s' "$u" | sed -nE 's#.*youtube\.com/embed/([A-Za-z0-9_-]{11}).*#\1#p' | head -1)
+  [ -n "$id" ] && { echo "$id"; return 0; }
+  # YouTube Shorts: youtube.com/shorts/<id>[/...]?... — a Short is just a video,
+  # so normalize to watch?v=<id> below and capture it in the regular watch player.
+  # The Shorts page is a different UI shell around the same #movie_player; the
+  # watch URL is the path ytdl's selectors / autonav / quality logic targets.
+  id=$(printf '%s' "$u" | sed -nE 's#.*youtube\.com/shorts/([A-Za-z0-9_-]{11}).*#\1#p' | head -1)
   [ -n "$id" ] && { echo "$id"; return 0; }
   return 1
 }

@@ -26,6 +26,7 @@ playback. ytdl just records the result.
 
 ```bash
 ytdl "https://www.youtube.com/watch?v=..."            # best quality → ~/Downloads
+ytdl "https://www.youtube.com/shorts/<id>"            # Shorts — normalized to watch?v=
 ytdl "https://www.youtube.com/watch?v=..." -q 360p    # 360p
 ytdl "https://www.youtube.com/watch?v=..." -q 1080p   # 1080p (ffmpeg mux)
 ytdl "https://www.youtube.com/watch?v=..." -q audio   # audio only
@@ -169,4 +170,5 @@ All paths relative to `<skill-dir>`.
 - **Re-assert `muted` + `playbackRate` every poll tick.** YouTube's player resets `muted`/`playbackRate` on a quality switch, ad, or player re-init; a one-shot set at play-start gets clobbered and you'll hear the 16× chipmunk audio. The coverage poll re-asserts both each 250 ms — keep that if you touch the loop.
 - **Reset `currentTime` to 0 at play-start.** A signed-in account restores the last watch position ("resume from where you left off") on a bare `watch?v=ID` URL with no `t=` — if the account previously watched part of the video, the player starts partway through and the MSE capture only covers from the resume point onward (the `buffered.end >= dur-0.5` check still passes, since the player buffers ahead to the end). `extract_id` already strips any `t=`/`start=` URL param, but resume position is account-side, not URL-side, so the play-start nudge also forces `v.currentTime = 0` after metadata loads. Keep it — without it, resumed videos download missing their beginning.
 - **ffmpeg runs with `-y` (overwrite).** Re-running the same video overwrites the prior output instead of hitting ffmpeg's interactive `Overwrite? [y/N]` prompt, which fails non-interactively and silently leaves a stale file. Don't drop `-y`.
+- **YouTube Shorts (`/shorts/<id>`) are normalized to `watch?v=<id>`.** A Short is just a video; the Shorts page is a different UI shell around the same `#movie_player`, so `extract_id` pulls the 11-char id from `youtube.com/shorts/<id>` and the rest of the pipeline captures it in the regular watch player — the autonav toggle, quality forcing, and MSE-hook selectors all target the watch page. Don't try to drive the Shorts shell directly: its swipe-to-next autonav is a different control (`.ytp-autonav-toggle` is absent) and its layout hides the controls ytdl relies on.
 - **Live / Premiere uses HLS**, not MediaSource segments — not supported by this skill.

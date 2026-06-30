@@ -151,19 +151,13 @@ Use DOM queries (`DOM.querySelector`, `Runtime.evaluate` with `querySelector`) w
 
 ### Connecting
 
-**Preferred: connect directly to `127.0.0.1:9222`.** If a Chromium-based browser is already running with `--remote-debugging-port=9222`, this is the fastest and most reliable path — no profile scanning, no guessing which browser. Always try this first:
+**Preferred: just call `session.connect()` with no args.** It auto-detects the browser, the port, and the host — no hardcoded port to keep in sync, no guessing which browser. Always try this first:
 
 ```js
-await session.connect({ port: 9222, host: '127.0.0.1' })
+await session.connect()   // auto-detect: browser + port + host (loopback)
 ```
 
-If that fails (no browser on 9222, or the port isn't open yet), fall back to auto-detect:
-
-```js
-await session.connect()   // auto-detect via DevToolsActivePort scan
-```
-
-Auto-detect scans OS-specific profile dirs for running Chromium-based browsers (Chrome, Chromium, Edge, Brave, Arc, Vivaldi, Opera, Comet, Canary, Dia, etc.) by looking for a `DevToolsActivePort` file, ordered by most-recently-launched, and picks the first one whose WebSocket accepts. OS-agnostic — works on macOS, Linux, Windows.
+Auto-detect scans OS-specific browser-data dirs for running Chromium-based browsers (Chrome, Chromium, Edge, Brave, Arc, Vivaldi, Opera, Comet, Canary, Dia, Aside, and any other Chromium fork) by looking for a `DevToolsActivePort` file. Each browser picks its own debug port (Chrome often 9222, but Aside uses an ephemeral one like 52860, etc.) — auto-detect reads the actual port from that file instead of assuming 9222. The host is always loopback (`127.0.0.1`) for a locally-running browser. Candidates are ordered by most-recently-launched, and the first one whose WebSocket accepts wins. OS-agnostic — works on macOS, Linux, Windows.
 
 Use `detectBrowsers()` first if you want to see what's available (or let the user pick) before connecting:
 
@@ -176,25 +170,25 @@ const found = await detectBrowsers()
 
 | Form | When to use |
 |---|---|
-| `{ port, host? }` | Port is known (default host `127.0.0.1`). **Preferred** — no profile scanning needed. |
+| `{ port, host? }` | You launched the browser with a known `--remote-debugging-port`. Default host `127.0.0.1`. |
 | `{ profileDir }` | Target a specific browser when several are running. Reads `<profileDir>/DevToolsActivePort` directly. |
-| `{ wsUrl }` | You already have `ws://…/devtools/browser/<uuid>` (e.g. piped from elsewhere). |
+| `{ wsUrl }` | You already have `ws://…/devtools/browser/<uuid>` (e.g. a remote browser over SSH). |
 
 ```js
-await session.connect({ port: 9222 })
+await session.connect({ port: 9222 })                                        // a specific port you set
 await session.connect({ profileDir: '/Users/<you>/Library/Application Support/Dia' })
 await session.connect({ wsUrl: 'ws://127.0.0.1:9222/devtools/browser/<uuid>' })
 ```
 
 Profile paths by OS — use these with `{ profileDir }`:
-- macOS: `~/Library/Application Support/<Browser>` (e.g. `Dia/User Data`, `Google/Chrome`, `Comet`, `BraveSoftware/Brave-Browser`, `Arc/User Data`)
-- Linux: `~/.config/<browser>` (e.g. `dia`, `google-chrome`, `chromium`, `BraveSoftware/Brave-Browser`)
-- Windows: `%LOCALAPPDATA%\<Browser>\User Data` (e.g. `Dia\User Data`, `Google\Chrome`, `Microsoft\Edge`, `BraveSoftware\Brave-Browser`)
+- macOS: `~/Library/Application Support/<Browser>` (e.g. `Dia/User Data`, `Google/Chrome`, `Comet`, `BraveSoftware/Brave-Browser`, `Arc/User Data`, `Aside`)
+- Linux: `~/.config/<browser>` (e.g. `dia`, `google-chrome`, `chromium`, `BraveSoftware/Brave-Browser`, `aside`)
+- Windows: `%LOCALAPPDATA%\<Browser>\User Data` (e.g. `Dia\User Data`, `Google\Chrome`, `Microsoft\Edge`, `BraveSoftware\Brave-Browser`, `Aside`)
 
 Per-candidate WS-open timeout defaults to **5s** — live browsers answer with open/close within ~100ms, so 5s is already generous. The only case where 5s is too short is when the browser is showing the **Allow** popup and waiting for the user to click. If you expect that, pass `timeoutMs: 30000`:
 
 ```js
-await session.connect({ port: 9222, timeoutMs: 30_000 })
+await session.connect({ timeoutMs: 30_000 })
 ```
 
 **If you see `No detected browser accepted a connection`** — the browsers have `DevToolsActivePort` files but none are currently serving WS. Most common cause: remote-debugging is enabled but the user hasn't clicked **Allow** on the prompt yet. Tell them to click Allow, then retry (or bump `timeoutMs`).
@@ -250,9 +244,8 @@ browser-harness-js 'await session.Page.navigate({url:"https://example.com"})'
 
 When attaching to the user's already-running browser:
 
-1. **Try `await session.connect({ port: 9222 })` first** — direct port connection to `127.0.0.1:9222`. If it returns, you're done.
-2. **If port 9222 fails**, try `await session.connect()` (no args) — auto-detect handles every Chromium-based browser via `DevToolsActivePort`. If it returns, you're done.
-3. **If both fail** with `No running browser with remote debugging detected`, the user needs to turn it on. Detect which browser to open, then navigate to the inspect page:
+1. **Try `await session.connect()` first** — no-args auto-detect handles every Chromium-based browser via `DevToolsActivePort` (any port, loopback host). If it returns, you're done.
+2. **If that fails** with `No running browser with remote debugging detected`, the user needs to turn it on. Detect which browser to open, then navigate to the inspect page:
    ```bash
    # First, detect the default/running Chromium browser
    browser-harness-js 'const found = await detectBrowsers(); return found.length ? found[0].name : "none"'
@@ -269,9 +262,9 @@ When attaching to the user's already-running browser:
    Start-Process <browser-binary> 'chrome://inspect/#remote-debugging'
    ```
    Only macOS's AppleScript path avoids the profile picker; Linux/Windows may prompt the user to pick a profile first.
-4. **Tick "Discover network targets"** in the browser's inspect page, then click **Allow** when the browser prompts.
-5. **If auto-detect picks the wrong browser** (multiple running, you want a specific one): list them with `await detectBrowsers()`, then `await session.connect({ profileDir: <the one you want> })`.
-6. **If `session.connect()` returns `No detected browser accepted a connection`**, the user has remote-debugging on but hasn't clicked **Allow** yet. Tell them to click it and retry, or pass `timeoutMs: 30000` to wait for the click.
+3. **Tick "Discover network targets"** in the browser's inspect page, then click **Allow** when the browser prompts.
+4. **If auto-detect picks the wrong browser** (multiple running, you want a specific one): list them with `await detectBrowsers()`, then `await session.connect({ profileDir: <the one you want> })`.
+5. **If `session.connect()` returns `No detected browser accepted a connection`**, the user has remote-debugging on but hasn't clicked **Allow** yet. Tell them to click it and retry, or pass `timeoutMs: 30000` to wait for the click.
 
 ## Working with targets (tabs)
 

@@ -2,10 +2,10 @@
 # browser-harness-js — eval JS in the persistent CDP REPL. Auto-starts the REPL on first use.
 #
 # Usage:
-#   browser-harness-js 'await session.connect({port:9222})'
+#   browser-harness-js 'await session.connect()'
 #   browser-harness-js 'await session.Page.navigate({url:"https://example.com"})'
 #   browser-harness-js <<'EOF'
-#     const t = await listPageTargets("localhost", 9222);
+#     const t = await listPageTargets();
 #     globalThis.tid = t[0].targetId;
 #     await session.use(globalThis.tid);
 #     globalThis.tid

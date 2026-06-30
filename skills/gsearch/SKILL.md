@@ -6,7 +6,7 @@ description: >-
   something up, find a link, or research a topic. Requires browser-harness-js
   on PATH and a Chromium-based browser with remote debugging enabled.
 setup: bash <skill-dir>/scripts/setup
-compatibility: Requires browser-harness-js on PATH and a running Chromium browser with remote debugging (port 9222 or chrome://inspect).
+compatibility: Requires browser-harness-js on PATH and a running Chromium browser with remote debugging (chrome://inspect or --remote-debugging-port).
 ---
 
 # Google Search
@@ -78,9 +78,7 @@ Open a result `url` directly through `browser-harness-js` — no need to re-sear
 ```bash
 browser-harness-js <<'EOF'
 if (!session.isConnected()) {
-  try { await session.connect({ port: 9222 }) } catch {
-    try { await session.connect() } catch (e) { throw new Error("Cannot connect: " + e.message) }
-  }
+  try { await session.connect() } catch (e) { throw new Error("Cannot connect: " + e.message) }
 }
 
 const url = "https://example.com/some-article"
@@ -121,9 +119,7 @@ If `gsearch` isn't on PATH, the same logic runs directly through `browser-harnes
 ```bash
 browser-harness-js <<'EOF'
 if (!session.isConnected()) {
-  try { await session.connect({ port: 9222 }) } catch {
-    try { await session.connect() } catch (e) { throw new Error("Cannot connect: " + e.message) }
-  }
+  try { await session.connect() } catch (e) { throw new Error("Cannot connect: " + e.message) }
 }
 
 const count = 10

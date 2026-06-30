@@ -134,9 +134,7 @@ function latchTitle(s){
 }
 
 if (!session.isConnected()) {
-  try { await session.connect({ port: 9222, host: '127.0.0.1' }) } catch {
-    try { await session.connect() } catch (e) { throw new Error('Cannot connect to browser: ' + e.message) }
-  }
+  try { await session.connect() } catch (e) { throw new Error('Cannot connect to browser: ' + e.message) }
 }
 
 // Foreground — TikTok autoplays muted on a foreground tab; background tabs have

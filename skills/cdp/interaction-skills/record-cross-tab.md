@@ -5,7 +5,7 @@ Capture real clicks / keystrokes / changes the user makes, across every tab — 
 ## Shortest version: record clicks from tabs you already know
 
 ```js
-await session.connect({ port: 9222 })
+await session.connect()
 
 globalThis.rec = []
 const off = session.onEvent((method, params, sessionId) => {
@@ -48,7 +48,7 @@ for (const t of await listPageTargets()) {
 Browser-level `Target.setAutoAttach` attaches every existing page target **and** every new tab the user opens, firing `Target.attachedToTarget` for each. Instrument each from that single event:
 
 ```js
-await session.connect({ port: 9222 })
+await session.connect()
 
 const LISTENER = `
 (function(){

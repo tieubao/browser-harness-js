@@ -5,7 +5,7 @@ description: >-
   URL, timestamp) for any query. Requires browser-harness-js on PATH, a
   Chromium-based browser with remote debugging, and an active X session (logged in).
 setup: bash <skill-dir>/scripts/setup
-compatibility: Requires browser-harness-js on PATH, a running Chromium browser with remote debugging (port 9222 or chrome://inspect), and an active X (Twitter) login in the browser.
+compatibility: Requires browser-harness-js on PATH, a running Chromium browser with remote debugging (chrome://inspect or --remote-debugging-port), and an active X (Twitter) login in the browser.
 ---
 
 # X Search
@@ -78,9 +78,7 @@ the focus tweet (first in DOM order on a permalink):
 ```bash
 browser-harness-js <<'EOF'
 if (!session.isConnected()) {
-  try { await session.connect({ port: 9222 }) } catch {
-    try { await session.connect() } catch (e) { throw new Error("Cannot connect: " + e.message) }
-  }
+  try { await session.connect() } catch (e) { throw new Error("Cannot connect: " + e.message) }
 }
 
 const url = "https://x.com/injaneity/status/2065110712511500620"

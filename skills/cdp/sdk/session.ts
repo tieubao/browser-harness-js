@@ -7,7 +7,8 @@
  */
 
 import { bindDomains, type Domains, type Transport } from './generated.ts';
-import { readFile, stat } from 'node:fs/promises';
+import { readFile, readdir, stat } from 'node:fs/promises';
+import { join } from 'node:path';
 
 type Pending = {
   resolve: (v: unknown) => void;
@@ -412,13 +413,20 @@ export async function listPageTargets(session: Session): Promise<PageTarget[]> {
  * This is the ONLY reliable connect method for Chrome 144+ with remote
  * debugging toggled from chrome://inspect — those browsers do NOT serve
  * `/json/version`, so port-probe discovery fails.
+ *
+ * In addition to the explicit candidate list, a bounded fallback scan of the
+ * OS browser-data roots discovers browsers without a hardcoded entry (newly-
+ * released Chromium forks, niche browsers). Both are merged and ordered by
+ * recency.
  */
 export async function detectBrowsers(): Promise<DetectedBrowser[]> {
   const candidates = getBrowserCandidates();
   const detected: DetectedBrowser[] = [];
+  const seen = new Set<string>();
   for (const { name, profileDir } of candidates) {
     const parsed = await tryReadDevToolsActivePort(profileDir);
     if (!parsed) continue;
+    seen.add(profileDir);
     detected.push({
       name,
       profileDir,
@@ -427,6 +435,12 @@ export async function detectBrowsers(): Promise<DetectedBrowser[]> {
       wsUrl: `ws://127.0.0.1:${parsed.port}${parsed.path}`,
       mtimeMs: parsed.mtimeMs,
     });
+  }
+  // Fallback: scan the OS browser-data roots for any Chromium browser we
+  // don't ship an explicit entry for (newly-released forks, niche browsers
+  // like Aside). Catches profile layouts the hardcoded list doesn't cover.
+  for (const extra of await scanForExtraBrowsers(seen)) {
+    detected.push(extra);
   }
   detected.sort((a, b) => b.mtimeMs - a.mtimeMs);
   return detected;
@@ -451,6 +465,7 @@ function getBrowserCandidates(): BrowserCandidate[] {
     push('Vivaldi',                `${base}/Vivaldi`);
     push('Opera',                  `${base}/com.operasoftware.Opera`);
     push('Comet',                  `${base}/Comet`);
+    push('Aside',                  `${base}/Aside`);
     push('Google Chrome Canary',   `${base}/Google/Chrome Canary`);
   } else if (process.platform === 'linux') {
     const cfg = `${home}/.config`;
@@ -461,10 +476,12 @@ function getBrowserCandidates(): BrowserCandidate[] {
     push('Brave',                  `${cfg}/BraveSoftware/Brave-Browser`);
     push('Vivaldi',                `${cfg}/vivaldi`);
     push('Opera',                  `${cfg}/opera`);
+    push('Aside',                  `${cfg}/aside`);
     push('Google Chrome Canary',   `${cfg}/google-chrome-unstable`);
   } else if (process.platform === 'win32') {
     const local = process.env.LOCALAPPDATA ?? `${home}\\AppData\\Local`;
     push('Dia',                    `${local}\\Dia\\User Data`);
+    push('Aside',                  `${local}\\Aside`);
     push('Google Chrome',          `${local}\\Google\\Chrome\\User Data`);
     push('Chromium',               `${local}\\Chromium\\User Data`);
     push('Microsoft Edge',         `${local}\\Microsoft\\Edge\\User Data`);
@@ -475,6 +492,73 @@ function getBrowserCandidates(): BrowserCandidate[] {
     push('Google Chrome Canary',   `${local}\\Google\\Chrome SxS\\User Data`);
   }
   return list;
+}
+
+/** OS-specific parent dirs holding Chromium browser profile folders — the same
+ *  roots `getBrowserCandidates` draws from. `scanForExtraBrowsers()` walks
+ *  these to discover browsers without a hardcoded entry. */
+function getBrowserDataRoots(): string[] {
+  const home = process.env.HOME ?? process.env.USERPROFILE ?? '';
+  if (process.platform === 'darwin') return [`${home}/Library/Application Support`];
+  if (process.platform === 'linux')  return [`${home}/.config`];
+  if (process.platform === 'win32')  return [process.env.LOCALAPPDATA ?? `${home}\\AppData\\Local`];
+  return [];
+}
+
+/**
+ * Best-effort fallback scan of the browser-data roots for Chromium-based
+ * browsers NOT in `getBrowserCandidates()`. Catches new/niche forks (Antigravity, howcode,
+ * etc.) without a hardcoded path, so `connect()` supports them out of the box.
+ *
+ * Bounded to two directory levels under each root — enough to cover every
+ * Chromium profile layout we know of:
+ *   <root>/<product>/DevToolsActivePort                    (Comet, Vivaldi, Edge, Aside)
+ *   <root>/<product>/User Data/DevToolsActivePort          (Arc, Dia)
+ *   <root>/<vendor>/<product>/DevToolsActivePort           (Google/Chrome)
+ *   <root>/<vendor>/<product>/User Data/DevToolsActivePort (Windows layouts)
+ *
+ * `seen` holds profileDirs already found via the explicit list and is mutated
+ * to include fallback hits, so callers dedup. Every readdir/stat is wrapped —
+ * permission errors and missing dirs are skipped silently. Dotfile entries are
+ * skipped to avoid probing things like `.DS_Store` / `.Trash`.
+ */
+async function scanForExtraBrowsers(seen: Set<string>): Promise<DetectedBrowser[]> {
+  const extras: DetectedBrowser[] = [];
+  const probe = async (name: string, profileDir: string) => {
+    if (seen.has(profileDir)) return;
+    const parsed = await tryReadDevToolsActivePort(profileDir);
+    if (!parsed) return;
+    seen.add(profileDir);
+    extras.push({
+      name,
+      profileDir,
+      port: parsed.port,
+      wsPath: parsed.path,
+      wsUrl: `ws://127.0.0.1:${parsed.port}${parsed.path}`,
+      mtimeMs: parsed.mtimeMs,
+    });
+  };
+  for (const root of getBrowserDataRoots()) {
+    let children: string[] = [];
+    try { children = await readdir(root); } catch { continue; }
+    for (const child of children) {
+      if (child.startsWith('.')) continue;
+      const dirA = join(root, child);
+      // Direct layout: <root>/<child> and <root>/<child>/User Data.
+      await probe(child, dirA);
+      await probe(child, join(dirA, 'User Data'));
+      // Vendor/product layout: <root>/<child>/<grandchild>[/User Data].
+      let grands: string[] = [];
+      try { grands = await readdir(dirA); } catch { continue; }
+      for (const grand of grands) {
+        if (grand.startsWith('.')) continue;
+        const dirB = join(dirA, grand);
+        await probe(`${child} ${grand}`, dirB);
+        await probe(`${child} ${grand}`, join(dirB, 'User Data'));
+      }
+    }
+  }
+  return extras;
 }
 
 /**

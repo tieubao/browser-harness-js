@@ -125,7 +125,9 @@ const INFO_ONLY = ${js_info}
 const _stats = []
 function vlog(s){ _stats.push(s) }
 
-if (!session.isConnected()) await session.connect({ port: 9222, host: '127.0.0.1' })
+if (!session.isConnected()) {
+  try { await session.connect() } catch (e) { throw new Error('Cannot connect to browser: ' + e.message) }
+}
 
 const t = await session.Target.createTarget({ url: 'about:blank' })  // foreground — autoplay needs it
 const { sessionId } = await session.Target.attachToTarget({ targetId: t.targetId, flatten: true })

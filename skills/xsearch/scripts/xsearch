@@ -34,9 +34,7 @@ js_query=$(printf '%s' "$query" | sed -e 's/\\/\\\\/g' -e 's/\$/\\$/g' -e 's/`/\
 
 raw=$(browser-harness-js <<EOF
 if (!session.isConnected()) {
-  try { await session.connect({ port: 9222, host: "127.0.0.1" }) } catch {
-    try { await session.connect() } catch (e) { throw new Error("Cannot connect to browser: " + e.message) }
-  }
+  try { await session.connect() } catch (e) { throw new Error("Cannot connect to browser: " + e.message) }
 }
 
 const count = ${count}

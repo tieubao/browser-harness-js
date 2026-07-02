@@ -83,16 +83,29 @@ When the user says "the first tab I can see", do NOT trust the order of `Target.
 
 `Target.activateTarget` only switches to a targetId you already know — it cannot resolve "leftmost tab".
 
-## Bringing Chrome to front
+## Bringing the browser to front
+
+The `<browser-app>`/`<browser-binary>` is the one `session.connect()` attached to — don't hardcode it. On macOS the app name occasionally differs from the binary (Brave is `Brave Browser`); detect the running Chromium app name first if unsure:
 
 ```bash
+# macOS — print the running Chromium app name (frontmost, else first running)
+osascript \
+  -e 'set apps to {"Dia","Google Chrome","Chromium","Microsoft Edge","Brave Browser","Arc","Vivaldi","Opera","Comet","Aside","Google Chrome Canary"}' \
+  -e 'tell application "System Events"' \
+  -e 'set frontApp to name of first application process whose frontmost is true' \
+  -e 'if frontApp is in apps then return frontApp' \
+  -e 'repeat with a in apps' \
+  -e 'if exists process a then return a' \
+  -e 'end repeat' \
+  -e 'end tell'
+
 # macOS — prefer AppleScript over `open -a` (reuses current profile, avoids the profile picker)
-osascript -e 'tell application "Google Chrome" to activate'
+osascript -e 'tell application "<browser-app>" to activate'
 
 # Linux (X11) — use wmctrl or xdotool
-wmctrl -a 'Google Chrome'
-xdotool search --name 'Google Chrome' windowactivate
+wmctrl -a '<browser-binary>'
+xdotool search --name '<browser-binary>' windowactivate
 
 # Windows (PowerShell)
-powershell -NoProfile -Command "(New-Object -ComObject WScript.Shell).AppActivate('Google Chrome')"
+powershell -NoProfile -Command "(New-Object -ComObject WScript.Shell).AppActivate('<browser-binary>')"
 ```

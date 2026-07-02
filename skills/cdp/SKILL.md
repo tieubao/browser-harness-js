@@ -245,14 +245,33 @@ browser-harness-js 'await session.Page.navigate({url:"https://example.com"})'
 When attaching to the user's already-running browser:
 
 1. **Try `await session.connect()` first** — no-args auto-detect handles every Chromium-based browser via `DevToolsActivePort` (any port, loopback host). If it returns, you're done.
-2. **If that fails** with `No running browser with remote debugging detected`, the user needs to turn it on. Detect which browser to open, then navigate to the inspect page:
+2. **If that fails** with `No running browser with remote debugging detected`, the user needs to turn it on. Navigate to the inspect page in a running Chromium browser:
    ```bash
-   # First, detect the default/running Chromium browser
-   browser-harness-js 'const found = await detectBrowsers(); return found.length ? found[0].name : "none"'
-
-   # Then open the inspect page in that browser.
-   # macOS — prefer AppleScript over `open -a` (reuses current profile, avoids the profile picker)
-   osascript -e 'open location "chrome://inspect/#remote-debugging"'
+   # macOS — `open location "chrome://..."` alone fails (-10814) when the default
+   # browser isn't a Chromium that registers the chrome:// scheme, and `open -a
+   # <browser>` triggers the profile picker. So target a running Chromium by name
+   # via AppleScript: it picks the frontmost one (the browser you're in) or the
+   # first running candidate, and reuses the active profile. No browser hardcoded.
+   osascript \
+     -e 'set inspectURL to "chrome://inspect/#remote-debugging"' \
+     -e 'set apps to {"Dia","Google Chrome","Chromium","Microsoft Edge","Brave Browser","Arc","Vivaldi","Opera","Comet","Aside","Google Chrome Canary"}' \
+     -e 'set target to ""' \
+     -e 'tell application "System Events"' \
+     -e 'set frontApp to name of first application process whose frontmost is true' \
+     -e 'if frontApp is in apps then' \
+     -e 'set target to frontApp' \
+     -e 'else' \
+     -e 'repeat with appName in apps' \
+     -e 'if exists process appName then' \
+     -e 'set target to appName' \
+     -e 'exit repeat' \
+     -e 'end if' \
+     -e 'end repeat' \
+     -e 'end if' \
+     -e 'end tell' \
+     -e 'if target is not "" then' \
+     -e 'tell application target to open location inspectURL' \
+     -e 'end if'
 
    # Linux — replace with the detected browser binary name
    # e.g. dia, google-chrome, chromium, brave-browser
@@ -261,7 +280,7 @@ When attaching to the user's already-running browser:
    # Windows (PowerShell)
    Start-Process <browser-binary> 'chrome://inspect/#remote-debugging'
    ```
-   Only macOS's AppleScript path avoids the profile picker; Linux/Windows may prompt the user to pick a profile first.
+   Only macOS's AppleScript path auto-detects the running browser and avoids the profile picker; Linux/Windows need the binary name and may prompt the user to pick a profile first.
 3. **Tick "Discover network targets"** in the browser's inspect page, then click **Allow** when the browser prompts.
 4. **If auto-detect picks the wrong browser** (multiple running, you want a specific one): list them with `await detectBrowsers()`, then `await session.connect({ profileDir: <the one you want> })`.
 5. **If `session.connect()` returns `No detected browser accepted a connection`**, the user has remote-debugging on but hasn't clicked **Allow** yet. Tell them to click it and retry, or pass `timeoutMs: 30000` to wait for the click.

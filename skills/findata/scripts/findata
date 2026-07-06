@@ -135,15 +135,25 @@ const P2 = ${P2}
 function group(s){ var neg = s.charAt(0) === "-"; if (neg) s = s.slice(1); var out = ""; while (s.length > 3) { out = "," + s.slice(-3) + out; s = s.slice(0, -3); } out = s + out; return (neg ? "-" : "") + out; }
 function fmt(v, perShare){ if (v === null || v === undefined) return "-"; if (perShare) return Number(v).toFixed(2); var n = Math.round(Number(v)); return group(String(n)); }
 
-async function evalPage(expr){
-  var r = await cdp(sessionId, "Runtime.evaluate", { expression: expr, returnByValue: true });
-  if (r.exceptionDetails) throw new Error("page eval failed: " + (r.exceptionDetails.exception && r.exceptionDetails.exception.description || r.exceptionDetails.text));
-  return r.result.value;
-}
-async function go(url, settleMs){
+// Navigate to a JSON URL and poll an in-page expr until it reports {ready:true}.
+// JSON navigations fire NO Page lifecycle events (loadEventFired / networkIdle
+// never fire for application/json), so we poll document.body.innerText until it
+// parses. The expr does both the readiness check AND the projection in one
+// shot, so the (multi-MB) body is parsed exactly once, when ready. Bail fast on
+// a non-JSON content-type (error page) instead of waiting out the timeout.
+async function navAndPoll(url, expr, maxMs){
   await cdp(sessionId, "Page.enable", {});
   await cdp(sessionId, "Page.navigate", { url: url });
-  await new Promise(function(r){ setTimeout(r, settleMs); });
+  var start = Date.now();
+  while (true) {
+    await new Promise(function(r){ setTimeout(r, 80); });
+    var r = await cdp(sessionId, "Runtime.evaluate", { expression: expr, returnByValue: true });
+    if (r.exceptionDetails) throw new Error("page eval failed: " + (r.exceptionDetails.exception && r.exceptionDetails.exception.description || r.exceptionDetails.text));
+    var v = JSON.parse(r.result.value);
+    if (v.ready === true) return v;
+    if (v.ct && v.ct !== "application/json" && v.len > 0) throw new Error("non-JSON response (" + v.ct + ") from " + url + (v.head ? " :: " + String(v.head).slice(0,120) : ""));
+    if (Date.now() - start > maxMs) throw new Error("timeout (" + maxMs + "ms) waiting for JSON from " + url + (v.head ? " :: " + String(v.head).slice(0,120) : ""));
+  }
 }
 
 const t = await session.Target.createTarget({ url: "about:blank", background: true });
@@ -154,10 +164,9 @@ try {
     var url = "https://query1.finance.yahoo.com/v8/finance/chart/" + encodeURIComponent(TICKER) + "?interval=" + encodeURIComponent(INTERVAL);
     if (HAS_DATES) { url += "&period1=" + P1 + "&period2=" + P2; } else { url += "&range=" + encodeURIComponent(RANGE); }
     if (SUB === "price") { url = "https://query1.finance.yahoo.com/v8/finance/chart/" + encodeURIComponent(TICKER) + "?interval=1d&range=5d"; }
-    await go(url, 3500);
-    var expr = '(function(){ try { var j=JSON.parse(document.body.innerText); if (j.chart && j.chart.error) { return JSON.stringify({ error: j.chart.error.description || j.chart.error.code || "yahoo error" }); } var res = j.chart.result[0]; var meta = res.meta; var q = res.indicators.quote[0]; var adj = res.indicators.adjclose ? res.indicators.adjclose[0] : null; var rows = []; for (var i = 0; i < res.timestamp.length; i++) { if (q.open[i] === null && q.close[i] === null) continue; rows.push({ date: new Date(res.timestamp[i] * 1000).toISOString().slice(0, 10), open: q.open[i], high: q.high[i], low: q.low[i], close: q.close[i], volume: q.volume[i], adj_close: adj ? adj.adjclose[i] : null }); } return JSON.stringify({ ok: true, ticker: meta.symbol, name: meta.longName || meta.shortName || "", price: meta.regularMarketPrice, chart_previous_close: meta.chartPreviousClose, currency: meta.currency, exchange: meta.exchangeName || meta.fullExchangeName || "", time: meta.regularMarketTime ? new Date(meta.regularMarketTime * 1000).toISOString() : null, prices: rows }); } catch (e) { return JSON.stringify({ error: "non-JSON response (possibly rate-limited)", head: (document.body.innerText || "").slice(0, 140) }); } })()';
-    var parsed = JSON.parse(await evalPage(expr));
-    if (parsed.error) throw new Error("Yahoo Finance error for " + TICKER + ": " + parsed.error + (parsed.head ? " :: " + parsed.head : ""));
+    var priceExpr = '(function(){ var t = document.body.innerText; if (!t) return JSON.stringify({ready:false, ct:document.contentType, len:0, head:""}); var j; try { j = JSON.parse(t); } catch(e){ return JSON.stringify({ready:false, ct:document.contentType, len:t.length, head:t.slice(0,140)}); } if (j.chart && j.chart.error) return JSON.stringify({ready:true, error: j.chart.error.description || j.chart.error.code || "yahoo error"}); var res = j.chart.result[0]; var meta = res.meta; var q = res.indicators.quote[0]; var adj = res.indicators.adjclose ? res.indicators.adjclose[0] : null; var rows = []; for (var i = 0; i < res.timestamp.length; i++) { if (q.open[i] === null && q.close[i] === null) continue; rows.push({ date: new Date(res.timestamp[i] * 1000).toISOString().slice(0, 10), open: q.open[i], high: q.high[i], low: q.low[i], close: q.close[i], volume: q.volume[i], adj_close: adj ? adj.adjclose[i] : null }); } return JSON.stringify({ ready: true, ticker: meta.symbol, name: meta.longName || meta.shortName || "", price: meta.regularMarketPrice, chart_previous_close: meta.chartPreviousClose, currency: meta.currency, exchange: meta.exchangeName || meta.fullExchangeName || "", time: meta.regularMarketTime ? new Date(meta.regularMarketTime * 1000).toISOString() : null, prices: rows }); })()';
+    var parsed = await navAndPoll(url, priceExpr, 8000);
+    if (parsed.error) throw new Error("Yahoo Finance error for " + TICKER + ": " + parsed.error);
 
     if (SUB === "price") {
       var prev = parsed.prices.length >= 2 ? parsed.prices[parsed.prices.length - 2].close : parsed.chart_previous_close;
@@ -190,25 +199,22 @@ try {
     }
   } else {
     // SEC EDGAR statements (income | balance | cashflow)
+    var mapExpr = '(function(){ var t = document.body.innerText; if (!t) return JSON.stringify({ready:false, ct:document.contentType, len:0, head:""}); var j; try { j = JSON.parse(t); } catch(e){ return JSON.stringify({ready:false, ct:document.contentType, len:t.length, head:t.slice(0,140)}); } var m = {}; for (var k in j) { m[j[k].ticker.toUpperCase()] = { cik: j[k].cik_str, title: j[k].title }; } return JSON.stringify({ready:true, map:m}); })()';
     async function getMap(){
       if (globalThis.__secTickerMap) return globalThis.__secTickerMap;
-      await go("https://www.sec.gov/files/company_tickers.json", 2500);
-      var s = await evalPage('(function(){ try { var j=JSON.parse(document.body.innerText); var m = {}; for (var k in j) { m[j[k].ticker.toUpperCase()] = { cik: j[k].cik_str, title: j[k].title }; } return JSON.stringify(m); } catch (e) { return JSON.stringify({ error: String(e) }); } })()');
-      var m = JSON.parse(s);
-      if (m.error) throw new Error("SEC ticker map parse failed: " + m.error);
-      globalThis.__secTickerMap = m;
-      return m;
+      var v = await navAndPoll("https://www.sec.gov/files/company_tickers.json", mapExpr, 8000);
+      globalThis.__secTickerMap = v.map;
+      return v.map;
     }
     var map = await getMap();
     var info = map[TICKER.toUpperCase()];
     if (!info) throw new Error("Ticker not found in SEC EDGAR: " + TICKER);
     var CIK = info.cik;
     var cikPadded = String(CIK).padStart(10, "0");
-    await go("https://data.sec.gov/api/xbrl/companyfacts/CIK" + cikPadded + ".json", 5500);
+    var companyfactsUrl = "https://data.sec.gov/api/xbrl/companyfacts/CIK" + cikPadded + ".json";
 
     var expr = [
-      '(function(){ try {',
-      'var j = JSON.parse(document.body.innerText);',
+      '(function(){ var __t = document.body.innerText; if (!__t) return JSON.stringify({ready:false, ct:document.contentType, len:0, head:""}); var j; try { j = JSON.parse(__t); } catch(e){ return JSON.stringify({ready:false, ct:document.contentType, len:__t.length, head:__t.slice(0,140)}); } try {',
       'var g = (j.facts && j.facts["us-gaap"]) || {};',
       'var period = ' + JSON.stringify(PERIOD) + ';',
       'var limit = ' + Number(LIMIT) + ';',
@@ -230,11 +236,11 @@ try {
       'var wantForm = period === "annual" ? "10-K" : "10-Q";',
       'function valForEnd(arr, end){ var best = null; for (var i = 0; i < arr.length; i++) { if (arr[i].end !== end) continue; if (arr[i].form === wantForm) return arr[i]; if (!best) best = arr[i]; } return best; }',
       'var statements = []; for (var ei = 0; ei < ends.length; ei++) { var end = ends[ei]; var rep = null; for (var k in fieldData) { var f = valForEnd(fieldData[k], end); if (f) { rep = f; break; } } var row = { period_end: end, fiscal_year: rep ? rep.fy : null, fiscal_period: rep ? rep.fp : null, form: rep ? rep.form : null, filed: rep ? rep.filed : null, accession: rep ? rep.accn : null }; for (var k in fieldData) { var f = valForEnd(fieldData[k], end); row[k] = f ? f.val : null; } if (SUBNAME === "cashflow") { var OUTFLOW = { capex: 1, dividends_paid: 1, share_repurchases: 1, debt_repayment: 1 }; for (var ok in OUTFLOW) { if (row[ok] !== null && row[ok] !== undefined && row[ok] > 0) row[ok] = -row[ok]; } var ocf = row.operating_cf, cap = row.capex; if (row.free_cash_flow === undefined || row.free_cash_flow === null) { if (ocf !== null && ocf !== undefined && cap !== null && cap !== undefined) row.free_cash_flow = ocf + cap; } } if (rep && rep.accn) { var nodash = rep.accn.split("-").join(""); row.filing_url = "https://www.sec.gov/Archives/edgar/data/" + cik + "/" + nodash + "/" + rep.accn + "-index.htm"; } statements.push(row); }',
-      'return JSON.stringify({ ok: true, ticker: ticker, name: name, cik: cik, period: period, statement: SUBNAME, statements: statements });',
-      '} catch (e) { return JSON.stringify({ error: String(e) }); } })()'
+      'return JSON.stringify({ ready: true, ticker: ticker, name: name, cik: cik, period: period, statement: SUBNAME, statements: statements });',
+      '} catch (e) { return JSON.stringify({ ready: true, error: String(e) }); } })()'
     ].join("");
 
-    var result = JSON.parse(await evalPage(expr));
+    var result = await navAndPoll(companyfactsUrl, expr, 12000);
     if (result.error) throw new Error("SEC EDGAR projection failed: " + result.error);
     if (!result.statements.length) throw new Error("No " + PERIOD + " " + SUB + " data found for " + TICKER + " in SEC EDGAR");
 

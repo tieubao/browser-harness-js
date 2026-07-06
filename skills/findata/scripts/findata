@@ -156,6 +156,31 @@ async function navAndPoll(url, expr, maxMs){
   }
 }
 
+// Event-driven capture for small/medium JSON: navigate, wait for the
+// Page.frameNavigated commit (this fires for application/json, unlike
+// loadEventFired/networkIdle), then a same-origin fetch(window.location.href)
+// returns the raw body WITHOUT waiting for Chrome's JSON-viewer to render it
+// into the DOM. The expr is an async IIFE run with awaitPromise. We bound the
+// eval with a node-side Promise.race timeout since CDP _call has none.
+// Faster than polling where the JSON-viewer render is pure overhead (prices,
+// ticker map); for the multi-MB companyfacts the viewer's pre-parse makes
+// polling faster, so this is NOT used there.
+async function navJsonFetch(url, expr, maxMs){
+  await cdp(sessionId, "Page.enable", {});
+  var committed = false;
+  var off = session.onEvent(function(m, p, sid){ if (sid === sessionId && m === "Page.frameNavigated" && p && p.frame && p.frame.url && p.frame.url !== "about:blank") committed = true; });
+  await cdp(sessionId, "Page.navigate", { url: url });
+  var start = Date.now();
+  while (!committed && Date.now() - start < maxMs) await new Promise(function(r){ setTimeout(r, 15); });
+  off();
+  if (!committed) throw new Error("navigation did not commit for " + url);
+  var evalP = cdp(sessionId, "Runtime.evaluate", { expression: expr, awaitPromise: true, returnByValue: true });
+  var timeoutP = new Promise(function(_, rej){ setTimeout(function(){ rej(new Error("eval timeout (" + maxMs + "ms) for " + url)); }, maxMs); });
+  var r = await Promise.race([evalP, timeoutP]);
+  if (r.exceptionDetails) throw new Error("fetch eval failed: " + (r.exceptionDetails.exception && r.exceptionDetails.exception.description || r.exceptionDetails.text));
+  return JSON.parse(r.result.value);
+}
+
 const t = await session.Target.createTarget({ url: "about:blank", background: true });
 const { sessionId } = await session.Target.attachToTarget({ targetId: t.targetId, flatten: true });
 
@@ -164,8 +189,8 @@ try {
     var url = "https://query1.finance.yahoo.com/v8/finance/chart/" + encodeURIComponent(TICKER) + "?interval=" + encodeURIComponent(INTERVAL);
     if (HAS_DATES) { url += "&period1=" + P1 + "&period2=" + P2; } else { url += "&range=" + encodeURIComponent(RANGE); }
     if (SUB === "price") { url = "https://query1.finance.yahoo.com/v8/finance/chart/" + encodeURIComponent(TICKER) + "?interval=1d&range=5d"; }
-    var priceExpr = '(function(){ var t = document.body.innerText; if (!t) return JSON.stringify({ready:false, ct:document.contentType, len:0, head:""}); var j; try { j = JSON.parse(t); } catch(e){ return JSON.stringify({ready:false, ct:document.contentType, len:t.length, head:t.slice(0,140)}); } if (j.chart && j.chart.error) return JSON.stringify({ready:true, error: j.chart.error.description || j.chart.error.code || "yahoo error"}); var res = j.chart.result[0]; var meta = res.meta; var q = res.indicators.quote[0]; var adj = res.indicators.adjclose ? res.indicators.adjclose[0] : null; var rows = []; for (var i = 0; i < res.timestamp.length; i++) { if (q.open[i] === null && q.close[i] === null) continue; rows.push({ date: new Date(res.timestamp[i] * 1000).toISOString().slice(0, 10), open: q.open[i], high: q.high[i], low: q.low[i], close: q.close[i], volume: q.volume[i], adj_close: adj ? adj.adjclose[i] : null }); } return JSON.stringify({ ready: true, ticker: meta.symbol, name: meta.longName || meta.shortName || "", price: meta.regularMarketPrice, chart_previous_close: meta.chartPreviousClose, currency: meta.currency, exchange: meta.exchangeName || meta.fullExchangeName || "", time: meta.regularMarketTime ? new Date(meta.regularMarketTime * 1000).toISOString() : null, prices: rows }); })()';
-    var parsed = await navAndPoll(url, priceExpr, 8000);
+    var priceExpr = '(async function(){ var r = await fetch(window.location.href); var t = await r.text(); var j; try { j = JSON.parse(t); } catch(e){ return JSON.stringify({ error: "non-JSON response (" + (document.contentType||"") + "): " + e.message }); } if (j.chart && j.chart.error) return JSON.stringify({ error: j.chart.error.description || j.chart.error.code || "yahoo error" }); var res = j.chart.result[0]; var meta = res.meta; var q = res.indicators.quote[0]; var adj = res.indicators.adjclose ? res.indicators.adjclose[0] : null; var rows = []; for (var i = 0; i < res.timestamp.length; i++) { if (q.open[i] === null && q.close[i] === null) continue; rows.push({ date: new Date(res.timestamp[i] * 1000).toISOString().slice(0, 10), open: q.open[i], high: q.high[i], low: q.low[i], close: q.close[i], volume: q.volume[i], adj_close: adj ? adj.adjclose[i] : null }); } return JSON.stringify({ ticker: meta.symbol, name: meta.longName || meta.shortName || "", price: meta.regularMarketPrice, chart_previous_close: meta.chartPreviousClose, currency: meta.currency, exchange: meta.exchangeName || meta.fullExchangeName || "", time: meta.regularMarketTime ? new Date(meta.regularMarketTime * 1000).toISOString() : null, prices: rows }); })()';
+    var parsed = await navJsonFetch(url, priceExpr, 8000);
     if (parsed.error) throw new Error("Yahoo Finance error for " + TICKER + ": " + parsed.error);
 
     if (SUB === "price") {
@@ -199,10 +224,10 @@ try {
     }
   } else {
     // SEC EDGAR statements (income | balance | cashflow)
-    var mapExpr = '(function(){ var t = document.body.innerText; if (!t) return JSON.stringify({ready:false, ct:document.contentType, len:0, head:""}); var j; try { j = JSON.parse(t); } catch(e){ return JSON.stringify({ready:false, ct:document.contentType, len:t.length, head:t.slice(0,140)}); } var m = {}; for (var k in j) { m[j[k].ticker.toUpperCase()] = { cik: j[k].cik_str, title: j[k].title }; } return JSON.stringify({ready:true, map:m}); })()';
+    var mapExpr = '(async function(){ var r = await fetch(window.location.href); var t = await r.text(); var j; try { j = JSON.parse(t); } catch(e){ return JSON.stringify({ error: "non-JSON response: " + e.message }); } var m = {}; for (var k in j) { m[j[k].ticker.toUpperCase()] = { cik: j[k].cik_str, title: j[k].title }; } return JSON.stringify({ map: m }); })()';
     async function getMap(){
       if (globalThis.__secTickerMap) return globalThis.__secTickerMap;
-      var v = await navAndPoll("https://www.sec.gov/files/company_tickers.json", mapExpr, 8000);
+      var v = await navJsonFetch("https://www.sec.gov/files/company_tickers.json", mapExpr, 8000);
       globalThis.__secTickerMap = v.map;
       return v.map;
     }

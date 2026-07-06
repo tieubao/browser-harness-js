@@ -1,0 +1,287 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Auto-fix: if browser-harness-js isn't on PATH, try to find and symlink it.
+if ! command -v browser-harness-js >/dev/null 2>&1; then
+  _bhjs="$(cd "$(dirname "$0")/.." && pwd)/../cdp/sdk/browser-harness-js"
+  if [ -f "$_bhjs" ]; then
+    _bindir="$HOME/.local/bin"
+    mkdir -p "$_bindir"
+    ln -sf "$_bhjs" "$_bindir/browser-harness-js"
+    export PATH="$_bindir:$PATH"
+  else
+    echo "findata: browser-harness-js not found. Run: bash <skill-dir>/scripts/setup" >&2
+    exit 1
+  fi
+fi
+
+usage() {
+  cat >&2 <<'USAGE'
+Usage: findata [--json] <command> <ticker> [options]
+
+Commands:
+  price      <ticker>                       Live/last price snapshot (Yahoo Finance)
+  prices     <ticker> [--range 1mo|--start YYYY-MM-DD --end YYYY-MM-DD]
+             [--interval 1d] [--limit N]    Historical OHLCV bars (Yahoo Finance)
+  income     <ticker> [--period annual|quarterly] [--limit N]   Income statement (SEC EDGAR)
+  balance    <ticker> [--period annual|quarterly] [--limit N]   Balance sheet (SEC EDGAR)
+  cashflow   <ticker> [--period annual|quarterly] [--limit N]   Cash flow statement (SEC EDGAR)
+
+Common:
+  --json                       Emit raw JSON instead of pretty-printed text
+  --period annual|quarterly    Statement reporting period (default: annual)
+  --limit N                    Number of periods/bars to return (statements default 4; prices default all)
+
+Prices:
+  --range R                    Yahoo range: 1d 5d 1mo 3mo 6mo 1y 2y 5y 10y ytd max (default 1mo)
+  --start/--end YYYY-MM-DD     Exact date range (alternative to --range; needs node)
+  --interval R                 Bar interval: 1m 2m 5m 15m 30m 60m 1d 5d 1wk 1mo (default 1d)
+
+Examples:
+  findata price AAPL
+  findata prices TSLA --range 3mo --interval 1wk
+  findata prices MSFT --start 2025-01-01 --end 2025-06-30
+  findata income AAPL --period quarterly --limit 4 --json
+  findata balance NVDA --limit 2
+USAGE
+  exit 1
+}
+
+[ $# -lt 2 ] && usage
+
+SUB="$1"; shift
+
+case "$SUB" in
+  price|prices|income|balance|cashflow) ;;
+  *) echo "findata: unknown command '$SUB'" >&2; usage ;;
+esac
+
+JSON_OUT=false
+TICKER=""
+PERIOD=annual
+LIMIT=4
+INTERVAL=1d
+RANGE=1mo
+START=""
+END=""
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --json) JSON_OUT=true; shift ;;
+    --period) PERIOD="${2:-}"; shift 2 ;;
+    --limit) LIMIT="${2:-}"; shift 2 ;;
+    --interval) INTERVAL="${2:-}"; shift 2 ;;
+    --range) RANGE="${2:-}"; shift 2 ;;
+    --start) START="${2:-}"; shift 2 ;;
+    --end) END="${2:-}"; shift 2 ;;
+    --*) echo "findata: unknown flag '$1'" >&2; usage ;;
+    *) if [ -z "$TICKER" ]; then TICKER="$1"; shift; else shift; fi ;;
+  esac
+done
+
+[ -z "$TICKER" ] && { echo "findata: ticker required" >&2; usage; }
+
+case "$SUB" in
+  price) : ;; # uses fixed 5d/1d internally
+  prices|income|balance|cashflow) : ;;
+esac
+
+case "$PERIOD" in annual|quarterly) ;; *) echo "findata: --period must be annual or quarterly" >&2; exit 1 ;; esac
+
+# validate numeric limit
+case "$LIMIT" in
+  ''|*[!0-9]*) echo "findata: --limit must be a non-negative integer" >&2; exit 1 ;;
+esac
+# clamp price snapshot doesn't use limit; statements default 4, allow 0 = all (cap at 40)
+if [ "$SUB" = "income" ] || [ "$SUB" = "balance" ] || [ "$SUB" = "cashflow" ]; then
+  [ "$LIMIT" -eq 0 ] && LIMIT=40
+fi
+
+# Date range -> unix seconds (portable via node, since browser-harness-js requires node)
+HAS_DATES=false
+P1=0
+P2=0
+if [ -n "$START" ] || [ -n "$END" ]; then
+  [ -z "$START" ] || [ -z "$END" ] && { echo "findata: --start and --end must be given together" >&2; exit 1; }
+  P1=$(node -e 'var t=Date.parse(process.argv[1]+"T00:00:00Z");if(isNaN(t)){process.stderr.write("bad date\n");process.exit(1)}console.log(Math.floor(t/1000))' "$START") || { echo "findata: invalid --start '$START' (use YYYY-MM-DD)" >&2; exit 1; }
+  P2=$(node -e 'var t=Date.parse(process.argv[1]+"T00:00:00Z");if(isNaN(t)){process.stderr.write("bad date\n");process.exit(1)}console.log(Math.floor(t/1000))' "$END") || { echo "findata: invalid --end '$END' (use YYYY-MM-DD)" >&2; exit 1; }
+  if [ "$P1" -ge "$P2" ]; then echo "findata: --start must be before --end" >&2; exit 1; fi
+  HAS_DATES=true
+  RANGE="" # dates take precedence
+fi
+
+# Escape simple tokens for a double-quoted JS string (backslash, doublequote).
+esc() { printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'; }
+TICKER_JS=$(esc "$TICKER")
+PERIOD_JS=$(esc "$PERIOD")
+SUB_JS=$(esc "$SUB")
+INTERVAL_JS=$(esc "$INTERVAL")
+RANGE_JS=$(esc "$RANGE")
+
+raw=$(browser-harness-js <<EOF
+if (!session.isConnected()) { try { await session.connect() } catch (e) { throw new Error("connect: " + e.message) } }
+
+const JSON_OUT = ${JSON_OUT}
+const SUB = "${SUB_JS}"
+const TICKER = "${TICKER_JS}"
+const PERIOD = "${PERIOD_JS}"
+const LIMIT = ${LIMIT}
+const INTERVAL = "${INTERVAL_JS}"
+const RANGE = "${RANGE_JS}"
+const HAS_DATES = ${HAS_DATES}
+const P1 = ${P1}
+const P2 = ${P2}
+
+function group(s){ var neg = s.charAt(0) === "-"; if (neg) s = s.slice(1); var out = ""; while (s.length > 3) { out = "," + s.slice(-3) + out; s = s.slice(0, -3); } out = s + out; return (neg ? "-" : "") + out; }
+function fmt(v, perShare){ if (v === null || v === undefined) return "-"; if (perShare) return Number(v).toFixed(2); var n = Math.round(Number(v)); return group(String(n)); }
+
+async function evalPage(expr){
+  var r = await cdp(sessionId, "Runtime.evaluate", { expression: expr, returnByValue: true });
+  if (r.exceptionDetails) throw new Error("page eval failed: " + (r.exceptionDetails.exception && r.exceptionDetails.exception.description || r.exceptionDetails.text));
+  return r.result.value;
+}
+async function go(url, settleMs){
+  await cdp(sessionId, "Page.enable", {});
+  await cdp(sessionId, "Page.navigate", { url: url });
+  await new Promise(function(r){ setTimeout(r, settleMs); });
+}
+
+const t = await session.Target.createTarget({ url: "about:blank", background: true });
+const { sessionId } = await session.Target.attachToTarget({ targetId: t.targetId, flatten: true });
+
+try {
+  if (SUB === "price" || SUB === "prices") {
+    var url = "https://query1.finance.yahoo.com/v8/finance/chart/" + encodeURIComponent(TICKER) + "?interval=" + encodeURIComponent(INTERVAL);
+    if (HAS_DATES) { url += "&period1=" + P1 + "&period2=" + P2; } else { url += "&range=" + encodeURIComponent(RANGE); }
+    if (SUB === "price") { url = "https://query1.finance.yahoo.com/v8/finance/chart/" + encodeURIComponent(TICKER) + "?interval=1d&range=5d"; }
+    await go(url, 3500);
+    var expr = '(function(){ try { var j=JSON.parse(document.body.innerText); if (j.chart && j.chart.error) { return JSON.stringify({ error: j.chart.error.description || j.chart.error.code || "yahoo error" }); } var res = j.chart.result[0]; var meta = res.meta; var q = res.indicators.quote[0]; var adj = res.indicators.adjclose ? res.indicators.adjclose[0] : null; var rows = []; for (var i = 0; i < res.timestamp.length; i++) { if (q.open[i] === null && q.close[i] === null) continue; rows.push({ date: new Date(res.timestamp[i] * 1000).toISOString().slice(0, 10), open: q.open[i], high: q.high[i], low: q.low[i], close: q.close[i], volume: q.volume[i], adj_close: adj ? adj.adjclose[i] : null }); } return JSON.stringify({ ok: true, ticker: meta.symbol, name: meta.longName || meta.shortName || "", price: meta.regularMarketPrice, chart_previous_close: meta.chartPreviousClose, currency: meta.currency, exchange: meta.exchangeName || meta.fullExchangeName || "", time: meta.regularMarketTime ? new Date(meta.regularMarketTime * 1000).toISOString() : null, prices: rows }); } catch (e) { return JSON.stringify({ error: "non-JSON response (possibly rate-limited)", head: (document.body.innerText || "").slice(0, 140) }); } })()';
+    var parsed = JSON.parse(await evalPage(expr));
+    if (parsed.error) throw new Error("Yahoo Finance error for " + TICKER + ": " + parsed.error + (parsed.head ? " :: " + parsed.head : ""));
+
+    if (SUB === "price") {
+      var prev = parsed.prices.length >= 2 ? parsed.prices[parsed.prices.length - 2].close : parsed.chart_previous_close;
+      var price = parsed.price;
+      var chg = (price !== null && price !== undefined && prev !== null && prev !== undefined) ? price - prev : null;
+      var pct = (chg !== null && prev && prev !== 0) ? (chg / prev * 100) : null;
+      if (JSON_OUT) {
+        return { ticker: parsed.ticker, name: parsed.name, price: price, previous_close: prev, change: chg, change_percent: pct, currency: parsed.currency, exchange: parsed.exchange, time: parsed.time };
+      }
+      var chgStr = (chg !== null) ? (chg >= 0 ? "+" : "") + Number(chg).toFixed(2) : "-";
+      var pctStr = (pct !== null) ? (pct >= 0 ? "+" : "") + Number(pct).toFixed(2) + "%" : "-";
+      var priceStr = (price !== null && price !== undefined) ? Number(price).toFixed(2) : "-";
+      var prevStr = (prev !== null && prev !== undefined) ? Number(prev).toFixed(2) : "-";
+      var head = parsed.ticker + (parsed.name ? " \u00b7 " + parsed.name : "");
+      var body = priceStr + " " + (parsed.currency || "") + "   " + chgStr + " (" + pctStr + ")   prev close " + prevStr;
+      if (parsed.time) body += "   \u00b7 " + parsed.time.replace("T", " ").slice(0, 16) + " UTC";
+      return head + "\n" + body;
+    } else {
+      if (LIMIT > 0) parsed.prices = parsed.prices.slice(-LIMIT);
+      if (JSON_OUT) {
+        return { ticker: parsed.ticker, name: parsed.name, currency: parsed.currency, interval: INTERVAL, prices: parsed.prices };
+      }
+      var lines = [];
+      lines.push(parsed.ticker + (parsed.name ? " \u00b7 " + parsed.name : "") + "   (" + INTERVAL + ", " + parsed.prices.length + " bars, " + (parsed.currency || "") + ")");
+      for (var i = 0; i < parsed.prices.length; i++) {
+        var r = parsed.prices[i];
+        lines.push(r.date + "  O " + r.open + "  H " + r.high + "  L " + r.low + "  C " + r.close + "  V " + (r.volume !== null && r.volume !== undefined ? group(String(r.volume)) : "-"));
+      }
+      return lines.join("\n");
+    }
+  } else {
+    // SEC EDGAR statements (income | balance | cashflow)
+    async function getMap(){
+      if (globalThis.__secTickerMap) return globalThis.__secTickerMap;
+      await go("https://www.sec.gov/files/company_tickers.json", 2500);
+      var s = await evalPage('(function(){ try { var j=JSON.parse(document.body.innerText); var m = {}; for (var k in j) { m[j[k].ticker.toUpperCase()] = { cik: j[k].cik_str, title: j[k].title }; } return JSON.stringify(m); } catch (e) { return JSON.stringify({ error: String(e) }); } })()');
+      var m = JSON.parse(s);
+      if (m.error) throw new Error("SEC ticker map parse failed: " + m.error);
+      globalThis.__secTickerMap = m;
+      return m;
+    }
+    var map = await getMap();
+    var info = map[TICKER.toUpperCase()];
+    if (!info) throw new Error("Ticker not found in SEC EDGAR: " + TICKER);
+    var CIK = info.cik;
+    var cikPadded = String(CIK).padStart(10, "0");
+    await go("https://data.sec.gov/api/xbrl/companyfacts/CIK" + cikPadded + ".json", 5500);
+
+    var expr = [
+      '(function(){ try {',
+      'var j = JSON.parse(document.body.innerText);',
+      'var g = (j.facts && j.facts["us-gaap"]) || {};',
+      'var period = ' + JSON.stringify(PERIOD) + ';',
+      'var limit = ' + Number(LIMIT) + ';',
+      'var ticker = ' + JSON.stringify(TICKER) + ';',
+      'var cik = ' + Number(CIK) + ';',
+      'var SUBNAME = ' + JSON.stringify(SUB) + ';',
+      'var name = j.entityName;',
+      'var MAPS = { income: { primary: ["NetIncomeLoss","RevenueFromContractWithCustomerExcludingAssessedTax","Revenues"], fields: { revenue: ["RevenueFromContractWithCustomerExcludingAssessedTax","Revenues","SalesRevenueNet"], cost_of_revenue: ["CostOfRevenue","CostOfGoodsAndServicesSold","CostOfGoodsSold"], gross_profit: ["GrossProfit"], operating_expenses: ["OperatingExpenses"], sgna: ["SellingGeneralAndAdministrativeExpense","SellingGeneralAndAdministrativeExpenseAndOtherCostsOfRevenue"], rnd: ["ResearchAndDevelopmentExpense","ResearchAndDevelopmentExpenseExcludingAcquiredInProcessCost"], operating_income: ["OperatingIncomeLoss"], interest_expense: ["InterestExpense","InterestExpenseDebt"], income_tax: ["IncomeTaxExpenseBenefit"], net_income: ["NetIncomeLoss"], eps_basic: ["EarningsPerShareBasic"], eps_diluted: ["EarningsPerShareDiluted"], shares_basic: ["WeightedAverageNumberOfSharesOutstandingBasic"], shares_diluted: ["WeightedAverageNumberOfDilutedSharesOutstanding","WeightedAverageNumberOfSharesOutstandingDiluted"], dividends_per_share: ["CommonStockDividendsPerShareDeclared","CommonStockDividendsPerShareCashPaid"] } }, balance: { primary: ["Assets","Liabilities","StockholdersEquity"], fields: { total_assets: ["Assets"], current_assets: ["AssetsCurrent"], cash: ["CashAndCashEquivalentsAtCarryingValue","CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents"], inventory: ["InventoryNet","Inventory"], investments: ["Investments"], total_liabilities: ["Liabilities"], current_liabilities: ["LiabilitiesCurrent"], long_term_debt: ["LongTermDebt","LongTermDebtNoncurrent"], total_debt: ["DebtLongTermAndShortTermCombinedAmount","Debt"], equity: ["StockholdersEquity","StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest"], retained_earnings: ["RetainedEarningsAccumulatedDeficit","RetainedEarnings"], shares_outstanding: ["CommonStockSharesOutstanding"] } }, cashflow: { primary: ["NetCashProvidedByUsedInOperatingActivities","CashFlowFromContinuingOperatingActivities","NetCashLoss"], fields: { net_income: ["NetIncomeLoss"], operating_cf: ["NetCashProvidedByUsedInOperatingActivities","CashFlowFromContinuingOperatingActivities"], capex: ["PaymentsToAcquirePropertyPlantAndEquipment","PaymentsToAcquireProductiveAssets"], investing_cf: ["NetCashProvidedByUsedInInvestingActivities","CashFlowFromContinuingInvestingActivities"], financing_cf: ["NetCashProvidedByUsedInFinancingActivities","CashFlowFromContinuingFinancingActivities"], dividends_paid: ["PaymentsOfDividends","PaymentsForDividends","CommonStockDividendsPaid"], share_repurchases: ["PaymentsForRepurchaseOfCommonStock","PaymentsForRepurchaseOfEquity","PaymentsToAcquireCommonStock"], debt_repayment: ["RepaymentsOfDebt","RepaymentsOfLongTermCapitalLeaseObligations"] } } };',
+      'var S = MAPS[SUBNAME];',
+      'function periodOk(f){ if (period === "annual") return f.fp === "FY"; if (period === "quarterly") return f.fp === "Q1" || f.fp === "Q2" || f.fp === "Q3" || f.fp === "Q4"; return true; }',
+      'function factsFor(concept){ var c = g[concept]; if (!c) return []; var out = []; var keys = Object.keys(c.units); for (var ui = 0; ui < keys.length; ui++) { var arr = c.units[keys[ui]]; for (var i = 0; i < arr.length; i++) { var f = arr[i]; if (f.dim) continue; if (!periodOk(f)) continue; out.push(f); } } out.sort(function(a, b){ return (b.end || "").localeCompare(a.end || ""); }); return out; }',
+      'function pickField(cands){ var best = null; for (var ci = 0; ci < cands.length; ci++) { var fs = factsFor(cands[ci]); if (!fs.length) continue; if (!best || (fs[0].end || "") > (best.top || "")) { best = { facts: fs, top: fs[0].end }; } } return best; }',
+      'var fieldKeys = Object.keys(S.fields);',
+      'var fieldData = {};',
+      'for (var fi = 0; fi < fieldKeys.length; fi++) { var b = pickField(S.fields[fieldKeys[fi]]); fieldData[fieldKeys[fi]] = b ? b.facts : []; }',
+      'var primary = null; for (var pi = 0; pi < S.primary.length; pi++) { var b = pickField(S.primary[pi]); if (b) { primary = b.facts; break; } }',
+      'if (!primary) { primary = []; for (var k in fieldData) { if (fieldData[k].length) { primary = fieldData[k]; break; } } }',
+      'var ends = []; var __seen = {}; for (var i = 0; i < primary.length; i++) { var __e = primary[i].end; if (!__seen[__e]) { __seen[__e] = 1; ends.push(__e); } } ends = ends.slice(0, limit);',
+      'var wantForm = period === "annual" ? "10-K" : "10-Q";',
+      'function valForEnd(arr, end){ var best = null; for (var i = 0; i < arr.length; i++) { if (arr[i].end !== end) continue; if (arr[i].form === wantForm) return arr[i]; if (!best) best = arr[i]; } return best; }',
+      'var statements = []; for (var ei = 0; ei < ends.length; ei++) { var end = ends[ei]; var rep = null; for (var k in fieldData) { var f = valForEnd(fieldData[k], end); if (f) { rep = f; break; } } var row = { period_end: end, fiscal_year: rep ? rep.fy : null, fiscal_period: rep ? rep.fp : null, form: rep ? rep.form : null, filed: rep ? rep.filed : null, accession: rep ? rep.accn : null }; for (var k in fieldData) { var f = valForEnd(fieldData[k], end); row[k] = f ? f.val : null; } if (SUBNAME === "cashflow") { var OUTFLOW = { capex: 1, dividends_paid: 1, share_repurchases: 1, debt_repayment: 1 }; for (var ok in OUTFLOW) { if (row[ok] !== null && row[ok] !== undefined && row[ok] > 0) row[ok] = -row[ok]; } var ocf = row.operating_cf, cap = row.capex; if (row.free_cash_flow === undefined || row.free_cash_flow === null) { if (ocf !== null && ocf !== undefined && cap !== null && cap !== undefined) row.free_cash_flow = ocf + cap; } } if (rep && rep.accn) { var nodash = rep.accn.split("-").join(""); row.filing_url = "https://www.sec.gov/Archives/edgar/data/" + cik + "/" + nodash + "/" + rep.accn + "-index.htm"; } statements.push(row); }',
+      'return JSON.stringify({ ok: true, ticker: ticker, name: name, cik: cik, period: period, statement: SUBNAME, statements: statements });',
+      '} catch (e) { return JSON.stringify({ error: String(e) }); } })()'
+    ].join("");
+
+    var result = JSON.parse(await evalPage(expr));
+    if (result.error) throw new Error("SEC EDGAR projection failed: " + result.error);
+    if (!result.statements.length) throw new Error("No " + PERIOD + " " + SUB + " data found for " + TICKER + " in SEC EDGAR");
+
+    if (JSON_OUT) return result;
+
+    var STMT_NAME = { income: "Income Statement", balance: "Balance Sheet", cashflow: "Cash Flow Statement" };
+    var PER_SHARE = { eps_basic: 1, eps_diluted: 1, dividends_per_share: 1 };
+    var rows = result.statements;
+    function plabel(r){ if (r.fiscal_period === "FY") return "FY" + r.fiscal_year; return (r.fiscal_period || "") + " FY" + (r.fiscal_year || ""); }
+    var metaKeys = { period_end: 1, fiscal_year: 1, fiscal_period: 1, form: 1, filed: 1, accession: 1, filing_url: 1 };
+    var fkeys = [];
+    if (rows.length) { for (var k in rows[0]) { if (!metaKeys[k]) fkeys.push(k); } }
+    var colLabels = rows.map(plabel);
+    var labelW = 0; for (var i = 0; i < fkeys.length; i++) { if (fkeys[i].length > labelW) labelW = fkeys[i].length; }
+    var colW = []; for (var i = 0; i < colLabels.length; i++) { colW[i] = String(colLabels[i]).length; }
+    var formatted = {};
+    for (var fi = 0; fi < fkeys.length; fi++) {
+      var fk = fkeys[fi]; formatted[fk] = [];
+      for (var ri = 0; ri < rows.length; ri++) {
+        var v = fmt(rows[ri][fk], !!PER_SHARE[fk]);
+        formatted[fk][ri] = v;
+        if (String(v).length > colW[ri]) colW[ri] = String(v).length;
+      }
+    }
+    function padL(s, w){ s = String(s); while (s.length < w) s = " " + s; return s; }
+    function padR(s, w){ s = String(s); while (s.length < w) s = s + " "; return s; }
+    var out = [];
+    out.push(result.ticker + " \u2014 " + STMT_NAME[SUB] + " (" + PERIOD + ")   " + (result.name || "") + "   CIK " + result.cik);
+    var header = padR("", labelW);
+    for (var i = 0; i < colLabels.length; i++) header += "  " + padL(colLabels[i], colW[i]);
+    out.push(header);
+    for (var fi = 0; fi < fkeys.length; fi++) {
+      var fk = fkeys[fi];
+      var line = padR(fk, labelW);
+      for (var ri = 0; ri < rows.length; ri++) line += "  " + padL(formatted[fk][ri], colW[ri]);
+      out.push(line);
+    }
+    out.push("");
+    for (var ri = 0; ri < rows.length; ri++) {
+      out.push(plabel(rows[ri]) + "   filed " + (rows[ri].filed || "-") + "   " + (rows[ri].form || "") + "   " + (rows[ri].accession || "-"));
+    }
+    return out.join("\n");
+  }
+} finally {
+  session.closeTab(t.targetId, sessionId).catch(function(){});
+}
+EOF
+)
+
+printf '%s\n' "$raw"

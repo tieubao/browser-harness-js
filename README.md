@@ -43,13 +43,14 @@ See [skills/cdp/interaction-skills/](skills/cdp/interaction-skills/) for recipes
 
 ## Skills
 
-This repo contains four skills installable via `npx skills add`:
+This repo contains five skills installable via `npx skills add`:
 
 | Skill | Description |
 |-------|------------|
 | **cdp** | Drive any Chromium-based browser via CDP — 56 domains, 652 typed methods |
 | **gsearch** | Search the web via Google through CDP — structured results in under 1 second |
 | **xsearch** | Search X (Twitter) via CDP — structured results (requires an active X login) |
+| **findata** | Free, keyless financial data via CDP — SEC EDGAR statements + Yahoo Finance prices |
 | **ytdl** | Download YouTube videos browser-natively via CDP — records MediaSource output, no `yt-dlp` binary |
 | **ttdl** | Download TikTok videos browser-natively via CDP — records MediaSource output, no watermark, no signer |
 
@@ -65,6 +66,8 @@ This repo contains four skills installable via `npx skills add`:
 - `skills/gsearch/scripts/gsearch` — Google Search CLI
 - `skills/xsearch/SKILL.md` — X (Twitter) Search skill instructions
 - `skills/xsearch/scripts/xsearch` — X Search CLI
+- `skills/findata/SKILL.md` — financial-data skill instructions
+- `skills/findata/scripts/findata` — financial-data CLI (SEC EDGAR + Yahoo Finance, a `browser-harness-js` heredoc)
 - `skills/ytdl/SKILL.md` — YouTube download skill instructions
 - `skills/ytdl/scripts/ytdl` — YouTube download CLI (a `browser-harness-js` heredoc, no runtime)
 - `skills/ttdl/SKILL.md` — TikTok download skill instructions

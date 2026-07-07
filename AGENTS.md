@@ -34,6 +34,33 @@ The `browser-harness-js` CLI the skills call is this repo's `skills/cdp/sdk/brow
 (symlinked onto PATH by `scripts/setup`). It is not a separate "system harness" —
 it is this repo's SDK, installed. There is nothing else to conflate it with.
 
+## Bump the SDK version on every change
+
+`skills/cdp/sdk/package.json` `"version"` is the **single source** for the SDK
+version, surfaced in two places with intentionally different freshness:
+
+- `browser-harness-js --version` reads it fresh from disk each call (no daemon
+  needed).
+- `/health` (served by the long-lived daemon) reports the version the daemon
+  **booted** with — cached for the process lifetime.
+
+That mismatch is how a running daemon detects it's stale: no `version` in
+`/health`, or a lower one than `--version`, means the daemon predates the files
+on disk → `browser-harness-js --restart` reloads them. Details in
+`skills/cdp/interaction-skills/connection.md` (Stale daemon).
+
+**Bump `"version"` on every change to the `cdp` skill** — SDK code (`repl.ts`,
+`session.ts`, `axview.ts`, `generated.ts`, the `browser-harness-js` launcher)
+*or* its docs (`SKILL.md`, `interaction-skills/*`). Without a bump, an
+installed copy has no way to know it's behind. Patch for fixes/docs, minor for
+a new capability. Then restart the daemon so the running process serves the
+new version (and reloads any code change):
+
+```bash
+# edit skills/cdp/…, bump package.json, then:
+browser-harness-js --restart
+```
+
 ## Skill anatomy (match the existing skills exactly)
 
 ```

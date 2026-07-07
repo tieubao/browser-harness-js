@@ -5,7 +5,7 @@
  *   POST /eval     body = raw JS to evaluate (NOT JSON-wrapped).
  *                  Top-level await supported. Single expression auto-returns.
  *                  Response: {"ok":true,"result":<json>} | {"ok":false,"error":..,"stack"?:..}
- *   GET  /health   {"ok":true,"uptime":<seconds>,"connected":<bool>,"sessionId":<string|null>}
+ *   GET  /health   {"ok":true,"version":<string>,"uptime":<seconds>,"connected":<bool>,"sessionId":<string|null>}
  *   POST /quit     graceful shutdown. Returns {"ok":true} then exits.
  *
  * State: `session`, the active sessionId, event subscribers, and any
@@ -17,6 +17,13 @@ import { Session, listPageTargets, resolveWsUrl, detectBrowsers } from './sessio
 import { axView } from './axview.ts';
 import * as Generated from './generated.ts';
 import { createServer, type IncomingMessage } from 'node:http';
+import { readFileSync } from 'node:fs';
+
+// Read once at boot and cache for the process lifetime, so /health reports the
+// version the daemon was *started* with — not the one currently on disk. That
+// makes a stale daemon (installed files updated without a restart) detectable:
+// `browser-harness-js --version` (disk) vs /health `version` (memory) differ.
+const VERSION = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version as string;
 
 const session = new Session();
 (globalThis as any).session = session;
@@ -90,6 +97,7 @@ const server = createServer((req, res) => {
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify({
       ok: true,
+      version: VERSION,
       uptime: Math.floor((Date.now() - startedAt) / 1000),
       connected: session.isConnected(),
       sessionId: session.getActiveSession() ?? null,

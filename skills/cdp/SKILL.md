@@ -88,7 +88,8 @@ EOF
 |---|---|
 | `browser-harness-js '<js>'`     | Auto-start server if needed, eval the JS, print result. |
 | `browser-harness-js <<EOF…EOF`  | Same, code from stdin. |
-| `browser-harness-js --status`   | Print health JSON (uptime, connected, sessionId) or exit 1 if down. |
+| `browser-harness-js --status`   | Print health JSON (version, uptime, connected, sessionId) or exit 1 if down. |
+| `browser-harness-js --version`  | Print the SDK version from the on-disk files (no daemon needed). |
 | `browser-harness-js --start`    | Explicit start (no-op if already running). |
 | `browser-harness-js --stop`     | Graceful shutdown. Drops session state. |
 | `browser-harness-js --restart`  | Stop + start fresh. |
@@ -313,6 +314,8 @@ When the upstream protocol JSONs change, replace `sdk/browser_protocol.json` and
 cd <skill-dir>/sdk && node gen.ts
 browser-harness-js --restart   # pick up the new bindings
 ```
+
+Reinstalling (`npx skills add`) updates the files on disk but not the long-lived daemon — a newly-documented global then throws `ReferenceError: <global> is not defined` until you `--restart`. Compare `browser-harness-js --version` (disk) to the `version` in `--status` (daemon memory) to detect it; see [Connection: Stale daemon](interaction-skills/connection.md).
 
 ## Files
 

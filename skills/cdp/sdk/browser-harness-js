@@ -16,6 +16,7 @@
 #   browser-harness-js --logs     # tail the REPL log
 #   browser-harness-js --restart  # stop + start fresh (drops session state)
 #   browser-harness-js --start    # explicit start (no-op if already running)
+#   browser-harness-js --version  # print the SDK version (from the on-disk files)
 
 set -euo pipefail
 
@@ -30,9 +31,16 @@ while [ -L "$SCRIPT_PATH" ]; do
   SCRIPT_PATH="$(readlink "$SCRIPT_PATH")"
   [[ "$SCRIPT_PATH" != /* ]] && SCRIPT_PATH="$SCRIPT_DIR/$SCRIPT_PATH"
 done
-REPL="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)/repl.ts"
+SDK_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
+REPL="$SDK_DIR/repl.ts"
 
 LOG="${CDP_REPL_LOG:-/tmp/browser-harness-js.log}"
+
+# The on-disk SDK version (read fresh each call). The daemon serves its own
+# boot-cached copy in /health, so a mismatch reveals a stale running daemon.
+sdk_version() {
+  sed -n 's/^[[:space:]]*"version":[[:space:]]*"\([^"]*\)".*/\1/p' "$SDK_DIR/package.json" 2>/dev/null | head -1
+}
 
 # The REPL server runs on Node.js (no runtime auto-install — Node is expected
 # to be on PATH already). Fail fast with a clear message if it's missing.
@@ -82,6 +90,9 @@ case "${1:-}" in
       echo '{"ok":false,"error":"down"}'
       exit 1
     fi
+    ;;
+  --version|-V)
+    v="$(sdk_version)"; printf '%s\n' "${v:-unknown}"
     ;;
   --start)
     start_repl

@@ -129,3 +129,29 @@ Two rules to stay under the limit:
    - `Network.getResponseBody` only when you need the body; otherwise read headers/length.
 
 If a call does close the socket (`CDP socket closed`), `await session.connect()` to re-establish before any further call — the session, active target, and any `globalThis.*` you set are gone, so re-`use()` the target you were driving.
+
+## Stale daemon — the running REPL lags the installed files
+
+`browser-harness-js` is a **long-lived process**: it loads the SDK code once at boot and keeps it in memory. `npx skills add` (or any reinstall) overwrites the files on disk but does **not** touch the running daemon — nothing hot-reloads. After an update the *files* are current while the *running daemon* still holds the old code, until you restart it.
+
+Two tells that the daemon is stale:
+
+1. **`ReferenceError: <global> is not defined`** for a global the docs describe (e.g. `axView`) — or `typeof axView` returning `"undefined"`. The docs you read are new; the daemon is old.
+
+2. **Version mismatch.** The launcher reads the on-disk version fresh; the daemon serves its boot-cached version in `/health`:
+
+   ```bash
+   browser-harness-js --version      # on-disk files, e.g. 0.2.0
+   browser-harness-js --status       # running daemon's boot version
+   # {"ok":true,"version":"0.2.0","uptime":...,"connected":true,"sessionId":"..."}
+   ```
+
+   If `/health` has **no** `version` field (daemon predates versioning) or a **lower** one than `--version`, the daemon is stale.
+
+Fix it — restart reloads the current on-disk code:
+
+```bash
+browser-harness-js --restart
+```
+
+`--restart` quits the old daemon and re-execs it from the installed files, then prints the new `/health` (with the up-to-date `version`). It **drops session state** — `await session.connect()` and re-`use()` your target afterward, exactly as after a `CDP socket closed`.

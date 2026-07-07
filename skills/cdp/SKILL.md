@@ -254,8 +254,7 @@ browser-harness-js 'await session.Page.navigate({url:"https://example.com"})'
 
 When attaching to the user's already-running browser:
 
-1. **Try `await session.connect()` first** — no-args auto-detect handles every Chromium-based browser via `DevToolsActivePort` (any port, loopback host). If it returns, you're done.
-2. **If that fails** with `No running browser with remote debugging detected`, the user needs to turn it on. Navigate to the inspect page in a running Chromium browser:
+1. **Try `await session.connect()` first** (see [Connecting](#connecting)). If it fails with `No running browser with remote debugging detected`, turn remote debugging on — open the inspect page in a running Chromium browser:
    ```bash
    # macOS — `open location "chrome://..."` alone fails (-10814) when the default
    # browser isn't a Chromium that registers the chrome:// scheme, and `open -a
@@ -291,13 +290,11 @@ When attaching to the user's already-running browser:
    Start-Process <browser-binary> 'chrome://inspect/#remote-debugging'
    ```
    Only macOS's AppleScript path auto-detects the running browser and avoids the profile picker; Linux/Windows need the binary name and may prompt the user to pick a profile first.
-3. **Tick "Discover network targets"** in the browser's inspect page, then click **Allow** when the browser prompts.
-4. **If auto-detect picks the wrong browser** (multiple running, you want a specific one): list them with `await detectBrowsers()`, then `await session.connect({ profileDir: <the one you want> })`.
-5. **If `session.connect()` returns `No detected browser accepted a connection`**, the user has remote-debugging on but hasn't clicked **Allow** yet. Tell them to click it and retry, or pass `timeoutMs: 30000` to wait for the click.
+2. **Tick "Discover network targets"** in the browser's inspect page, then click **Allow** when the browser prompts.
+3. Retry `await session.connect()`. If it picks the wrong browser, use `detectBrowsers()` + `{ profileDir }`; if it's still waiting on the Allow click, pass `timeoutMs: 30000` — see [Connecting](#connecting).
 
 ## Working with targets (tabs)
 
-- **Filter browser internals.** `listPageTargets()` already drops `chrome://` and `devtools://` URLs. If you call `Target.getTargets()` directly, filter manually.
 - **CDP target order ≠ visible tab-strip order.** When the user says "the first tab I can see", use a screenshot or page title to identify it — `Target.activateTarget` only switches to a known targetId.
 
 ## Looking up a method

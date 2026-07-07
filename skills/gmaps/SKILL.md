@@ -100,24 +100,11 @@ Fastest *visiting order* as an **open-path TSP with a fixed start** (the first p
 - The page loads in `best`; for any other mode `gmaps` clicks that travel-mode tab. An unavailable mode (e.g. `cycling` for an island route) reports a clean error.
 - Applies to both `--route` and `--optimize`.
 
-### Examples
+### Parallel use
+
+Each call opens its own background tab — safe to run concurrently:
 
 ```bash
-# Search
-gmaps "coffee shops in Austin TX"
-gmaps --json "sushi near Times Square" 5
-
-# Directions, as-ordered
- gmaps --route "Austin, TX" "Houston, TX"
- gmaps --route "Austin, TX" "Houston, TX" "Dallas, TX"
- gmaps --route --mode transit "London, UK" "Paris, France"
- gmaps --route --mode walking "London, UK" "Paris, France"
-
-# Best-effort optimal order (Austin fixed as start)
- gmaps --optimize "Austin, TX" "Houston, TX" "Dallas, TX" "San Antonio, TX"
- gmaps --optimize --mode transit "Austin, TX" "Houston, TX" "Dallas, TX"
-
-# Parallel — each call uses its own tab
 gmaps "coffee Austin" 5 &  gmaps "coffee Seattle" 5 &  wait
 gmaps --route "Austin, TX" "Houston, TX" &  gmaps --route "Dallas, TX" "San Antonio, TX" &  wait
 ```

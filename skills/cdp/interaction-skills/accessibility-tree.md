@@ -4,27 +4,42 @@ Use the accessibility tree (axTree) when you want to **find an element by what i
 
 ## Prefer `queryAXTree` for semantic lookups
 
-`Accessibility.queryAXTree` is the primary call. It does a one-shot query — no `Accessibility.enable` needed, no performance overhead. Pass `role` and/or `accessibleName` to find matching nodes:
+`Accessibility.queryAXTree` is the primary call — a one-shot semantic query by `role` and/or `accessibleName`, no `Accessibility.enable` needed. Two requirements in current Chrome:
+
+1. **It needs a `nodeId`** — a DOM nodeId from `DOM.getDocument`/`querySelector` (or a `backendNodeId`/`objectId`). The bare `{role, accessibleName}` form errors with "Either nodeId, backendNodeId or objectId must be specified." Pass the document root to query the whole page.
+2. **Call it on the active session** — `session.use(targetId)` then `session.Accessibility.queryAXTree(...)`. Do **not** route it through the `cdp(sessionId, "Accessibility.queryAXTree", …)` shim; that path hangs (see Traps).
 
 ```js
-// Find a button labeled "Submit"
-const { nodes } = await session.Accessibility.queryAXTree({ role: 'button', accessibleName: 'Submit' })
+await session.use(targetId)
+const { root } = await session.DOM.getDocument({})
+// Find a button labeled "Submit" anywhere on the page
+const { nodes } = await session.Accessibility.queryAXTree({ nodeId: root.nodeId, role: 'button', accessibleName: 'Submit' })
 
 // Find all links named "Learn more"
-const { nodes } = await session.Accessibility.queryAXTree({ accessibleName: 'Learn more' })
+const { nodes } = await session.Accessibility.queryAXTree({ nodeId: root.nodeId, accessibleName: 'Learn more' })
 
 // Find all checkboxes on the page
-const { nodes } = await session.Accessibility.queryAXTree({ role: 'checkbox' })
+const { nodes } = await session.Accessibility.queryAXTree({ nodeId: root.nodeId, role: 'checkbox' })
 ```
 
-Each returned `AXNode` has `nodeId`, `role`, `name`, `backendDOMNodeId`, and `properties` (including `checked`, `selected`, `expanded`, `disabled`, `focused`, etc.).
+Each returned `AXNode` carries `nodeId`, `role`, `name`, `backendDOMNodeId`, `properties` — but also verbose `sources`, `chromeRole`, and nested `{type, value}` wrappers (one link ≈ 280 tokens raw). Trim to what you act on:
+
+```js
+const compact = nodes.filter(n => !n.ignored).map(n => ({
+  role: n.role?.value, name: n.name?.value?.trim(), backendDOMNodeId: n.backendDOMNodeId,
+  state: Object.fromEntries((n.properties || []).filter(p => p.value && 'value' in p.value).map(p => [p.name, p.value.value])),
+}))   // ~30 tokens per node
+```
+
+For whole-page exploration when you don't know what to ask for, snapshot the compressed tree instead — see [`snapshot.md`](snapshot.md).
 
 ## From AXNode to coordinates
 
 `queryAXTree` gives you `backendDOMNodeId`. Bridge to click coordinates via `DOM.getBoxModel`:
 
 ```js
-const { nodes } = await session.Accessibility.queryAXTree({ role: 'button', accessibleName: 'Submit' })
+// root.nodeId from DOM.getDocument; queryAXTree on the active session (see above)
+const { nodes } = await session.Accessibility.queryAXTree({ nodeId: root.nodeId, role: 'button', accessibleName: 'Submit' })
 const node = nodes.find(n => !n.ignored)
 if (!node || !node.backendDOMNodeId) throw new Error('not found')
 
@@ -42,7 +57,7 @@ await session.Input.dispatchMouseEvent({ type: 'mouseReleased', x: x + width/2, 
 `AXNode.properties` carries semantic state — `checked`, `selected`, `expanded`, `disabled`, `focused`, `pressed`, `required`, `readonly`, etc. No need to evaluate JS to read these:
 
 ```js
-const { nodes } = await session.Accessibility.queryAXTree({ role: 'checkbox', accessibleName: 'Accept terms' })
+const { nodes } = await session.Accessibility.queryAXTree({ nodeId: root.nodeId, role: 'checkbox', accessibleName: 'Accept terms' })
 const node = nodes.find(n => !n.ignored)
 
 // Find the checked property
@@ -68,24 +83,24 @@ const { nodes } = await session.Accessibility.queryAXTree({ nodeId, role: 'butto
 The axTree crosses shadow boundaries automatically. You don't need `pierceShadow` or a recursive JS walk — `queryAXTree` sees through open (and even closed) shadow roots:
 
 ```js
-// Finds the button even if it lives inside a closed shadow root
-const { nodes } = await session.Accessibility.queryAXTree({ role: 'button', accessibleName: 'Login' })
+// Finds the button even if it lives inside a closed shadow root (nodeId from DOM.getDocument)
+const { nodes } = await session.Accessibility.queryAXTree({ nodeId: root.nodeId, role: 'button', accessibleName: 'Login' })
 ```
 
 ## When to use each method
 
 | Method | When to use it |
 |---|---|
-| `queryAXTree` | **Default.** Find nodes by role and/or name. No enable needed. |
+| `queryAXTree` | **Default for targeted finds.** By role and/or name. Needs a DOM `nodeId`; call on the active session. No enable needed. |
 | `getPartialAXTree` | Get a node's ancestors + siblings + children. Takes a DOM `nodeId` or `backendNodeId`. |
 | `getChildAXNodes` | Walk the tree downward from a known `AXNodeId`. |
-| `getRootAXNode` | Get the root AX node for a frame. Lightweight entry point for tree walks. |
-| `getFullAXTree` | **Last resort.** Dumps the entire tree — can be thousands of nodes. Use only when you need a complete structural overview. |
+| `getRootAXNode` | Get the root AX node for a frame. Needs `Accessibility.enable`. Entry point for AX-tree walks. |
+| `getFullAXTree` | **Whole-page dump.** No enable; works via either path. On very large pages the response can exceed the WS per-message limit and close the socket (a general connection limit — see [`connection.md`](connection.md)); scope to a subtree (`getPartialAXTree`) or `queryAXTree` the region. Compress with [`axView`](snapshot.md). |
 | `getAXNodeAndAncestors` | Trace the path from a node up to the root. Useful for understanding context. |
 
 ## `Accessibility.enable` — when you need it
 
-You don't need `Accessibility.enable` for `queryAXTree` or `getFullAXTree`. The only reason to call `Accessibility.enable` is to make **AXNodeIds stable across multiple calls** (without it, node IDs can shift between queries). Enable it when you're doing a multi-step tree walk and need to reference nodes by ID across calls:
+You don't need `Accessibility.enable` for `queryAXTree` or `getFullAXTree` (both work without it). You **do** need it for `getRootAXNode`, `getChildAXNodes`, and the other AX-walk methods. The other reason to call `Accessibility.enable` is to make **AXNodeIds stable across multiple calls** (without it, node IDs can shift between queries). Enable it when you're doing a multi-step tree walk and need to reference nodes by ID across calls:
 
 ```js
 await session.Accessibility.enable()
@@ -132,4 +147,5 @@ These cover the vast majority of lookups:
 - **`ignored: true` nodes.** `queryAXTree` returns ignored nodes too. Always filter with `nodes.find(n => !n.ignored)` before using a result.
 - **`backendDOMNodeId` can be undefined.** Purely structural or virtual nodes may not have a backing DOM node. Check before calling `DOM.getBoxModel`.
 - **Multiple matches.** `queryAXTree` returns all matching nodes, not just the first. If there are several buttons named "Add", disambiguate by checking `properties` (e.g. `disabled` state), by scoping to a subtree, or by index after screenshot verification.
-- **`getFullAXTree` is expensive.** It serializes the entire tree. For finding a specific element, always prefer `queryAXTree`.
+- **`queryAXTree` hangs on the `cdp(sessionId, …)` path.** Routing it through the explicit-sessionId shim (`cdp(sessionId, "Accessibility.queryAXTree", …)`) does not return. Call it on the active session: `session.use(targetId)` then `session.Accessibility.queryAXTree(…)`. `getFullAXTree` does not have this issue and works via either path.
+- **`getFullAXTree` can drop the socket on very large pages.** A giant page's full tree (huge tables, infinite lists) can exceed the WS per-message limit and close the connection (`CDP socket closed`) — a general connection limit that any large CDP response can hit (see [`connection.md`](connection.md)). For a known-large page, scope with `getPartialAXTree({ backendNodeId })` or `queryAXTree` the region instead of dumping the whole tree; `await session.connect()` to reconnect if it closes.

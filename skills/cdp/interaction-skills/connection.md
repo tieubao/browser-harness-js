@@ -109,3 +109,23 @@ xdotool search --name '<browser-binary>' windowactivate
 # Windows (PowerShell)
 powershell -NoProfile -Command "(New-Object -ComObject WScript.Shell).AppActivate('<browser-binary>')"
 ```
+
+## WebSocket payload limits — any large CDP response can close the socket
+
+The CDP WebSocket has a per-message size limit. A single response large enough to exceed it closes the socket — the call rejects with `CDP socket closed`, and **every call after fails until you reconnect** (`await session.connect()`). This is a property of the *connection*, not any one domain: any big-enough response can trigger it. Common culprits:
+
+- `Accessibility.getFullAXTree` on a giant page (huge tables, infinite lists, heavy SPAs) — the most common trigger; compress the result with `axView` or scope it.
+- `Runtime.evaluate` with `returnByValue: true` returning a huge object/string (`document.body.innerHTML`, a big JSON blob).
+- `Network.getResponseBody` on a large resource.
+- `DOM.getDocument` with a deep `depth` on a big DOM.
+
+Two rules to stay under the limit:
+
+1. **Don't pipe big blobs back through `/eval`.** The large CDP response has to cross the WS to reach the REPL before your snippet can even return it. Write large data to a file *server-side* (`await (await import('node:fs/promises')).writeFile(path, data)`) and return only a small summary — the blob never re-enters the WS and never enters the model's context either.
+2. **Scope or limit the response at the source.** Ask CDP for less:
+   - `Accessibility.getPartialAXTree({ backendNodeId })` for a subtree, or `queryAXTree` the region, instead of the whole-page `getFullAXTree`.
+   - `Runtime.evaluate` returning a *clipped* value (`s.slice(0, 4000)`, a count, a hash) instead of the full object.
+   - `DOM.getDocument({ depth: 1 })` and drill with `querySelector`/`requestNode` instead of a deep dump.
+   - `Network.getResponseBody` only when you need the body; otherwise read headers/length.
+
+If a call does close the socket (`CDP socket closed`), `await session.connect()` to re-establish before any further call — the session, active target, and any `globalThis.*` you set are gone, so re-`use()` the target you were driving.

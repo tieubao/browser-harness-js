@@ -53,7 +53,7 @@ This repo contains six skills installable via `npx skills add`:
 | **findata** | Free, keyless financial data via CDP — SEC EDGAR statements + Yahoo Finance prices |
 | **ytdl** | Download YouTube videos browser-natively via CDP — records MediaSource output, no `yt-dlp` binary |
 | **ttdl** | Download TikTok videos browser-natively via CDP — records MediaSource output, no watermark, no signer |
-| **gmaps** | Google Maps via CDP — keyless local business search (Places API data), real driving directions (`--route`), and best-effort fastest visiting order / TSP (`--optimize`), no API key |
+| **gmaps** | Google Maps via CDP — keyless local business search (Places API data), real directions in any travel mode (`--route --mode driving\|transit\|walking\|cycling\|flights\|best`), and best-effort fastest visiting order / TSP (`--optimize`), no API key |
 
 ## Files
 
@@ -74,7 +74,7 @@ This repo contains six skills installable via `npx skills add`:
 - `skills/ttdl/SKILL.md` — TikTok download skill instructions
 - `skills/ttdl/scripts/ttdl` — TikTok download CLI (a `browser-harness-js` heredoc, no runtime)
 - `skills/gmaps/SKILL.md` — Google Maps skill instructions (search, directions, optimize)
-- `skills/gmaps/scripts/gmaps` — Google Maps CLI: search + `--route` directions + `--optimize` best-effort TSP (a `browser-harness-js` heredoc, no runtime)
+- `skills/gmaps/scripts/gmaps` — Google Maps CLI: search + `--route` directions (`--mode` …) + `--optimize` best-effort TSP (a `browser-harness-js` heredoc, no runtime)
 
 No helpers file. No `click()`, no `goto()`, no `upload_file()` — just the protocol, typed.
 

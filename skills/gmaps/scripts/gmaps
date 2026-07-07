@@ -1,21 +1,24 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# gmaps — local business search + driving directions via Google Maps (CDP).
+# gmaps — local business search + directions (driving/transit/walking/cycling/
+#        flights/best) via Google Maps (CDP).
 #
 #   gmaps "coffee shops in Austin TX"            # up to 10 results, pretty
 #   gmaps "sushi near Times Square" 5            # 5 results
 #   gmaps --json "pharmacy open now Berlin" 20   # raw JSON
 #
-#   gmaps --route "Austin, TX" "Houston, TX"             # real driving: time + distance
-#   gmaps --route "Austin, TX" "Houston, TX" "Dallas, TX"   # ordered multi-stop, total time
+#   gmaps --route "Austin, TX" "Houston, TX"                  # real time + distance (driving)
+#   gmaps --route --mode transit "London, UK" "Paris, France"  # by travel mode
+#   gmaps --route "Austin, TX" "Houston, TX" "Dallas, TX"        # ordered multi-stop, total
 #   gmaps --route --json "Austin, TX" "Houston, TX"
 #
 #   gmaps --optimize "Austin, TX" "Houston, TX" "Dallas, TX" "San Antonio, TX"
 #       # best-effort TSP: each place -> lat/lng (search), straight-line
 #       # haversine matrix -> open-path TSP (fixed start = first place) -> one
-#       # real directions call for the chosen order, so the reported driving time
-#       # is real even though the ORDER is a straight-line estimate.
+#       # real directions call for the chosen order (in --mode, default driving),
+#       # so the reported time is real even though the ORDER is a straight-line
+#       # estimate. Up to 12 places.
 #
 # Free + keyless: the live google.com/maps page is rendered through the browser
 # and a single Runtime.evaluate reads each result / route. No Google Places or
@@ -44,24 +47,33 @@ Usage:
       "coffee shops in Austin TX". [count] defaults to 10 (capped at 30;
       the feed is scrolled to load more).
 
-  gmaps [--json] --route <origin> <destination> [<waypoint>...]
-      Real driving directions for the given ORDER. Reads total time +
-      distance (current traffic) for the route as-ordered. Up to 25 places.
+  gmaps [--json] [--mode <m>] --route <origin> <destination> [<waypoint>...]
+      Real directions for the given ORDER in travel mode <m> (default driving).
+      Reads total time + distance (current traffic) for the route as-ordered.
+      Up to 25 places.
 
-  gmaps [--json] --optimize <start> <place2> ... <placeN>
+  gmaps [--json] [--mode <m>] --optimize <start> <place2> ... <placeN>
       Best-effort fastest visiting order (open-path TSP, fixed start = the
       first place). Each place is resolved to lat/lng via a search, edges are
       virtualized as straight-line (haversine) distance, the order is
-      optimized, then ONE real directions call is made for that order — so the
-      reported driving time is real even though the order is an estimate.
-      Up to 12 places.
+      optimized, then ONE real directions call is made for that order (in mode
+      <m>, default driving) — so the reported time is real even though the
+      order is an estimate. Up to 12 places.
+
+  --mode <m>   driving (default) | transit | walking | cycling | flights | best
+      (Applies to --route/--optimize only.) best = let Maps pick (may be
+      transit/flight where those are faster). No motorcycle/ferry — those
+      aren't Maps tabs (motorcycling routes via driving; ferries are route
+      segments).
 
 Examples:
   gmaps "coffee shops in Austin TX"
   gmaps --json "sushi near Times Square" 5
   gmaps --route "Austin, TX" "Houston, TX"
+  gmaps --route --mode transit "London, UK" "Paris, France"
   gmaps --route "Austin, TX" "Houston, TX" "Dallas, TX"
   gmaps --optimize "Austin, TX" "Houston, TX" "Dallas, TX" "San Antonio, TX"
+  gmaps --optimize --mode cycling "Austin, TX" "Houston, TX" "Dallas, TX"
 USAGE
   exit 1
 }
@@ -71,19 +83,32 @@ USAGE
 json_output=false
 route=false
 optimize=false
+travelmode="driving"
+mode_given=false
 while [ $# -gt 0 ]; do
   case "$1" in
     --json) json_output=true; shift ;;
     --route) route=true; shift ;;
     --optimize) optimize=true; shift ;;
+    --mode)
+      [ $# -ge 2 ] || { echo "gmaps: --mode requires a value (driving|transit|walking|cycling|flights|best)" >&2; exit 1; }
+      travelmode="$2"; mode_given=true; shift 2 ;;
     --) shift; break ;;
     -*) echo "gmaps: unknown option $1" >&2; exit 1 ;;
     *) break ;;
   esac
 done
 
+case "$travelmode" in
+  driving|transit|walking|cycling|flights|best) ;;
+  *) echo "gmaps: --mode must be one of: driving, transit, walking, cycling, flights, best (got '$travelmode')" >&2; exit 1 ;;
+esac
+
 # --optimize implies --route (it is a routing variant).
 [ "$optimize" = true ] && route=true
+
+# --mode only applies to routing.
+[ "$mode_given" = true ] && [ "$route" = false ] && { echo "gmaps: --mode requires --route or --optimize" >&2; exit 1; }
 
 if [ "$route" = false ]; then
   MODE=search
@@ -119,6 +144,7 @@ const JSON_OUT = __GMAPS_JSON__
 const QUERY = __GMAPS_QUERY__
 const COUNT = __GMAPS_COUNT__
 const PLACES = __GMAPS_PLACES__
+const TRAVELMODE = __GMAPS_TRAVELMODE__
 
 if (!session.isConnected()) { try { await session.connect() } catch (e) { throw new Error("connect: " + e.message) } }
 
@@ -219,7 +245,7 @@ async function mapsSearch (query, count) {
   }
 }
 
-async function directions (places) {
+async function directions (places, mode) {
   const url = "https://www.google.com/maps/dir/" + places.map(p => encodeURIComponent(p).replace(/%20/g, "+")).join("/") + "/"
   const t = await session.Target.createTarget({ url: "about:blank", background: true })
   const { sessionId } = await session.Target.attachToTarget({ targetId: t.targetId, flatten: true })
@@ -228,12 +254,12 @@ async function directions (places) {
     await cdp(sessionId, "Page.navigate", { url })
 
     // Readiness: like the feed, networkIdle never fires. The route-list
-    // duration always ends in "min" (e.g. "2 hr 31 min", "6 hr 9 min", "40
-    // min"); the travel-mode tabs use a compact form ("2h 30m", "16 hr") with
-    // no "min" token, so polling the Directions panel for /\d+\s*min\b/ waits
-    // for the real route and ignores the mode tabs. We also accept a distance
-    // leaf ("165 miles"/"404 miles") so an exact-hour route ("2 hr", no min)
-    // still triggers. The map scale bar "50 km" is outside the panel.
+    // duration ends in "min"/"hr"; the travel-mode tabs use a compact form
+    // ("2h 30m") with no "min" token, so polling the Directions panel for
+    // /\d+\s*min\b/ waits for the real route and ignores the mode tabs. A
+    // distance leaf ("165 miles"/"404 miles") also triggers readiness so an
+    // exact-hour route ("2 hr", no min) isn't missed. The page loads in "Best"
+    // mode; we switch to the requested travel mode below.
     const READY = `(function(){ var p=document.querySelector('[aria-label="Directions"]')||document.body; var t=(p.innerText||""); return /\\b\\d+\\s*min\\b/i.test(t) || /\\b\\d+(?:\\.\\d+)?\\s*(miles|km)\\b/i.test(t); })()`
     let ready = false
     const s0 = Date.now()
@@ -242,39 +268,103 @@ async function directions (places) {
       const r = await cdp(sessionId, "Runtime.evaluate", { expression: READY, returnByValue: true })
       if (r.result.value === true) { ready = true; break }
     }
-    await new Promise(r => setTimeout(r, 1000))
 
-    // Extract the primary (fastest) route. Stable signals ONLY:
-    //   duration : first full-format duration leaf ("2 hr 31 min" / "40 min"
-    //              / "2 hr") that is NOT inside a travel-mode BUTTON[role=radio]
-    //              (those hold the compact per-mode best-times "2h 30m").
-    //   distance : first distance leaf in the duration's nearest ancestor that
-    //              contains one ("165 miles", "404 miles"). Nullable (a trivial
-    //              route can render no distance).
-    //   via/label/tolls : unique leaves grabbed panel-wide ("via …", "Fastest
-    //              route …", "This route has tolls.") — the transit alternates
-    //              RedCoach/FlixBus have none of these, so they don't pollute.
-    //   waypoints: resolved place names from input[aria-label]
-    //              ("Starting point …" / "Destination …").
+    // Select the travel mode. The page loads in "Best"; for any other mode we
+    // click its tab. The mode tabs are the button[role=radio] that contain an
+    // [aria-label] icon, in a stable order: [Best, Driving, Transit, Walking,
+    // Cycling, Flights] (the map-type Default/Satellite radios have no icon
+    // aria-label, so they're excluded). Tab aria-labels are localized
+    // ("Driving" -> "Lái xe"), so we select by INDEX, not by label. A disabled
+    // tab (e.g. "Cycling not available" for an island route) has the DOM
+    // `disabled` property set — detect it and error rather than click. After a
+    // real click the panel CLEARS (duration -> null) then repopulates with the
+    // new mode's duration, so we poll null -> non-null to wait out the re-render
+    // with no race against the previous mode's duration. Flights render their
+    // duration in a flight card OUTSIDE the Directions panel, so for flights
+    // the duration scope is the whole body.
+    const modeIdx = { best: 0, driving: 1, transit: 2, walking: 3, cycling: 4, flights: 5 }[mode]
+    const durScopeIsBody = mode === "flights"
+    if (mode !== "best") {
+      // The mode tabs can lag the initial paint (the route duration may render
+      // before all 6 tabs are in the DOM), so wait for the target tab to exist
+      // before selecting. A tab that is "not available" still renders (disabled),
+      // so this also waits for disabled tabs; the disabled check below then
+      // reports the unavailability cleanly.
+      const TABCOUNT = `(function(){var n=0;document.querySelectorAll('button[role=radio]').forEach(function(b){if(b.querySelector('[aria-label]'))n++;});return n;})()`
+      const t1 = Date.now()
+      while (Date.now() - t1 < 12000) {
+        const cr = await cdp(sessionId, "Runtime.evaluate", { expression: TABCOUNT, returnByValue: true })
+        if (Number(cr.result.value) > modeIdx) break
+        await new Promise(r => setTimeout(r, 200))
+      }
+      const SEL = `(function(){
+        var radios=Array.prototype.slice.call(document.querySelectorAll('button[role=radio]')).filter(function(b){return !!b.querySelector('[aria-label]');});
+        if (${modeIdx} >= radios.length) return JSON.stringify({found:false});
+        var tab=radios[${modeIdx}];
+        if (tab.disabled) return JSON.stringify({found:true,disabled:true});
+        tab.click();
+        return JSON.stringify({found:true,disabled:false,clicked:true});
+      })()`
+      const sr = await cdp(sessionId, "Runtime.evaluate", { expression: SEL, returnByValue: true })
+      if (sr.exceptionDetails) throw new Error("mode select failed: " + (sr.exceptionDetails.exception && sr.exceptionDetails.exception.description || sr.exceptionDetails.text))
+      const sel = JSON.parse(sr.result.value)
+      if (!sel.found) throw new Error('travel mode "' + mode + '" is not available for this route (no such tab)')
+      if (sel.disabled) throw new Error('travel mode "' + mode + '" is not available for this route')
+      const DURP = `(function(){
+        function clean(s){return (s||"").replace(/\\s+/g," ").trim()}
+        var durRe=/^\\d+\\s*(min|hr|days?|h)(\\s+\\d+\\s*(min|hr|days?|h))*$/;
+        function inRadio(el){while(el){if(el.getAttribute&&el.getAttribute("role")==="radio")return true;el=el.parentElement;}return false;}
+        var scope=${durScopeIsBody}?document.body:(document.querySelector('[aria-label="Directions"]')||document.body);
+        var all=scope.querySelectorAll("*");
+        for(var i=0;i<all.length;i++){var e=all[i];if(e.children.length!==0)continue;var tx=clean(e.textContent);if(durRe.test(tx)&&!inRadio(e))return tx;}
+        return null;
+      })()`
+      let sawNull = false, finalDur = null
+      const p0 = Date.now()
+      while (Date.now() - p0 < 15000) {
+        await new Promise(r => setTimeout(r, 250))
+        const pr = await cdp(sessionId, "Runtime.evaluate", { expression: DURP, returnByValue: true })
+        finalDur = pr.result.value
+        if (finalDur === null) sawNull = true
+        if (sawNull && finalDur !== null) break               // cleared, then new route
+        if (!sawNull && (Date.now() - p0) > 3000) break        // no clear -> no-op, accept current
+      }
+      await new Promise(r => setTimeout(r, 350))              // let the new route settle
+      // If clicking the tab produced no route, the mode is unavailable for this
+      // route (a disabled/"not available" tab clears the panel but never
+      // repopulates). The `disabled` property can lag the tab's render, so we
+      // detect unavailability from the absence of a route here instead.
+      if (finalDur === null) throw new Error('travel mode "' + mode + '" is not available for this route')
+    }
+
+    // Extract the primary route. Stable signals ONLY (see mapsSearch for the
+    // no-class-name rationale). Duration scope is the body for flights (flight
+    // card is outside the Directions panel), the panel otherwise; distance/
+    // via/label/tolls are panel-scoped (flights have none).
     const EX = `(function(){
       function clean(s){return (s||"").replace(/\\s+/g," ").trim()}
-      var durRe=/^\\d+\\s*hr\\s+\\d+\\s*min$|^\\d+\\s*min$|^\\d+\\s*hr$/;
+      var durRe=/^\\d+\\s*(min|hr|days?|h)(\\s+\\d+\\s*(min|hr|days?|h))*$/;
       var distRe=/^[\\d,]+(?:\\.\\d+)?\\s*(miles|mi|km|ft|m)$/;
       function inRadio(el){while(el){if(el.getAttribute&&el.getAttribute("role")==="radio")return true;el=el.parentElement;}return false;}
       var panel=document.querySelector('[aria-label="Directions"]')||document.body;
-      var all=panel.querySelectorAll("*"), durLeaf=null;
+      var durScope=${durScopeIsBody}?document.body:panel;
+      var all=durScope.querySelectorAll("*"), durLeaf=null;
       for(var i=0;i<all.length;i++){var e=all[i];if(e.children.length!==0)continue;var tx=clean(e.textContent);if(durRe.test(tx)&&!inRadio(e)){durLeaf={el:e,text:tx};break;}}
-      if(!durLeaf) return JSON.stringify({error:"no route duration found (page may still be loading, or no driving route exists for these places)"});
-      var anc=durLeaf.el.parentElement, card=null, lev=0;
-      while(anc&&lev<8){var lfs=anc.querySelectorAll("*");var found=false;for(var j=0;j<lfs.length;j++){if(lfs[j].children.length===0&&distRe.test(clean(lfs[j].textContent))){found=true;break;}}if(found){card=anc;break;}anc=anc.parentElement;lev++;}
-      var scope=card||panel, sl=scope.querySelectorAll("*"), distLeaf=null;
-      for(var i=0;i<sl.length;i++){var e=sl[i];if(e.children.length!==0)continue;var tx=clean(e.textContent);if(distRe.test(tx)){distLeaf=tx;break;}}
-      var via=null,label=null,tolls=false;
-      var pl=panel.querySelectorAll("*");
-      for(var i=0;i<pl.length;i++){var e=pl[i];if(e.children.length!==0)continue;var tx=clean(e.textContent);
-        if(!via&&/^via\\s/.test(tx))via=tx;
-        if(!label&&/^Fastest route/.test(tx))label=tx;
-        if(/^This route has tolls\\.?$/.test(tx))tolls=true;}
+      if(!durLeaf) return JSON.stringify({error:"no " + ${JSON.stringify(mode)} + " route duration found (page may still be loading, or no such route exists for these places)"});
+      var distLeaf=null, via=null, label=null, tolls=false;
+      if(${durScopeIsBody}){
+        // flights: no distance/via/label/tolls in the route sense
+      } else {
+        var anc=durLeaf.el.parentElement, card=null, lev=0;
+        while(anc&&lev<8){var lfs=anc.querySelectorAll("*");var found=false;for(var j=0;j<lfs.length;j++){if(lfs[j].children.length===0&&distRe.test(clean(lfs[j].textContent))){found=true;break;}}if(found){card=anc;break;}anc=anc.parentElement;lev++;}
+        var scope=card||panel, sl=scope.querySelectorAll("*");
+        for(var i=0;i<sl.length;i++){var e=sl[i];if(e.children.length!==0)continue;var tx=clean(e.textContent);if(distRe.test(tx)){distLeaf=tx;break;}}
+        var pl=panel.querySelectorAll("*");
+        for(var i=0;i<pl.length;i++){var e=pl[i];if(e.children.length!==0)continue;var tx=clean(e.textContent);
+          if(!via&&/^via\\s/.test(tx))via=tx;
+          if(!label&&/^Fastest route/.test(tx))label=tx;
+          if(/^This route has tolls\\.?$/.test(tx))tolls=true;}
+      }
       var wps=[];document.querySelectorAll("input[aria-label]").forEach(function(inp){var al=inp.getAttribute("aria-label");var m=al.match(/^(?:Starting point|Destination)\\s+(.*)$/);if(m)wps.push(m[1]);});
       return JSON.stringify({duration:durLeaf.text,distance:distLeaf,via:via,label:label,tolls:tolls,waypoints:wps,url:location.href});
     })()`
@@ -282,7 +372,7 @@ async function directions (places) {
     const er = await cdp(sessionId, "Runtime.evaluate", { expression: EX, returnByValue: true })
     if (er.exceptionDetails) throw new Error("directions extract failed: " + (er.exceptionDetails.exception && er.exceptionDetails.exception.description || er.exceptionDetails.text))
     const r = JSON.parse(er.result.value)
-    if (r.error) throw new Error("directions: " + r.error + (ready ? "" : " (the Directions panel did not become ready in time — possible consent wall, or no drivable route)"))
+    if (r.error) throw new Error("directions: " + r.error + (ready ? "" : " (the Directions panel did not become ready in time — possible consent wall, or no route for this mode)"))
     return r
   } finally {
     session.closeTab(t.targetId, sessionId).catch(function () {})
@@ -399,11 +489,11 @@ if (MODE === "search") {
 }
 
 if (MODE === "route") {
-  const r = await directions(PLACES)
-  if (JSON_OUT) return { mode: "route", places: PLACES, route: r }
+  const r = await directions(PLACES, TRAVELMODE)
+  if (JSON_OUT) return { mode: "route", travel_mode: TRAVELMODE, places: PLACES, route: r }
 
   var lines = []
-  lines.push("Route: " + PLACES.join("  →  "))
+  lines.push("Route (" + TRAVELMODE + "): " + PLACES.join("  →  "))
   lines.push("")
   var head = p(r.duration)
   if (r.distance) head += "   " + r.distance
@@ -441,25 +531,26 @@ if (MODE === "optimize") {
     legs.push({ from: a.name, to: b.name, km: Math.round(km * 10) / 10, bearing: Math.round(bd), dir: compass8(bd) })
   }
 
-  // One real directions call for the chosen order — the reported driving time
-  // and distance are real; only the ORDER is a straight-line estimate.
-  var route = await directions(order.map(function (i) { return PLACES[i] }))
+  // One real directions call for the chosen order — the reported time and
+  // distance are real; only the ORDER is a straight-line estimate.
+  var route = await directions(order.map(function (i) { return PLACES[i] }), TRAVELMODE)
 
   if (JSON_OUT) {
     return {
       mode: "optimize",
+      travel_mode: TRAVELMODE,
       places: resolved,
       order: order.map(function (i) { return resolved[i].name }),
       order_indices: order,
       legs: legs,
       straight_line_total_km: Math.round(straightTotal * 10) / 10,
       route: route,
-      note: "Order is a best-effort estimate from straight-line (haversine) distances; the driving time/distance is the real route for that order."
+      note: "Order is a best-effort estimate from straight-line (haversine) distances; the " + TRAVELMODE + " time/distance is the real route for that order."
     }
   }
 
   var lines = []
-  lines.push("Optimized route  ·  best-effort (straight-line TSP)  ·  fixed start: " + p(resolved[order[0]].name))
+  lines.push("Optimized route  ·  best-effort (straight-line TSP)  ·  " + TRAVELMODE + "  ·  fixed start: " + p(resolved[order[0]].name))
   lines.push("")
   for (var i = 0; i < order.length; i++) {
     var pp = resolved[order[i]]
@@ -470,7 +561,7 @@ if (MODE === "optimize") {
   lines.push("")
   lines.push("  Straight-line total: " + (Math.round(straightTotal * 10) / 10) + " km")
   lines.push("")
-  lines.push("Real driving for this order:")
+  lines.push("Real " + TRAVELMODE + " for this order:")
   var head = "  " + p(route.duration)
   if (route.distance) head += "   " + route.distance
   if (route.via) head += "   " + route.via
@@ -484,7 +575,7 @@ if (MODE === "optimize") {
   lines.push("  " + route.url)
   lines.push("")
   lines.push("Note: order is a best-effort estimate from straight-line (haversine) distances;")
-  lines.push("the driving time above is the real route for that order.")
+  lines.push("the " + TRAVELMODE + " time above is the real route for that order.")
   return lines.join("\n")
 }
 
@@ -497,16 +588,17 @@ GMAPS_EOF
 # function-replacements dodge & / $ pitfalls in the replacement text.
 final=$(node -e '
 let c=require("fs").readFileSync(0,"utf8");
-let mode=process.argv[1], json=process.argv[2];
+let mode=process.argv[1], json=process.argv[2], travelmode=process.argv[3];
 let query="", count=0, places=[];
-if(mode==="search"){ query=process.argv[3]||""; count=process.argv[4]||"0"; }
-else { places=process.argv.slice(3); }
+if(mode==="search"){ query=process.argv[4]||""; count=process.argv[5]||"0"; }
+else { places=process.argv.slice(4); }
 c=c.replace(/__GMAPS_MODE__/g,()=>JSON.stringify(mode))
     .replace(/__GMAPS_JSON__/g,()=>json)
+    .replace(/__GMAPS_TRAVELMODE__/g,()=>JSON.stringify(travelmode))
     .replace(/__GMAPS_QUERY__/g,()=>JSON.stringify(query))
     .replace(/__GMAPS_COUNT__/g,()=>String(count))
     .replace(/__GMAPS_PLACES__/g,()=>JSON.stringify(places));
 process.stdout.write(c);
-' "$MODE" "$json_output" "${rest[@]}" <<<"$code")
+' "$MODE" "$json_output" "$travelmode" "${rest[@]}" <<<"$code")
 
 printf '%s' "$final" | browser-harness-js

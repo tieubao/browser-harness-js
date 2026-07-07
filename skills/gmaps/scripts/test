@@ -64,7 +64,7 @@ expect "special chars: query echoed verbatim" "café & boulangerie Paris"       
 echo "-- directions --"
 # --route: real driving time + distance for an ordered pair.
 route=$(run --route "Austin, TX" "Houston, TX")
-expect "route: header"              "Route:"        "$route"
+expect "route: header (driving)"   "Route (driving):" "$route"
 expect "route: duration"            "min"           "$route"
 expect "route: distance"            "miles"         "$route"
 expect "route: resolved waypoint"  "Austin, Texas" "$route"
@@ -80,12 +80,32 @@ expect "optimize: best-effort note"  "best-effort"                   "$opt"
 expect "optimize: directions url"    "/maps/dir/"                    "$opt"
 refuse "optimize: no unparsed placeholder" "__GMAPS_"               "$opt"
 
+echo "-- modes --"
+# --mode driving forces driving even where Maps' "Best" default picks transit
+# (London->Paris: Best = Eurostar 2h18; driving is ~6h via the Channel Tunnel).
+rmd=$(run --route --mode driving "London, UK" "Paris, France")
+expect "mode driving: header"    "Route (driving):" "$rmd"
+expect "mode driving: distance" "miles"         "$rmd"
+refuse "mode driving: transit leak" "2 hr 18 min"    "$rmd"
+# --mode transit explicitly returns the transit time (no distance/via).
+rmt=$(run --route --mode transit "London, UK" "Paris, France")
+expect "mode transit: header"   "Route (transit):" "$rmt"
+expect "mode transit: time"     "2 hr 18 min"      "$rmt"
+refuse "mode transit: no placeholder" "__GMAPS_"    "$rmt"
+# A mode that's unavailable for a route reports a clean error.
+rmc=$("$cli" --route --mode cycling "Ho Chi Minh City, Vietnam" "Vung Tau, Vietnam" 2>&1); rcc=$?
+if [ "$rcc" -ne 0 ] && printf '%s' "$rmc" | grep -qF "not available for this route"; then ok "mode: unavailable reports error"; else bad "mode: unavailable reports error" "rc=$rcc out=$rmc"; fi
+
 echo "-- guards --"
 # Arg-count guards happen before any browser call, so they're deterministic.
 g1=$("$cli" --route "Solo place" 2>&1); rc1=$?
 if [ "$rc1" -ne 0 ] && printf '%s' "$g1" | grep -qF "at least 2 places"; then ok "guard: --route needs >=2 places"; else bad "guard: --route needs >=2 places" "rc=$rc1 out=$g1"; fi
 g2=$("$cli" --optimize a b c d e f g h i j k l m 2>&1); rc2=$?
 if [ "$rc2" -ne 0 ] && printf '%s' "$g2" | grep -qF "up to 12 places"; then ok "guard: --optimize caps at 12"; else bad "guard: --optimize caps at 12" "rc=$rc2 out=$g2"; fi
+g3=$("$cli" --mode driving "coffee shops" 2>&1); rc3=$?
+if [ "$rc3" -ne 0 ] && printf '%s' "$g3" | grep -qF -e "--mode requires --route or --optimize"; then ok "guard: --mode needs --route/--optimize"; else bad "guard: --mode needs --route/--optimize" "rc=$rc3 out=$g3"; fi
+g4=$("$cli" --route --mode motorcycle a b 2>&1); rc4=$?
+if [ "$rc4" -ne 0 ] && printf '%s' "$g4" | grep -qF -e "--mode must be one of"; then ok "guard: invalid --mode value rejected"; else bad "guard: invalid --mode value rejected" "rc=$rc4 out=$g4"; fi
 
 echo
 echo "$pass passed, $fail failed"

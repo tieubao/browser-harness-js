@@ -5,13 +5,14 @@ description: >-
   API key, no quota): (1) local business search returning structured results
   (name, rating, reviews, price, category, address, hours, coords, place ID,
   URL) — the data the metered Google Places API sells; (2) --route for real
-  driving directions (total time + distance, current traffic) for an ordered
-  list of places; (3) --optimize for a best-effort fastest visiting order
+  directions (total time + distance, current traffic) for an ordered list of
+  places, in any travel mode (--mode driving|transit|walking|cycling|flights|best,
+  default driving); (3) --optimize for a best-effort fastest visiting order
   (open-path TSP, fixed start) whose edges are virtualized as straight-line
   distance — N parallel place lookups plus one real directions call. Use when the
-  user asks to find local businesses, get driving directions/time between places,
-  or plan a multi-stop route order. Requires browser-harness-js on PATH and a
-  running Chromium-based browser with remote debugging.
+  user asks to find local businesses, get directions/time between places (by any
+  mode), or plan a multi-stop route order. Requires browser-harness-js on PATH
+  and a running Chromium-based browser with remote debugging.
 setup: bash <skill-dir>/scripts/setup
 compatibility: >-
   Requires browser-harness-js on PATH and a running Chromium browser with remote
@@ -61,26 +62,43 @@ gmaps --json "coffee shops in Austin TX" 5   # raw JSON
 ### Directions (`--route`)
 
 ```bash
-gmaps --route "Austin, TX" "Houston, TX"             # real time + distance
-gmaps --route "Austin, TX" "Houston, TX" "Dallas, TX" # ordered multi-stop, total
-gmaps --route --json "Austin, TX" "Houston, TX"      # raw JSON
+gmaps --route "Austin, TX" "Houston, TX"                       # real time + distance (driving)
+gmaps --route --mode transit "London, UK" "Paris, France"     # by travel mode
+gmaps --route "Austin, TX" "Houston, TX" "Dallas, TX"           # ordered multi-stop, total
+gmaps --route --json --mode cycling "Austin, TX" "Houston, TX" # raw JSON
 ```
 
-Real driving directions for the **given order**. Reads the total time + distance (current traffic) and the resolved waypoint names. The first place is the origin. Up to 25 places. Per-leg times are not in the collapsed route summary (Maps shows only the total) — open `url` for the full turn-by-turn.
+Real directions for the **given order** in a travel `--mode` (default `driving`). Reads the total time + distance (current traffic) and the resolved waypoint names. The first place is the origin. Up to 25 places. Per-leg times are not in the collapsed route summary (Maps shows only the total) — open `url` for the full turn-by-turn.
 
 ### Best-effort order (`--optimize`)
 
 ```bash
 gmaps --optimize "Austin, TX" "Houston, TX" "Dallas, TX" "San Antonio, TX"
+gmaps --optimize --mode transit "Austin, TX" "Houston, TX" "Dallas, TX"
 gmaps --optimize --json "Austin, TX" "Houston, TX" "Dallas, TX"
 ```
 
-Fastest *visiting order* as an **open-path TSP with a fixed start** (the first place). The first place is where you start; the rest are ordered to minimize total straight-line distance, then **one real directions call** is made for that order — so the reported driving time/distance is real even though the *order* is a straight-line estimate.
+Fastest *visiting order* as an **open-path TSP with a fixed start** (the first place). The first place is where you start; the rest are ordered to minimize total straight-line distance, then **one real directions call** is made for that order (in the chosen `--mode`, default `driving`) — so the reported time/distance is real even though the *order* is a straight-line estimate.
 
 - Each place is resolved to exact lat/lng in parallel (background tabs poll the resolved place URL for its `!3d!4d` coords) — **N lookups**, not N².
-- Edges are **virtualized** as straight-line (haversine) distance; each leg also reports its compass bearing.
+- Edges are **virtualized** as straight-line (haversine) distance; each leg also reports its compass bearing. The travel `--mode` affects only the final real directions call, not the TSP ordering.
 - The TSP is solved exactly (Held-Karp) for up to **12 places**.
 - Total browser calls: **N + 1** (N place resolutions + 1 directions render).
+
+### Travel modes (`--mode`)
+
+| `--mode` | What it returns |
+|------|---------|
+| `driving` *(default)* | time + distance + via + tolls (the usual Maps route) |
+| `transit` | time of the best bus/train/ferry/subway option (no distance/via) |
+| `walking` | time + distance (durations render in hours, e.g. `62 hr`) |
+| `cycling` | time + distance (may include a ferry/car-transport note) |
+| `flights` | nonstop flight time only (best-effort — the flight card is outside the route panel) |
+| `best` | whatever Maps' "Best" tab picks (driving for most routes; transit/flight where those are faster) |
+
+- **No `motorcycle` or `ferry` mode.** Maps' top-level tabs are the six above; motorcycling routes via `driving`, and ferries appear as segments within `driving`/`transit` routes. (A dedicated two-wheeler tab does not appear in Maps for Vietnam or the US — only some regions/countries.)
+- The page loads in `best`; for any other mode `gmaps` clicks that travel-mode tab. An unavailable mode (e.g. `cycling` for an island route) reports a clean error.
+- Applies to both `--route` and `--optimize`.
 
 ### Examples
 
@@ -90,11 +108,14 @@ gmaps "coffee shops in Austin TX"
 gmaps --json "sushi near Times Square" 5
 
 # Directions, as-ordered
-gmaps --route "Austin, TX" "Houston, TX"
-gmaps --route "Austin, TX" "Houston, TX" "Dallas, TX"
+ gmaps --route "Austin, TX" "Houston, TX"
+ gmaps --route "Austin, TX" "Houston, TX" "Dallas, TX"
+ gmaps --route --mode transit "London, UK" "Paris, France"
+ gmaps --route --mode walking "London, UK" "Paris, France"
 
 # Best-effort optimal order (Austin fixed as start)
-gmaps --optimize "Austin, TX" "Houston, TX" "Dallas, TX" "San Antonio, TX"
+ gmaps --optimize "Austin, TX" "Houston, TX" "Dallas, TX" "San Antonio, TX"
+ gmaps --optimize --mode transit "Austin, TX" "Houston, TX" "Dallas, TX"
 
 # Parallel — each call uses its own tab
 gmaps "coffee Austin" 5 &  gmaps "coffee Seattle" 5 &  wait
@@ -140,7 +161,7 @@ Each result carries: `name, rating, review_count, price, category, address, hour
 
 ### Route — pretty
 ```
-Route: Austin, TX  →  Houston, TX
+Route (driving): Austin, TX  →  Houston, TX
 
   2 hr 31 min   165 miles   via State Hwy 71 E and I-10 E
   Fastest route, the usual traffic  ·  tolls
@@ -150,12 +171,13 @@ Route: Austin, TX  →  Houston, TX
 
   https://www.google.com/maps/dir/Austin,+TX/Houston,+TX/
 ```
-`distance` (and `via`) can be null on a trivially short route. `tolls` appears only when the route has tolls.
+The `(driving)` is the `--mode` (default). `distance` (and `via`) can be null on a trivially short route, and for `transit`/`flights` (no distance). `tolls` appears only when the route has tolls.
 
 ### Route — `--json`
 ```json
 {
   "mode": "route",
+  "travel_mode": "driving",
   "places": ["Austin, TX", "Houston, TX"],
   "route": {
     "duration": "2 hr 31 min",
@@ -171,7 +193,7 @@ Route: Austin, TX  →  Houston, TX
 
 ### Optimize — pretty
 ```
-Optimized route  ·  best-effort (straight-line TSP)  ·  fixed start: Austin, TX, USA
+Optimized route  ·  best-effort (straight-line TSP)  ·  driving  ·  fixed start: Austin, TX, USA
 
   1. Austin, TX, USA  (30.267153, -97.7430608)   start
   2. San Antonio, TX, USA  (29.4251905, -98.4945922)   ← 118.4 km SW (218°)
@@ -195,6 +217,7 @@ the driving time above is the real route for that order.
 ```json
 {
   "mode": "optimize",
+  "travel_mode": "driving",
   "places": [{ "query": "Austin, TX", "name": "Austin, TX, USA", "lat": 30.267153, "lng": -97.7430608, "url": "…" }, …],
   "order": ["Austin, TX, USA", "San Antonio, TX, USA", "Houston, TX, USA", "Dallas, TX, USA"],
   "order_indices": [0, 3, 1, 2],
@@ -221,10 +244,11 @@ the driving time above is the real route for that order.
 ### Directions (`--route` / `--optimize`)
 | Step | What happens |
 |------|---------------|
-| 1 | `Page.navigate` to `https://www.google.com/maps/dir/<p0>/<p1>/…/` (path form with `+` for spaces). The `?query=` form does not render. |
-| 2 | **Poll the Directions panel for a route duration.** Like the feed, `networkIdle` never fires. Route-list durations always end in `min` (`2 hr 31 min`, `40 min`, `6 hr 9 min`); the travel-mode tabs use a compact form (`2h 30m`, `16 hr`) with no `min` token, so polling `/\d+\s*min\b/` in the `[aria-label="Directions"]` panel waits for the real route and ignores the mode tabs. A distance leaf (`miles`/`km`) is also accepted so an exact-hour route (`2 hr`, no min) still triggers. The map scale bar `50 km` is outside the panel. |
-| 3 | **One `Runtime.evaluate`** extracts the primary (fastest) route: the first full-format duration leaf **not inside a travel-mode `BUTTON[role=radio]`** (those hold the compact per-mode best-times); the distance leaf in its nearest ancestor; and the unique `via …` / `Fastest route …` / `This route has tolls.` leaves (transit alternates like RedCoach/FlixBus have none of these, so they don't pollute). Resolved waypoint names come from `input[aria-label]` (`Starting point …` / `Destination …`). |
-| 4 | Fire-and-forget `closeTab` in `finally`. |
+| 1 | `Page.navigate` to `https://www.google.com/maps/dir/<p0>/<p1>/…/` (path form with `+` for spaces). The `?query=` form does not render. The page loads in Maps' "Best" mode. |
+| 2 | **Poll the Directions panel for a route duration.** Like the feed, `networkIdle` never fires. Route-list durations end in `min`/`hr`; the travel-mode tabs use a compact form (`2h 30m`, `16 hr`) with no `min` token, so polling `/\d+\s*min\b/` in the `[aria-label="Directions"]` panel waits for the real route and ignores the mode tabs. A distance leaf (`miles`/`km`) is also accepted so an exact-hour route (`2 hr`, no min) still triggers. The map scale bar `50 km` is outside the panel. |
+| 3 | **Select the travel `--mode`** (unless `best`). The mode tabs are the `button[role=radio]` that contain an `[aria-label]` icon, in a stable order `[Best, Driving, Transit, Walking, Cycling, Flights]` (the map-type Default/Satellite radios have no icon aria-label, so they're excluded). Tab aria-labels are *localized* ("Driving" → "Lái xe"), so the tab is selected by **index**, not label; the tabs are waited-for (they can lag the initial paint), and an unavailable tab is detected (DOM `disabled` property, with a fallback: no route after the click ⇒ "not available"). After a real click the panel **clears (duration → null) then repopulates** with the new mode's duration, so the re-render is waited out by polling null → non-null — no race with the previous mode's duration. |
+| 4 | **One `Runtime.evaluate`** extracts the primary route: the first full-format duration leaf **not inside a travel-mode `BUTTON[role=radio]`** (those hold the compact per-mode best-times); the distance leaf in its nearest ancestor; and the unique `via …` / `Fastest route …` / `This route has tolls.` leaves (transit alternates like RedCoach/FlixBus have none of these, so they don't pollute). Resolved waypoint names come from `input[aria-label]` (`Starting point …` / `Destination …`). For `flights` the duration is read body-wide (the flight card is outside the Directions panel) and distance/via/tolls are null. |
+| 5 | Fire-and-forget `closeTab` in `finally`. |
 
 ### Optimize extras
 | Step | What happens |
@@ -232,7 +256,7 @@ the driving time above is the real route for that order.
 | A | **Resolve each place** in parallel background tabs: a place-name search does *not* render a feed — it resolves to a single place page whose URL updates (in ~3-7 s) to `/maps/place/<name>/@<view>/data=…!8m2!3d<lat>!4d<lng>…`. Each tab polls `location.href` for the `!3d!4d` token (the place's exact coords — the `@lat,lng` is only the viewport). The place name is read from the `/maps/place/<name>/` path segment. |
 | B | Build the **haversine** distance matrix and solve the **open-path TSP with fixed start = place[0]** (exact Held-Karp, ≤12 places). |
 | C | Compute per-leg straight-line km + compass bearing. |
-| D | **One real `--route` call** for the chosen order → the reported driving time/distance is real; only the *order* is a straight-line estimate. |
+| D | **One real `--route` call** (in the chosen `--mode`, default driving) for the chosen order → the reported time/distance is real; only the *order* is a straight-line estimate. |
 
 Per call: search ~2-3 s (feed render + scrolls); route ~2-3 s; optimize ~5-9 s (N parallel place resolutions + 1 directions render). Background tabs keep it unobtrusive (unlike `ytdl`, Maps needs no playback/poToken).
 
@@ -260,6 +284,14 @@ Per call: search ~2-3 s (feed render + scrolls); route ~2-3 s; optimize ~5-9 s (
 - **The primary route is "first full-format duration not inside a travel-mode radio."** The mode tabs (`BUTTON[role=radio]`) carry compact best-times (`2h 30m`) that must be excluded; the route list uses the full form (`2 hr 31 min`). Transit alternates (RedCoach/FlixBus) appear in the same panel but have no `via`/`Fastest route`/distance leaves, so they don't contaminate the primary extraction.
 - **Times are current-traffic ("now").** The page gives *now*, not a predictive future departure (the paid API's `departure_time`/`traffic_model` is the one thing the page doesn't give). The label varies: "Fastest route, the usual traffic" vs "Fastest route now due to traffic conditions" — both are matched by `^Fastest route`.
 - **Place-name searches don't render a feed** — that's why `--optimize` resolves places by polling the place-page URL for `!3d!4d`, not by parsing feed cards. A background tab takes ~3-7 s to update the URL; `resolvePlace` polls up to 20 s.
+
+### Travel modes (`--mode`)
+- **`best` is Maps' default and may not be driving.** For routes where transit/flight is faster (e.g. London→Paris, where Best = the Eurostar), `best` returns the transit time. Pass `--mode driving` to force driving. The skill's *default* is `driving` (not `best`) for this reason.
+- **Mode tabs are selected by INDEX, not aria-label** — the labels are localized ("Driving" → "Lái xe" in vi). The order `[Best, Driving, Transit, Walking, Cycling, Flights]` has been stable across locales, but if Maps reorders or drops a tab the index mapping breaks.
+- **Unavailable modes are detected two ways** — the tab's DOM `disabled` property (which can lag its render), with a fallback: if clicking produces no route (panel clears but never repopulates), the mode is reported as "not available for this route".
+- **`flights` is best-effort.** The flight card renders *outside* the Directions panel, so the nonstop flight time is read body-wide; there is no distance/via/tolls. Connecting flights and booking details are not parsed.
+- **No `motorcycle` or `ferry` mode.** Maps exposes only the six tabs above; motorcycling routes via `driving`, ferries appear as segments within `driving`/`transit` routes. (A two-wheeler tab does not appear in Maps for Vietnam or the US.)
+- **Walking/cycling durations render in hours** in the route list (e.g. `62 hr`), not the "days" shown on the mode tab — both are matched.
 
 ### Optimize
 - **The order is a straight-line estimate, not the true driving-optimal order.** Straight-line (haversine) distance is the "virtualized" edge cost; road-network detours can reorder the true optimum. The reported *driving time/distance* is real (one directions call for the chosen order) — only the *order* is best-effort.

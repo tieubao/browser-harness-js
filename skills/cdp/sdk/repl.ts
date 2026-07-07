@@ -14,6 +14,7 @@
  */
 
 import { Session, listPageTargets, resolveWsUrl, detectBrowsers } from './session.ts';
+import { axView } from './axview.ts';
 import * as Generated from './generated.ts';
 import { createServer, type IncomingMessage } from 'node:http';
 
@@ -25,6 +26,7 @@ const session = new Session();
 (globalThis as any).listPageTargets = () => listPageTargets(session);
 (globalThis as any).resolveWsUrl = resolveWsUrl;
 (globalThis as any).detectBrowsers = detectBrowsers;
+(globalThis as any).axView = axView;
 (globalThis as any).CDP = Generated;
 (globalThis as any).cdp = (sid: string, method: string, params: unknown) => session._call(method, params, { sessionId: sid });
 

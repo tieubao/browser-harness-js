@@ -105,6 +105,7 @@ These globals are pre-loaded — no imports needed:
 - `detectBrowsers()` — scan OS-specific profile dirs for running Chromium-based browsers with remote debugging on. Returns `[{name, profileDir, port, wsPath, wsUrl, mtimeMs}]`, sorted by most recently launched.
 - `resolveWsUrl(opts)` — resolve a WS URL from `{wsUrl}` | `{port, host?}` | `{profileDir}`. For the no-args auto-detect flow, call `session.connect()` directly instead.
 - `CDP` — the generated namespaces (`CDP.Page`, `CDP.Runtime`, …) for type-name reference.
+- `axView(nodes, opts?)` — compressed accessibility-tree view: a pure projection over a raw `Accessibility.getFullAXTree`/`queryAXTree` result. Drops ~96% structural noise, assigns `[n]` refs → `backendDOMNodeId`. See `interaction-skills/snapshot.md`.
 
 ### Calling a CDP method
 
@@ -137,17 +138,26 @@ grep -l <keyword> <skill-dir>/interaction-skills/*.md
 
 Each recipe leads with the shortest CDP call that works, then the trap — in `session.Domain.method(...)` form, no wrapped helpers — so it drops straight into a snippet. If the mechanic you need isn't there, that's a gap worth filing as a new recipe.
 
-### Finding elements: prefer axTree over selectors
+### Finding elements: accessibility tree over selectors
 
-When looking for a named element (a button, link, textbox, heading, etc.), **prefer `Accessibility.queryAXTree` over CSS selectors**. It finds elements by semantic role + accessible name — the same model Playwright's `getByRole`/`getByText` uses — and it crosses shadow boundaries automatically, no `Accessibility.enable` needed:
+For a named element (a button, link, textbox, heading), prefer the accessibility tree over CSS selectors — it finds by semantic role + accessible name (Playwright's `getByRole`/`getByText` model) and crosses shadow boundaries. Two tools, by task:
+
+- **Targeted find** (you know the role/name): `session.Accessibility.queryAXTree` — ~30 tokens. Needs a DOM `nodeId` (from `session.DOM.getDocument`) and the active session (`session.use` first; the bare `{role, accessibleName}` form errors, and the `cdp(sessionId, …)` route hangs). No `Accessibility.enable` needed.
+- **Explore an unfamiliar page** (don't know what to ask for, pick from many, summarize layout): `axView(nodes)` over `session.Accessibility.getFullAXTree({})` — a compressed snapshot with `[n]` refs, 7–22K tokens.
 
 ```js
-const { nodes } = await session.Accessibility.queryAXTree({ role: 'button', accessibleName: 'Submit' })
-const node = nodes.find(n => !n.ignored)
-// node.backendDOMNodeId → DOM.getBoxModel → coordinates for Input.dispatchMouseEvent
+await session.use(targetId)
+const { root } = await session.DOM.getDocument({})
+// Targeted: find a button labeled "Submit"
+const { nodes } = await session.Accessibility.queryAXTree({ nodeId: root.nodeId, role: 'button', accessibleName: 'Submit' })
+const node = nodes.find(n => !n.ignored)   // node.backendDOMNodeId → DOM.getBoxModel → Input.dispatchMouseEvent
+
+// Explore: compressed whole-page snapshot
+const { nodes: ax } = await session.Accessibility.getFullAXTree({})
+return axView(ax)
 ```
 
-Use DOM queries (`DOM.querySelector`, `Runtime.evaluate` with `querySelector`) when you need structural context, when axTree returns nothing (canvas, non-semantic divs), or when you already have a stable selector. See the full guide at `interaction-skills/accessibility-tree.md`.
+Use DOM queries (`DOM.querySelector`, `Runtime.evaluate` with `querySelector`) for structural context, when the tree returns nothing (canvas, non-semantic divs), or when you already have a stable selector. Full guides: [`accessibility-tree.md`](interaction-skills/accessibility-tree.md) (queryAXTree) and [`snapshot.md`](interaction-skills/snapshot.md) (axView).
 
 ### Connecting
 
@@ -314,6 +324,7 @@ All paths are relative to `<skill-dir>` (the install path — see top of this do
 - `/usr/local/bin/browser-harness-js` → `<skill-dir>/sdk/browser-harness-js` (the CLI)
 - `sdk/repl.ts` — HTTP server (`node:http` on `127.0.0.1:9876`)
 - `sdk/session.ts` — `Session` class (transport, connect, target routing, events)
+- `sdk/axview.ts` — `axView(nodes, opts)`: compressed accessibility-tree projection, injected as a global (see `interaction-skills/snapshot.md`)
 - `sdk/generated.ts` — codegen output: every CDP method as a typed wrapper
 - `sdk/gen.ts` — codegen script
 - `sdk/{browser,js}_protocol.json` — upstream protocol (vendored)

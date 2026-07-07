@@ -1,16 +1,26 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# gmaps — local business search via Google Maps (CDP).
+# gmaps — local business search + driving directions via Google Maps (CDP).
 #
 #   gmaps "coffee shops in Austin TX"            # up to 10 results, pretty
 #   gmaps "sushi near Times Square" 5            # 5 results
-#   gmaps "pharmacy open now Berlin" 20          # 20 (scrolls the feed)
-#   gmaps --json "coffee shops in Austin TX" 5   # raw JSON
+#   gmaps --json "pharmacy open now Berlin" 20   # raw JSON
+#
+#   gmaps --route "Austin, TX" "Houston, TX"             # real driving: time + distance
+#   gmaps --route "Austin, TX" "Houston, TX" "Dallas, TX"   # ordered multi-stop, total time
+#   gmaps --route --json "Austin, TX" "Houston, TX"
+#
+#   gmaps --optimize "Austin, TX" "Houston, TX" "Dallas, TX" "San Antonio, TX"
+#       # best-effort TSP: each place -> lat/lng (search), straight-line
+#       # haversine matrix -> open-path TSP (fixed start = first place) -> one
+#       # real directions call for the chosen order, so the reported driving time
+#       # is real even though the ORDER is a straight-line estimate.
 #
 # Free + keyless: the live google.com/maps page is rendered through the browser
-# and a single Runtime.evaluate parses each result card. No Google Places API
-# key, no quota. Each call opens its own tab — safe for parallel use.
+# and a single Runtime.evaluate reads each result / route. No Google Places or
+# Directions API key, no quota, no jq. Each call opens its own tab — safe for
+# parallel use.
 
 # Auto-fix: if browser-harness-js isn't on PATH, try to find and symlink it.
 if ! command -v browser-harness-js >/dev/null 2>&1; then
@@ -28,15 +38,30 @@ fi
 
 usage() {
   cat >&2 <<'USAGE'
-Usage: gmaps [--json] <query> [count]
-  --json          Emit raw JSON instead of pretty-printed text
-  <query>         A Google Maps search, e.g. "coffee shops in Austin TX"
-  [count]         Number of results (default 10, capped at 30)
+Usage:
+  gmaps [--json] <query> [count]
+      Local business search (default). <query> is a Maps search, e.g.
+      "coffee shops in Austin TX". [count] defaults to 10 (capped at 30;
+      the feed is scrolled to load more).
+
+  gmaps [--json] --route <origin> <destination> [<waypoint>...]
+      Real driving directions for the given ORDER. Reads total time +
+      distance (current traffic) for the route as-ordered. Up to 25 places.
+
+  gmaps [--json] --optimize <start> <place2> ... <placeN>
+      Best-effort fastest visiting order (open-path TSP, fixed start = the
+      first place). Each place is resolved to lat/lng via a search, edges are
+      virtualized as straight-line (haversine) distance, the order is
+      optimized, then ONE real directions call is made for that order — so the
+      reported driving time is real even though the order is an estimate.
+      Up to 12 places.
 
 Examples:
   gmaps "coffee shops in Austin TX"
-  gmaps "sushi near Times Square" 5
-  gmaps --json "pharmacy open now Berlin" 20
+  gmaps --json "sushi near Times Square" 5
+  gmaps --route "Austin, TX" "Houston, TX"
+  gmaps --route "Austin, TX" "Houston, TX" "Dallas, TX"
+  gmaps --optimize "Austin, TX" "Houston, TX" "Dallas, TX" "San Antonio, TX"
 USAGE
   exit 1
 }
@@ -44,127 +69,318 @@ USAGE
 [ $# -lt 1 ] && usage
 
 json_output=false
-if [ "$1" = "--json" ]; then
-  json_output=true
-  shift
+route=false
+optimize=false
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --json) json_output=true; shift ;;
+    --route) route=true; shift ;;
+    --optimize) optimize=true; shift ;;
+    --) shift; break ;;
+    -*) echo "gmaps: unknown option $1" >&2; exit 1 ;;
+    *) break ;;
+  esac
+done
+
+# --optimize implies --route (it is a routing variant).
+[ "$optimize" = true ] && route=true
+
+if [ "$route" = false ]; then
+  MODE=search
+  [ $# -lt 1 ] && usage
+  query="$1"
+  count="${2:-10}"
+  case "$count" in ''|*[!0-9]*) echo "gmaps: count must be a positive integer" >&2; exit 1 ;; esac
+  [ "$count" -lt 1 ] && count=1
+  [ "$count" -gt 30 ] && count=30
+  rest=("$query" "$count")
+else
+  [ $# -lt 2 ] && { echo "gmaps: --route/--optimize needs at least 2 places (start + destination)" >&2; exit 1; }
+  if [ "$optimize" = true ]; then
+    MODE=optimize
+    [ $# -gt 12 ] && { echo "gmaps: --optimize supports up to 12 places (got $#)" >&2; exit 1; }
+  else
+    MODE=route
+    [ $# -gt 25 ] && { echo "gmaps: --route supports up to 25 places (got $#)" >&2; exit 1; }
+  fi
+  rest=("$@")
 fi
 
-[ $# -lt 1 ] && usage
-query="$1"
-count="${2:-10}"
-
-case "$count" in
-  ''|*[!0-9]*) echo "gmaps: count must be a positive integer" >&2; exit 1 ;;
-esac
-[ "$count" -lt 1 ] && count=1
-[ "$count" -gt 30 ] && count=30
-
-# The query is injected below by placeholder substitution so the heredoc can
+# The inputs are injected below by placeholder substitution so the heredoc can
 # stay quoted (backticks, $, and regex backslashes in the in-page JS need no
 # bash escaping). The substitution itself is done in node: it JSON.stringifies
-# the raw query into a safe JS literal and uses function-replacements, which
+# the raw values into safe JS literals and uses function-replacements, which
 # are immune to the `&` / `$` / `\` semantics that bash `${var//pat/repl}` and
-# JS String.replace both apply to plain replacement strings.
+# JS String.replace both apply to plain replacement strings — matters for place
+# names containing `&` (e.g. "Cafe & Bakery") or `$`.
 code=$(cat <<'GMAPS_EOF'
-const QUERY = __GMAPS_QUERY__
+const MODE = __GMAPS_MODE__
 const JSON_OUT = __GMAPS_JSON__
+const QUERY = __GMAPS_QUERY__
 const COUNT = __GMAPS_COUNT__
+const PLACES = __GMAPS_PLACES__
 
 if (!session.isConnected()) { try { await session.connect() } catch (e) { throw new Error("connect: " + e.message) } }
 
-const t = await session.Target.createTarget({ url: "about:blank", background: true })
-const { sessionId } = await session.Target.attachToTarget({ targetId: t.targetId, flatten: true })
+// One background tab per call + per-call sessionId + fire-and-forget closeTab.
+// Safe to run several mapsSearch / directions in parallel (Promise.all).
 
-try {
-  await cdp(sessionId, "Page.enable", {})
-  await cdp(sessionId, "Page.navigate", {
-    url: "https://www.google.com/maps/search/" + encodeURIComponent(QUERY).replace(/%20/g, "+")
-  })
+async function mapsSearch (query, count) {
+  const t = await session.Target.createTarget({ url: "about:blank", background: true })
+  const { sessionId } = await session.Target.attachToTarget({ targetId: t.targetId, flatten: true })
+  try {
+    await cdp(sessionId, "Page.enable", {})
+    await cdp(sessionId, "Page.navigate", {
+      url: "https://www.google.com/maps/search/" + encodeURIComponent(query).replace(/%20/g, "+")
+    })
 
-  // Readiness: poll for place links. Chrome never emits networkIdle for Maps
-  // (continuous XHR polling keeps the network quiet-window from ever opening),
-  // so we wait for the results feed to actually contain results instead.
-  const COUNT_EXPR = `document.querySelectorAll("a[href*='/maps/place/']").length`
-  async function placeCount () {
-    const r = await cdp(sessionId, "Runtime.evaluate", { expression: COUNT_EXPR, returnByValue: true })
-    return Number(r.result.value)
-  }
-  let ready = false
-  const s0 = Date.now()
-  while (Date.now() - s0 < 15000) {
-    await new Promise(r => setTimeout(r, 200))
-    if (await placeCount() > 0) { ready = true; break }
-  }
-  if (!ready) {
-    throw new Error('Google Maps returned no results for "' + QUERY + '" — the page may have hit a consent/cookie wall, or the query matched nothing. Open the URL in the browser once to check.')
-  }
-
-  // Scroll the feed to load up to COUNT results. The feed renders ~7 cards up
-  // front; more stream in as the feed is scrolled to its bottom. Stop at COUNT,
-  // after two consecutive no-growth scrolls (end of results), or after a cap.
-  const SCROLL_EXPR = `(function(){ var f=document.querySelector("div[role=feed]"); if(!f) return; f.scrollTop=f.scrollHeight; f.dispatchEvent(new Event("scroll",{bubbles:true})); })()`
-  let prev = await placeCount()
-  let stable = 0
-  for (let i = 0; i < 25 && prev < COUNT; i++) {
-    await cdp(sessionId, "Runtime.evaluate", { expression: SCROLL_EXPR, returnByValue: true })
-    await new Promise(r => setTimeout(r, 700))
-    const c = await placeCount()
-    if (c === prev) { stable++; if (stable >= 2) break } else stable = 0
-    prev = c
-  }
-
-  // One Runtime.evaluate extracts every card. Stable signals ONLY — Google's
-  // class names are obfuscated and rotate, so the parser never keys off them:
-  //   name           : the result link's aria-label
-  //   rating/reviews : the first leaf tokens matching ^\d+\.\d+$ and ^(\d+)$
-  //   price/category : the first $-prefixed leaf + the leaf right after it
-  //   address        : the first leaf starting with a street number
-  //   hours          : the "Open"/"Closed"/... leaf (+ the "· Closes …" leaf after it)
-  //   lat/lng        : parsed from the href's !3d…!4d… segment
-  //   place_id/url   : the href (and its !19s ChIJ… / !1s 0x..:0x.. token)
-  const EXTRACT_EXPR = `(function(){
-    function parseResult (a) {
-      var name = (a.getAttribute("aria-label") || "").trim();
-      var card = a.closest("[role=article]") || a;
-      var leaf = [];
-      (function walk (el) {
-        if (el.children.length === 0) { var t = (el.textContent || "").replace(/\\s+/g, " ").trim(); if (t) leaf.push(t); }
-        for (var i = 0; i < el.children.length; i++) walk(el.children[i]);
-      })(card);
-      var rating = null, reviews = null, price = null, category = null, address = null;
-      for (var i = 0; i < leaf.length; i++) {
-        if (rating === null && /^\\d+(?:\\.\\d+)?$/.test(leaf[i]) && leaf[i].length <= 4) { rating = parseFloat(leaf[i]); continue; }
-        if (reviews === null && /^\\([\\d,]+\\)$/.test(leaf[i])) { reviews = parseInt(leaf[i].replace(/[\\(\\),]/g, ""), 10); continue; }
-        if (price === null && /^\\$/.test(leaf[i])) { price = leaf[i]; if (i + 1 < leaf.length && leaf[i + 1] !== "·") category = leaf[i + 1]; continue; }
-      }
-      for (var i = 0; i < leaf.length; i++) { if (/^\\d{1,5}[-A-Za-z]*\\s/.test(leaf[i]) && leaf[i] !== name) { address = leaf[i]; break; } }
-      var hState = null, hDetail = null;
-      for (var i = 0; i < leaf.length; i++) {
-        if (!hState && /^(Open|Closed|Open 24 hours|Temporarily closed)$/.test(leaf[i])) { hState = leaf[i]; if (i + 1 < leaf.length && /^[·•]/.test(leaf[i + 1])) hDetail = leaf[i + 1].replace(/^[·•]\\s*/, "").trim(); break; }
-      }
-      var hours = hState ? (hDetail ? hState + " · " + hDetail : hState) : null;
-      var href = a.getAttribute("href") || "";
-      var lat = null, lng = null; var m = href.match(/!3d(-?\\d+(?:\\.\\d+)?)!4d(-?\\d+(?:\\.\\d+)?)/);
-      if (m) { lat = parseFloat(m[1]); lng = parseFloat(m[2]); }
-      var pid = null; var pm = href.match(/!19s(ChIJ[A-Za-z0-9_-]+)/); if (pm) pid = pm[1];
-      if (!pid) { var pm2 = href.match(/!1s(0x[0-9a-f]+:0x[0-9a-f]+)/); if (pm2) pid = pm2[1]; }
-      return { name: name, rating: rating, review_count: reviews, price: price, category: category, address: address, hours: hours, lat: lat, lng: lng, place_id: pid, url: href };
+    // Readiness: poll for place links. Chrome never emits networkIdle for Maps
+    // (continuous XHR polling keeps the network quiet-window from ever opening),
+    // so we wait for the results feed to actually contain results instead.
+    const COUNT_EXPR = `document.querySelectorAll("a[href*='/maps/place/']").length`
+    async function placeCount () {
+      const r = await cdp(sessionId, "Runtime.evaluate", { expression: COUNT_EXPR, returnByValue: true })
+      return Number(r.result.value)
     }
-    var seen = {}, out = [];
-    var as = document.querySelectorAll("a[href*='/maps/place/']");
-    for (var i = 0; i < as.length; i++) { try { var r = parseResult(as[i]); if (r.url && !seen[r.url]) { seen[r.url] = 1; out.push(r); } } catch (e) {} }
-    return JSON.stringify(out);
-  })()`
+    let ready = false
+    const s0 = Date.now()
+    while (Date.now() - s0 < 15000) {
+      await new Promise(r => setTimeout(r, 200))
+      if (await placeCount() > 0) { ready = true; break }
+    }
+    if (!ready) {
+      throw new Error('Google Maps returned no results for "' + query + '" — the page may have hit a consent/cookie wall, or the query matched nothing. Open the URL in the browser once to check.')
+    }
 
-  const er = await cdp(sessionId, "Runtime.evaluate", { expression: EXTRACT_EXPR, returnByValue: true })
-  if (er.exceptionDetails) throw new Error("extract eval failed: " + (er.exceptionDetails.exception && er.exceptionDetails.exception.description || er.exceptionDetails.text))
-  let results = JSON.parse(er.result.value)
-  if (results.length > COUNT) results = results.slice(0, COUNT)
+    // Scroll the feed to load up to `count`. The feed renders ~7 cards up
+    // front; more stream in as the feed is scrolled to its bottom. Stop at
+    // count, after two consecutive no-growth scrolls, or after a 25-scroll cap.
+    const SCROLL_EXPR = `(function(){ var f=document.querySelector("div[role=feed]"); if(!f) return; f.scrollTop=f.scrollHeight; f.dispatchEvent(new Event("scroll",{bubbles:true})); })()`
+    let prev = await placeCount()
+    let stable = 0
+    for (let i = 0; i < 25 && prev < count; i++) {
+      await cdp(sessionId, "Runtime.evaluate", { expression: SCROLL_EXPR, returnByValue: true })
+      await new Promise(r => setTimeout(r, 700))
+      const c = await placeCount()
+      if (c === prev) { stable++; if (stable >= 2) break } else stable = 0
+      prev = c
+    }
+
+    // One Runtime.evaluate extracts every card. Stable signals ONLY — Google's
+    // class names are obfuscated and rotate, so the parser never keys off them:
+    //   name           : the result link's aria-label
+    //   rating/reviews : the first leaf tokens matching ^\d+\.\d+$ and ^(\d+)$
+    //   price/category : the first $-prefixed leaf + the leaf right after it
+    //   address        : the first leaf starting with a street number
+    //   hours          : the "Open"/"Closed"/... leaf (+ the "· Closes …" leaf after it)
+    //   lat/lng        : parsed from the href's !3d…!4d… segment
+    //   place_id/url   : the href (and its !19s ChIJ… / !1s 0x..:0x.. token)
+    const EXTRACT_EXPR = `(function(){
+      function parseResult (a) {
+        var name = (a.getAttribute("aria-label") || "").trim();
+        var card = a.closest("[role=article]") || a;
+        var leaf = [];
+        (function walk (el) {
+          if (el.children.length === 0) { var t = (el.textContent || "").replace(/\\s+/g, " ").trim(); if (t) leaf.push(t); }
+          for (var i = 0; i < el.children.length; i++) walk(el.children[i]);
+        })(card);
+        var rating = null, reviews = null, price = null, category = null, address = null;
+        for (var i = 0; i < leaf.length; i++) {
+          if (rating === null && /^\\d+(?:\\.\\d+)?$/.test(leaf[i]) && leaf[i].length <= 4) { rating = parseFloat(leaf[i]); continue; }
+          if (reviews === null && /^\\([\\d,]+\\)$/.test(leaf[i])) { reviews = parseInt(leaf[i].replace(/[\\(\\),]/g, ""), 10); continue; }
+          if (price === null && /^\\$/.test(leaf[i])) { price = leaf[i]; if (i + 1 < leaf.length && leaf[i + 1] !== "·") category = leaf[i + 1]; continue; }
+        }
+        for (var i = 0; i < leaf.length; i++) { if (/^\\d{1,5}[-A-Za-z]*\\s/.test(leaf[i]) && leaf[i] !== name) { address = leaf[i]; break; } }
+        var hState = null, hDetail = null;
+        for (var i = 0; i < leaf.length; i++) {
+          if (!hState && /^(Open|Closed|Open 24 hours|Temporarily closed)$/.test(leaf[i])) { hState = leaf[i]; if (i + 1 < leaf.length && /^[·•]/.test(leaf[i + 1])) hDetail = leaf[i + 1].replace(/^[·•]\\s*/, "").trim(); break; }
+        }
+        var hours = hState ? (hDetail ? hState + " · " + hDetail : hState) : null;
+        var href = a.getAttribute("href") || "";
+        var lat = null, lng = null; var m = href.match(/!3d(-?\\d+(?:\\.\\d+)?)!4d(-?\\d+(?:\\.\\d+)?)/);
+        if (m) { lat = parseFloat(m[1]); lng = parseFloat(m[2]); }
+        var pid = null; var pm = href.match(/!19s(ChIJ[A-Za-z0-9_-]+)/); if (pm) pid = pm[1];
+        if (!pid) { var pm2 = href.match(/!1s(0x[0-9a-f]+:0x[0-9a-f]+)/); if (pm2) pid = pm2[1]; }
+        return { name: name, rating: rating, review_count: reviews, price: price, category: category, address: address, hours: hours, lat: lat, lng: lng, place_id: pid, url: href };
+      }
+      var seen = {}, out = [];
+      var as = document.querySelectorAll("a[href*='/maps/place/']");
+      for (var i = 0; i < as.length; i++) { try { var r = parseResult(as[i]); if (r.url && !seen[r.url]) { seen[r.url] = 1; out.push(r); } } catch (e) {} }
+      return JSON.stringify(out);
+    })()`
+
+    const er = await cdp(sessionId, "Runtime.evaluate", { expression: EXTRACT_EXPR, returnByValue: true })
+    if (er.exceptionDetails) throw new Error("extract eval failed: " + (er.exceptionDetails.exception && er.exceptionDetails.exception.description || er.exceptionDetails.text))
+    let results = JSON.parse(er.result.value)
+    if (results.length > count) results = results.slice(0, count)
+    return results
+  } finally {
+    session.closeTab(t.targetId, sessionId).catch(function () {})
+  }
+}
+
+async function directions (places) {
+  const url = "https://www.google.com/maps/dir/" + places.map(p => encodeURIComponent(p).replace(/%20/g, "+")).join("/") + "/"
+  const t = await session.Target.createTarget({ url: "about:blank", background: true })
+  const { sessionId } = await session.Target.attachToTarget({ targetId: t.targetId, flatten: true })
+  try {
+    await cdp(sessionId, "Page.enable", {})
+    await cdp(sessionId, "Page.navigate", { url })
+
+    // Readiness: like the feed, networkIdle never fires. The route-list
+    // duration always ends in "min" (e.g. "2 hr 31 min", "6 hr 9 min", "40
+    // min"); the travel-mode tabs use a compact form ("2h 30m", "16 hr") with
+    // no "min" token, so polling the Directions panel for /\d+\s*min\b/ waits
+    // for the real route and ignores the mode tabs. We also accept a distance
+    // leaf ("165 miles"/"404 miles") so an exact-hour route ("2 hr", no min)
+    // still triggers. The map scale bar "50 km" is outside the panel.
+    const READY = `(function(){ var p=document.querySelector('[aria-label="Directions"]')||document.body; var t=(p.innerText||""); return /\\b\\d+\\s*min\\b/i.test(t) || /\\b\\d+(?:\\.\\d+)?\\s*(miles|km)\\b/i.test(t); })()`
+    let ready = false
+    const s0 = Date.now()
+    while (Date.now() - s0 < 20000) {
+      await new Promise(r => setTimeout(r, 300))
+      const r = await cdp(sessionId, "Runtime.evaluate", { expression: READY, returnByValue: true })
+      if (r.result.value === true) { ready = true; break }
+    }
+    await new Promise(r => setTimeout(r, 1000))
+
+    // Extract the primary (fastest) route. Stable signals ONLY:
+    //   duration : first full-format duration leaf ("2 hr 31 min" / "40 min"
+    //              / "2 hr") that is NOT inside a travel-mode BUTTON[role=radio]
+    //              (those hold the compact per-mode best-times "2h 30m").
+    //   distance : first distance leaf in the duration's nearest ancestor that
+    //              contains one ("165 miles", "404 miles"). Nullable (a trivial
+    //              route can render no distance).
+    //   via/label/tolls : unique leaves grabbed panel-wide ("via …", "Fastest
+    //              route …", "This route has tolls.") — the transit alternates
+    //              RedCoach/FlixBus have none of these, so they don't pollute.
+    //   waypoints: resolved place names from input[aria-label]
+    //              ("Starting point …" / "Destination …").
+    const EX = `(function(){
+      function clean(s){return (s||"").replace(/\\s+/g," ").trim()}
+      var durRe=/^\\d+\\s*hr\\s+\\d+\\s*min$|^\\d+\\s*min$|^\\d+\\s*hr$/;
+      var distRe=/^[\\d,]+(?:\\.\\d+)?\\s*(miles|mi|km|ft|m)$/;
+      function inRadio(el){while(el){if(el.getAttribute&&el.getAttribute("role")==="radio")return true;el=el.parentElement;}return false;}
+      var panel=document.querySelector('[aria-label="Directions"]')||document.body;
+      var all=panel.querySelectorAll("*"), durLeaf=null;
+      for(var i=0;i<all.length;i++){var e=all[i];if(e.children.length!==0)continue;var tx=clean(e.textContent);if(durRe.test(tx)&&!inRadio(e)){durLeaf={el:e,text:tx};break;}}
+      if(!durLeaf) return JSON.stringify({error:"no route duration found (page may still be loading, or no driving route exists for these places)"});
+      var anc=durLeaf.el.parentElement, card=null, lev=0;
+      while(anc&&lev<8){var lfs=anc.querySelectorAll("*");var found=false;for(var j=0;j<lfs.length;j++){if(lfs[j].children.length===0&&distRe.test(clean(lfs[j].textContent))){found=true;break;}}if(found){card=anc;break;}anc=anc.parentElement;lev++;}
+      var scope=card||panel, sl=scope.querySelectorAll("*"), distLeaf=null;
+      for(var i=0;i<sl.length;i++){var e=sl[i];if(e.children.length!==0)continue;var tx=clean(e.textContent);if(distRe.test(tx)){distLeaf=tx;break;}}
+      var via=null,label=null,tolls=false;
+      var pl=panel.querySelectorAll("*");
+      for(var i=0;i<pl.length;i++){var e=pl[i];if(e.children.length!==0)continue;var tx=clean(e.textContent);
+        if(!via&&/^via\\s/.test(tx))via=tx;
+        if(!label&&/^Fastest route/.test(tx))label=tx;
+        if(/^This route has tolls\\.?$/.test(tx))tolls=true;}
+      var wps=[];document.querySelectorAll("input[aria-label]").forEach(function(inp){var al=inp.getAttribute("aria-label");var m=al.match(/^(?:Starting point|Destination)\\s+(.*)$/);if(m)wps.push(m[1]);});
+      return JSON.stringify({duration:durLeaf.text,distance:distLeaf,via:via,label:label,tolls:tolls,waypoints:wps,url:location.href});
+    })()`
+
+    const er = await cdp(sessionId, "Runtime.evaluate", { expression: EX, returnByValue: true })
+    if (er.exceptionDetails) throw new Error("directions extract failed: " + (er.exceptionDetails.exception && er.exceptionDetails.exception.description || er.exceptionDetails.text))
+    const r = JSON.parse(er.result.value)
+    if (r.error) throw new Error("directions: " + r.error + (ready ? "" : " (the Directions panel did not become ready in time — possible consent wall, or no drivable route)"))
+    return r
+  } finally {
+    session.closeTab(t.targetId, sessionId).catch(function () {})
+  }
+}
+
+// Resolve a place name to exact lat/lng. A place-name search (unlike a feed
+// query like "coffee shops in …") does NOT render a /maps/place/ results feed;
+// it resolves to a single place detail page. In a background tab the page URL
+// updates (in ~3-7s) to /maps/place/<name>/@<viewport>/data=…!8m2!3d<lat>!4d<lng>…
+// and the !3d!4d token is the place's EXACT coordinates (the @lat,lng is only
+// the viewport region). We poll location.href for that token. Safe to run N of
+// these in parallel — each owns its own background tab.
+async function resolvePlace (query) {
+  const url = "https://www.google.com/maps/search/" + encodeURIComponent(query).replace(/%20/g, "+")
+  const t = await session.Target.createTarget({ url: "about:blank", background: true })
+  const { sessionId } = await session.Target.attachToTarget({ targetId: t.targetId, flatten: true })
+  try {
+    await cdp(sessionId, "Page.enable", {})
+    await cdp(sessionId, "Page.navigate", { url })
+    let href = url, lat = null, lng = null
+    const s0 = Date.now()
+    while (Date.now() - s0 < 20000) {
+      await new Promise(r => setTimeout(r, 500))
+      const r = await cdp(sessionId, "Runtime.evaluate", { expression: "location.href", returnByValue: true })
+      href = r.result.value
+      const m = href.match(/!3d(-?\d+(?:\.\d+)?)!4d(-?\d+(?:\.\d+)?)/)
+      if (m) { lat = parseFloat(m[1]); lng = parseFloat(m[2]); break }
+    }
+    if (lat === null) throw new Error('could not resolve place: "' + query + '" — no coordinates in the resolved Maps URL (the place may be ambiguous or not found)')
+    let name = null
+    const pm = href.match(/\/maps\/place\/([^/]+)\//)
+    if (pm) { try { name = decodeURIComponent(pm[1].replace(/\+/g, " ")) } catch (e) {} }
+    return { query: query, name: name || query, lat: lat, lng: lng, url: href }
+  } finally {
+    session.closeTab(t.targetId, sessionId).catch(function () {})
+  }
+}
+
+// REPL-side helpers (pure JS, run in the daemon — not in the page).
+
+function durationToMin (s) {
+  if (!s) return null
+  var h = s.match(/(\d+)\s*hr/), m = s.match(/(\d+)\s*min/)
+  if (!h && !m) return null
+  var mins = 0
+  if (h) mins += parseInt(h[1], 10) * 60
+  if (m) mins += parseInt(m[1], 10)
+  return mins
+}
+function haversineKm (la1, lo1, la2, lo2) {
+  var R = 6371
+  var dLat = (la2 - la1) * Math.PI / 180, dLon = (lo2 - lo1) * Math.PI / 180
+  var a = Math.sin(dLat / 2) * Math.sin(dLat / 2) + Math.cos(la1 * Math.PI / 180) * Math.cos(la2 * Math.PI / 180) * Math.sin(dLon / 2) * Math.sin(dLon / 2)
+  return 2 * R * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
+}
+function bearingDeg (la1, lo1, la2, lo2) {
+  var y = Math.sin((lo2 - lo1) * Math.PI / 180) * Math.cos(la2 * Math.PI / 180)
+  var x = Math.cos(la1 * Math.PI / 180) * Math.sin(la2 * Math.PI / 180) - Math.sin(la1 * Math.PI / 180) * Math.cos(la2 * Math.PI / 180) * Math.cos((lo2 - lo1) * Math.PI / 180)
+  return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360
+}
+function compass8 (b) { return ["N","NE","E","SE","S","SW","W","NW"][Math.round(b / 45) % 8] }
+
+// Open-path TSP with a FIXED start (node 0). Exact Held-Karp DP over subsets of
+// {1..n-1}; the path visits every node once and may end anywhere. n<=12.
+function tspOpenPathFixedStart (d) {
+  var n = d.length
+  if (n <= 1) return [0]
+  var sub = n - 1, size = 1 << sub, INF = Infinity
+  var dp = [], par = []
+  for (var i = 0; i < size; i++) { dp.push(new Array(n).fill(INF)); par.push(new Array(n).fill(-1)) }
+  for (var j = 1; j < n; j++) { dp[1 << (j - 1)][j] = d[0][j]; par[1 << (j - 1)][j] = 0 }
+  for (var mask = 1; mask < size; mask++) {
+    for (var j = 1; j < n; j++) {
+      if (!(mask & (1 << (j - 1))) || dp[mask][j] === INF) continue
+      for (var k = 1; k < n; k++) {
+        if (mask & (1 << (k - 1))) continue
+        var nm = mask | (1 << (k - 1)), nv = dp[mask][j] + d[j][k]
+        if (nv < dp[nm][k]) { dp[nm][k] = nv; par[nm][k] = j }
+      }
+    }
+  }
+  var full = size - 1, best = INF, end = -1
+  for (var j = 1; j < n; j++) if (dp[full][j] < best) { best = dp[full][j]; end = j }
+  var path = [], mask = full, cur = end
+  while (cur !== 0) { path.unshift(cur); var prev = par[mask][cur]; mask ^= (1 << (cur - 1)); cur = prev }
+  path.unshift(0)
+  return path
+}
+
+function p (v) { return (v === null || v === undefined || v === "") ? "-" : String(v); }
+
+if (MODE === "search") {
+  const results = await mapsSearch(QUERY, COUNT)
   if (!results.length) throw new Error("Google Maps loaded, but no result cards could be parsed (the page layout may have changed).")
 
   if (JSON_OUT) return { query: QUERY, count: results.length, results: results }
 
-  function p (v) { return (v === null || v === undefined || v === "") ? "-" : String(v); }
   var lines = []
   lines.push(QUERY + "  ·  " + results.length + " result" + (results.length === 1 ? "" : "s"))
   for (var i = 0; i < results.length; i++) {
@@ -180,15 +396,117 @@ try {
     lines.push("   " + r.url)
   }
   return lines.join("\n")
-} finally {
-  session.closeTab(t.targetId, sessionId).catch(function () {})
 }
+
+if (MODE === "route") {
+  const r = await directions(PLACES)
+  if (JSON_OUT) return { mode: "route", places: PLACES, route: r }
+
+  var lines = []
+  lines.push("Route: " + PLACES.join("  →  "))
+  lines.push("")
+  var head = p(r.duration)
+  if (r.distance) head += "   " + r.distance
+  if (r.via) head += "   " + r.via
+  lines.push("  " + head)
+  var meta = []
+  if (r.label) meta.push(r.label)
+  if (r.tolls) meta.push("tolls")
+  if (meta.length) lines.push("  " + meta.join("  ·  "))
+  lines.push("")
+  if (r.waypoints && r.waypoints.length) {
+    for (var i = 0; i < r.waypoints.length; i++) lines.push("  " + (i + 1) + ". " + r.waypoints[i])
+    lines.push("")
+  }
+  lines.push("  " + r.url)
+  return lines.join("\n")
+}
+
+if (MODE === "optimize") {
+  // Resolve each place to exact lat/lng (parallel background tabs — each polls
+  // its place URL for the !3d!4d token). The straight-line (haversine) edge cost
+  // is the "virtualized" distance the TSP optimizes over.
+  const resolved = await Promise.all(PLACES.map(function (q) { return resolvePlace(q) }))
+
+  const n = resolved.length
+  var d = []
+  for (var i = 0; i < n; i++) { d.push(new Array(n)); for (var j = 0; j < n; j++) d[i][j] = i === j ? 0 : haversineKm(resolved[i].lat, resolved[i].lng, resolved[j].lat, resolved[j].lng) }
+  var order = tspOpenPathFixedStart(d)
+
+  var legs = [], straightTotal = 0
+  for (var i = 0; i < order.length - 1; i++) {
+    var a = resolved[order[i]], b = resolved[order[i + 1]]
+    var km = haversineKm(a.lat, a.lng, b.lat, b.lng); straightTotal += km
+    var bd = bearingDeg(a.lat, a.lng, b.lat, b.lng)
+    legs.push({ from: a.name, to: b.name, km: Math.round(km * 10) / 10, bearing: Math.round(bd), dir: compass8(bd) })
+  }
+
+  // One real directions call for the chosen order — the reported driving time
+  // and distance are real; only the ORDER is a straight-line estimate.
+  var route = await directions(order.map(function (i) { return PLACES[i] }))
+
+  if (JSON_OUT) {
+    return {
+      mode: "optimize",
+      places: resolved,
+      order: order.map(function (i) { return resolved[i].name }),
+      order_indices: order,
+      legs: legs,
+      straight_line_total_km: Math.round(straightTotal * 10) / 10,
+      route: route,
+      note: "Order is a best-effort estimate from straight-line (haversine) distances; the driving time/distance is the real route for that order."
+    }
+  }
+
+  var lines = []
+  lines.push("Optimized route  ·  best-effort (straight-line TSP)  ·  fixed start: " + p(resolved[order[0]].name))
+  lines.push("")
+  for (var i = 0; i < order.length; i++) {
+    var pp = resolved[order[i]]
+    var co = (pp.lat !== null && pp.lng !== null) ? "  (" + pp.lat + ", " + pp.lng + ")" : ""
+    var leg = (i === 0) ? "   start" : ("   ← " + legs[i - 1].km + " km " + legs[i - 1].dir + " (" + legs[i - 1].bearing + "°)")
+    lines.push("  " + (i + 1) + ". " + p(pp.name) + co + leg)
+  }
+  lines.push("")
+  lines.push("  Straight-line total: " + (Math.round(straightTotal * 10) / 10) + " km")
+  lines.push("")
+  lines.push("Real driving for this order:")
+  var head = "  " + p(route.duration)
+  if (route.distance) head += "   " + route.distance
+  if (route.via) head += "   " + route.via
+  lines.push(head)
+  var meta = []
+  if (route.label) meta.push(route.label)
+  if (route.tolls) meta.push("tolls")
+  if (meta.length) lines.push("  " + meta.join("  ·  "))
+  lines.push("  " + order.map(function (i) { return p(resolved[i].name) }).join("  →  "))
+  lines.push("")
+  lines.push("  " + route.url)
+  lines.push("")
+  lines.push("Note: order is a best-effort estimate from straight-line (haversine) distances;")
+  lines.push("the driving time above is the real route for that order.")
+  return lines.join("\n")
+}
+
+throw new Error("gmaps: unknown mode " + MODE)
 GMAPS_EOF
 )
 
-# Inject the inputs: node reads the quoted-heredoc code from stdin and
-# replaces the placeholders. The raw query is JSON.stringified into a safe JS
-# literal; function-replacements dodge & / $ pitfalls in the replacement text.
-final=$(node -e 'let c=require("fs").readFileSync(0,"utf8"); c=c.replace(/__GMAPS_QUERY__/g,()=>JSON.stringify(process.argv[1])).replace(/__GMAPS_JSON__/g,()=>process.argv[2]).replace(/__GMAPS_COUNT__/g,()=>process.argv[3]); process.stdout.write(c);' "$query" "$json_output" "$count" <<<"$code")
+# Inject the inputs: node reads the quoted-heredoc code from stdin and replaces
+# the placeholders. Raw values are JSON.stringified into safe JS literals;
+# function-replacements dodge & / $ pitfalls in the replacement text.
+final=$(node -e '
+let c=require("fs").readFileSync(0,"utf8");
+let mode=process.argv[1], json=process.argv[2];
+let query="", count=0, places=[];
+if(mode==="search"){ query=process.argv[3]||""; count=process.argv[4]||"0"; }
+else { places=process.argv.slice(3); }
+c=c.replace(/__GMAPS_MODE__/g,()=>JSON.stringify(mode))
+    .replace(/__GMAPS_JSON__/g,()=>json)
+    .replace(/__GMAPS_QUERY__/g,()=>JSON.stringify(query))
+    .replace(/__GMAPS_COUNT__/g,()=>String(count))
+    .replace(/__GMAPS_PLACES__/g,()=>JSON.stringify(places));
+process.stdout.write(c);
+' "$MODE" "$json_output" "${rest[@]}" <<<"$code")
 
 printf '%s' "$final" | browser-harness-js

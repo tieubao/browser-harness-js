@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 # Smoke test for the gmaps skill.
-# Runs a real Google Maps search through the browser and checks that result
-# cards parse into structured fields (name, coords, place_id, url) in both
-# JSON and pretty modes, and that special characters survive the round trip.
+# Runs real Google Maps calls through the browser and checks that:
+#   - search result cards parse into structured fields (name, coords, place_id,
+#     url) in both JSON and pretty modes, and special chars survive the round trip;
+#   - --route returns a real driving duration + distance for an ordered pair;
+#   - --optimize returns a best-effort order with legs + a real driving total;
+#   - the arg-count guards reject --route with one place and --optimize >12.
 # Requires a Chromium-based browser running with remote debugging (see the cdp
 # skill). Exits 77 if the browser is unreachable, 0 if all checks pass, 1 otherwise.
 set -uo pipefail
@@ -36,7 +39,7 @@ bad() { echo "  FAIL  $1"; printf '%s\n' "$2" | sed 's/^[[:space:]]*/        /' 
 expect() { if printf '%s' "$3" | grep -qF "$2"; then ok "$1"; else bad "$1" "$3"; fi; }
 refuse() { if printf '%s' "$3" | grep -qF "$2"; then bad "$1" "$3"; else ok "$1"; fi; }
 
-echo "gmaps smoke test (local business search)"
+echo "gmaps smoke test (search + directions + optimize)"
 
 # JSON: structured fields parse off the feed cards.
 json=$(run --json "coffee shops in Austin TX" 3)
@@ -57,6 +60,32 @@ refuse "pretty: no unparsed placeholder"    "__GMAPS_"                          
 # Special characters survive the round trip (no placeholder leakage, no $ eaten).
 spec=$(run "café & boulangerie Paris" 1)
 expect "special chars: query echoed verbatim" "café & boulangerie Paris"            "$spec"
+
+echo "-- directions --"
+# --route: real driving time + distance for an ordered pair.
+route=$(run --route "Austin, TX" "Houston, TX")
+expect "route: header"              "Route:"        "$route"
+expect "route: duration"            "min"           "$route"
+expect "route: distance"            "miles"         "$route"
+expect "route: resolved waypoint"  "Austin, Texas" "$route"
+expect "route: directions url"       "/maps/dir/"    "$route"
+refuse "route: no unparsed placeholder" "__GMAPS_"   "$route"
+
+# --optimize: best-effort TSP — order + legs + a real driving total.
+opt=$(run --optimize "Austin, TX" "Houston, TX" "Dallas, TX")
+expect "optimize: header"           "Optimized route"                "$opt"
+expect "optimize: leg (km + bearing)" "km"                          "$opt"
+expect "optimize: real driving"     "Real driving for this order"   "$opt"
+expect "optimize: best-effort note"  "best-effort"                   "$opt"
+expect "optimize: directions url"    "/maps/dir/"                    "$opt"
+refuse "optimize: no unparsed placeholder" "__GMAPS_"               "$opt"
+
+echo "-- guards --"
+# Arg-count guards happen before any browser call, so they're deterministic.
+g1=$("$cli" --route "Solo place" 2>&1); rc1=$?
+if [ "$rc1" -ne 0 ] && printf '%s' "$g1" | grep -qF "at least 2 places"; then ok "guard: --route needs >=2 places"; else bad "guard: --route needs >=2 places" "rc=$rc1 out=$g1"; fi
+g2=$("$cli" --optimize a b c d e f g h i j k l m 2>&1); rc2=$?
+if [ "$rc2" -ne 0 ] && printf '%s' "$g2" | grep -qF "up to 12 places"; then ok "guard: --optimize caps at 12"; else bad "guard: --optimize caps at 12" "rc=$rc2 out=$g2"; fi
 
 echo
 echo "$pass passed, $fail failed"

@@ -1,26 +1,36 @@
 ---
 name: gmaps
 description: >-
-  Local business search via Google Maps through CDP. Returns structured results
-  (name, rating, review count, price, category, address, hours, coordinates,
-  place ID, Maps URL) for any query — the data the metered Google Places API
-  sells, sourced directly from the live Maps page. No API key, no quota. Use
-  when the user asks to find local businesses, nearby places, shops/restaurants,
-  or to search Google Maps. Requires browser-harness-js on PATH and a running
-  Chromium-based browser with remote debugging.
+  Google Maps via CDP — three modes, all keyless (no Google Places or Directions
+  API key, no quota): (1) local business search returning structured results
+  (name, rating, reviews, price, category, address, hours, coords, place ID,
+  URL) — the data the metered Google Places API sells; (2) --route for real
+  driving directions (total time + distance, current traffic) for an ordered
+  list of places; (3) --optimize for a best-effort fastest visiting order
+  (open-path TSP, fixed start) whose edges are virtualized as straight-line
+  distance — N parallel place lookups plus one real directions call. Use when the
+  user asks to find local businesses, get driving directions/time between places,
+  or plan a multi-stop route order. Requires browser-harness-js on PATH and a
+  running Chromium-based browser with remote debugging.
 setup: bash <skill-dir>/scripts/setup
 compatibility: >-
   Requires browser-harness-js on PATH and a running Chromium browser with remote
-  debugging (chrome://inspect or --remote-debugging-port). No API key. Results
-  come from the live google.com/maps page rendered through your own browser.
+  debugging (chrome://inspect or --remote-debugging-port). No API key. All data
+  comes from the live google.com/maps page rendered through your own browser.
 ---
 
-# gmaps — local business search via Google Maps (CDP)
+# gmaps — Google Maps via CDP (search, directions, best-effort TSP)
 
 > ⚠️ **Required before first use:** run `bash <skill-dir>/scripts/setup` to put the
 > `gmaps` and `browser-harness-js` CLIs on PATH. Nothing works until this is done.
 
-Free, keyless local business search scraped from the live Google Maps page via CDP — the same data the metered **Google Places API** sells, sourced directly from the rendered page. No API key, no quota, no `jq`. Each call opens its own tab and WebSocket session — safe for parallel use.
+Free, keyless access to Google Maps through CDP — the same data the metered **Google Places** and **Directions** APIs sell, sourced directly from the rendered page. No API key, no quota, no `jq`. Three modes:
+
+- **search** (default) — local business results for a query.
+- **`--route`** — real driving directions (total time + distance, current traffic) for an *ordered* list of places.
+- **`--optimize`** — best-effort fastest *visiting order* (open-path TSP, fixed start = first place).
+
+Every call opens its own background tab and WebSocket session — safe for parallel use.
 
 ## Setup (once)
 
@@ -33,6 +43,8 @@ gmaps "coffee shops in Austin TX"        # verify
 
 ## Commands
 
+### Search (default)
+
 ```bash
 gmaps "coffee shops in Austin TX"            # up to 10 results, pretty
 gmaps "sushi near Times Square" 5            # 5 results
@@ -40,27 +52,58 @@ gmaps "pharmacy open now Berlin" 20          # 20 (scrolls the feed)
 gmaps --json "coffee shops in Austin TX" 5   # raw JSON
 ```
 
-| Flag | Meaning |
+| Arg | Meaning |
 |------|---------|
 | `--json` | Emit raw JSON instead of pretty-printed text |
 | `<query>` | A Google Maps search, e.g. `coffee shops in Austin TX` |
 | `[count]` | Number of results (default 10, capped at 30 — the feed is scrolled to load more) |
 
+### Directions (`--route`)
+
+```bash
+gmaps --route "Austin, TX" "Houston, TX"             # real time + distance
+gmaps --route "Austin, TX" "Houston, TX" "Dallas, TX" # ordered multi-stop, total
+gmaps --route --json "Austin, TX" "Houston, TX"      # raw JSON
+```
+
+Real driving directions for the **given order**. Reads the total time + distance (current traffic) and the resolved waypoint names. The first place is the origin. Up to 25 places. Per-leg times are not in the collapsed route summary (Maps shows only the total) — open `url` for the full turn-by-turn.
+
+### Best-effort order (`--optimize`)
+
+```bash
+gmaps --optimize "Austin, TX" "Houston, TX" "Dallas, TX" "San Antonio, TX"
+gmaps --optimize --json "Austin, TX" "Houston, TX" "Dallas, TX"
+```
+
+Fastest *visiting order* as an **open-path TSP with a fixed start** (the first place). The first place is where you start; the rest are ordered to minimize total straight-line distance, then **one real directions call** is made for that order — so the reported driving time/distance is real even though the *order* is a straight-line estimate.
+
+- Each place is resolved to exact lat/lng in parallel (background tabs poll the resolved place URL for its `!3d!4d` coords) — **N lookups**, not N².
+- Edges are **virtualized** as straight-line (haversine) distance; each leg also reports its compass bearing.
+- The TSP is solved exactly (Held-Karp) for up to **12 places**.
+- Total browser calls: **N + 1** (N place resolutions + 1 directions render).
+
 ### Examples
 
 ```bash
+# Search
 gmaps "coffee shops in Austin TX"
-gmaps "sushi near Times Square" 5
-gmaps "24 hour pharmacy Brooklyn" 10
-gmaps --json "hardware store Portland OR" 20
+gmaps --json "sushi near Times Square" 5
+
+# Directions, as-ordered
+gmaps --route "Austin, TX" "Houston, TX"
+gmaps --route "Austin, TX" "Houston, TX" "Dallas, TX"
+
+# Best-effort optimal order (Austin fixed as start)
+gmaps --optimize "Austin, TX" "Houston, TX" "Dallas, TX" "San Antonio, TX"
 
 # Parallel — each call uses its own tab
 gmaps "coffee Austin" 5 &  gmaps "coffee Seattle" 5 &  wait
+gmaps --route "Austin, TX" "Houston, TX" &  gmaps --route "Dallas, TX" "San Antonio, TX" &  wait
 ```
 
 ## Result shape
 
-**Pretty** (default):
+### Search — pretty (default)
 ```
 coffee shops in Austin TX  ·  5 results
 
@@ -70,7 +113,7 @@ coffee shops in Austin TX  ·  5 results
    https://www.google.com/maps/place/Jo%27s+Coffee...
 ```
 
-**`--json`**:
+### Search — `--json`
 ```json
 {
   "query": "coffee shops in Austin TX",
@@ -95,8 +138,76 @@ coffee shops in Austin TX  ·  5 results
 
 Each result carries: `name, rating, review_count, price, category, address, hours, lat, lng, place_id, url`. Missing fields are `null` (or `-` in pretty mode) — e.g. a place with no price tier or no street address.
 
+### Route — pretty
+```
+Route: Austin, TX  →  Houston, TX
+
+  2 hr 31 min   165 miles   via State Hwy 71 E and I-10 E
+  Fastest route, the usual traffic  ·  tolls
+
+  1. Austin, Texas, USA
+  2. Houston, Texas, USA
+
+  https://www.google.com/maps/dir/Austin,+TX/Houston,+TX/
+```
+`distance` (and `via`) can be null on a trivially short route. `tolls` appears only when the route has tolls.
+
+### Route — `--json`
+```json
+{
+  "mode": "route",
+  "places": ["Austin, TX", "Houston, TX"],
+  "route": {
+    "duration": "2 hr 31 min",
+    "distance": "165 miles",
+    "via": "via State Hwy 71 E and I-10 E",
+    "label": "Fastest route, the usual traffic",
+    "tolls": true,
+    "waypoints": ["Austin, Texas, USA", "Houston, Texas, USA"],
+    "url": "https://www.google.com/maps/dir/Austin,+TX/Houston,+TX/"
+  }
+}
+```
+
+### Optimize — pretty
+```
+Optimized route  ·  best-effort (straight-line TSP)  ·  fixed start: Austin, TX, USA
+
+  1. Austin, TX, USA  (30.267153, -97.7430608)   start
+  2. San Antonio, TX, USA  (29.4251905, -98.4945922)   ← 118.4 km SW (218°)
+  3. Houston, TX, USA  (29.7600771, -95.3701108)   ← 304.4 km E (82°)
+  4. Dallas, TX, USA  (32.7766642, -96.7969879)   ← 361.8 km N (338°)
+
+  Straight-line total: 784.6 km
+
+Real driving for this order:
+  7 hr 50 min   516 miles   via I-35 S
+  Fastest route now due to traffic conditions  ·  tolls
+  Austin, TX, USA  →  San Antonio, TX, USA  →  Houston, TX, USA  →  Dallas, TX, USA
+
+  https://www.google.com/maps/dir/Austin,+TX/San+Antonio,+TX/Houston,+TX/Dallas,+TX/
+
+Note: order is a best-effort estimate from straight-line (haversine) distances;
+the driving time above is the real route for that order.
+```
+
+### Optimize — `--json`
+```json
+{
+  "mode": "optimize",
+  "places": [{ "query": "Austin, TX", "name": "Austin, TX, USA", "lat": 30.267153, "lng": -97.7430608, "url": "…" }, …],
+  "order": ["Austin, TX, USA", "San Antonio, TX, USA", "Houston, TX, USA", "Dallas, TX, USA"],
+  "order_indices": [0, 3, 1, 2],
+  "legs": [{ "from": "Austin, TX, USA", "to": "San Antonio, TX, USA", "km": 118.4, "bearing": 218, "dir": "SW" }, …],
+  "straight_line_total_km": 784.6,
+  "route": { "duration": "7 hr 50 min", "distance": "516 miles", "via": "via I-35 S", "label": "…", "tolls": true, "waypoints": […], "url": "…" },
+  "note": "Order is a best-effort estimate from straight-line (haversine) distances; the driving time/distance is the real route for that order."
+}
+```
+
 ## How it works
 
+### Search
 | Step | What happens |
 |------|---------------|
 | 1 | `session.connect()` (once) — shared WebSocket to the browser |
@@ -107,16 +218,33 @@ Each result carries: `name, rating, review_count, price, category, address, hour
 | 6 | **One `Runtime.evaluate`** parses every result card and returns a JSON array. |
 | 7 | Fire-and-forget `closeTab` in `finally` — cleanup without blocking the response. |
 
-Per call: ~2–3 s for the default 10 results (dominated by the feed render + a couple of scrolls). Background tabs keep it unobtrusive (unlike `ytdl`, Maps needs no playback/poToken).
+### Directions (`--route` / `--optimize`)
+| Step | What happens |
+|------|---------------|
+| 1 | `Page.navigate` to `https://www.google.com/maps/dir/<p0>/<p1>/…/` (path form with `+` for spaces). The `?query=` form does not render. |
+| 2 | **Poll the Directions panel for a route duration.** Like the feed, `networkIdle` never fires. Route-list durations always end in `min` (`2 hr 31 min`, `40 min`, `6 hr 9 min`); the travel-mode tabs use a compact form (`2h 30m`, `16 hr`) with no `min` token, so polling `/\d+\s*min\b/` in the `[aria-label="Directions"]` panel waits for the real route and ignores the mode tabs. A distance leaf (`miles`/`km`) is also accepted so an exact-hour route (`2 hr`, no min) still triggers. The map scale bar `50 km` is outside the panel. |
+| 3 | **One `Runtime.evaluate`** extracts the primary (fastest) route: the first full-format duration leaf **not inside a travel-mode `BUTTON[role=radio]`** (those hold the compact per-mode best-times); the distance leaf in its nearest ancestor; and the unique `via …` / `Fastest route …` / `This route has tolls.` leaves (transit alternates like RedCoach/FlixBus have none of these, so they don't pollute). Resolved waypoint names come from `input[aria-label]` (`Starting point …` / `Destination …`). |
+| 4 | Fire-and-forget `closeTab` in `finally`. |
+
+### Optimize extras
+| Step | What happens |
+|------|---------------|
+| A | **Resolve each place** in parallel background tabs: a place-name search does *not* render a feed — it resolves to a single place page whose URL updates (in ~3-7 s) to `/maps/place/<name>/@<view>/data=…!8m2!3d<lat>!4d<lng>…`. Each tab polls `location.href` for the `!3d!4d` token (the place's exact coords — the `@lat,lng` is only the viewport). The place name is read from the `/maps/place/<name>/` path segment. |
+| B | Build the **haversine** distance matrix and solve the **open-path TSP with fixed start = place[0]** (exact Held-Karp, ≤12 places). |
+| C | Compute per-leg straight-line km + compass bearing. |
+| D | **One real `--route` call** for the chosen order → the reported driving time/distance is real; only the *order* is a straight-line estimate. |
+
+Per call: search ~2-3 s (feed render + scrolls); route ~2-3 s; optimize ~5-9 s (N parallel place resolutions + 1 directions render). Background tabs keep it unobtrusive (unlike `ytdl`, Maps needs no playback/poToken).
 
 ## Why a real browser for Maps
 
-- **The Google Places API is metered and gated** — a key, a billing account, and per-call cost. The Maps web page renders the same data for free; driving your own browser reads it with no key and no quota.
-- **A real browser renders the feed.** Maps is a heavy SPA: results stream into `div[role=feed]` as it scrolls, with class names that are obfuscated and rotate. A single `Runtime.evaluate` after scrolling extracts every card in one CDP call — no HTML fetching, no proxy, no Cloudflare wall (the page is rendered as you, in your own browser).
-- **Per-query use, not bulk harvest.** This is the agent-call shape: one query, up to 30 results, returned as structured JSON or text. It is *not* a bulk scraper (that needs proxy rotation + rate management, which a real-browser-per-call approach doesn't scale to).
+- **The Google Places and Directions APIs are metered and gated** — a key, a billing account, and per-call cost. The Maps web page renders the same data for free; driving your own browser reads it with no key and no quota. The one thing the paid Directions API gives that the free page genuinely can't is `optimizeWaypoints` (TSP for ≤9 stops) — `--optimize` replaces that with a best-effort straight-line TSP.
+- **A real browser renders the feed and the route panel.** Maps is a heavy SPA: results stream into `div[role=feed]` as it scrolls, and the directions panel renders route durations with class names that are obfuscated and rotate. A single `Runtime.evaluate` extracts every card / the primary route in one CDP call — no HTML fetching, no proxy, no Cloudflare wall (the page is rendered as you, in your own browser).
+- **Per-query use, not bulk harvest.** This is the agent-call shape: one query (or one route of ≤25 / one TSP of ≤12 places), returned as structured JSON or text. It is *not* a bulk scraper (that needs proxy rotation + rate management, which a real-browser-per-call approach doesn't scale to).
 
 ## Traps
 
+### Search
 - **`networkIdle` never fires for Maps.** Continuous XHR polling holds the network busy, so the lifecycle-event wait gsearch/findata use would time out every time. `gmaps` polls `a[href*='/maps/place/']` count instead — the actual readiness signal.
 - **No class-name selectors.** Google's class names are obfuscated (`.Nv2PK`, `.bfdHYd`, `.MW4etd`, …) and rotate across releases. The parser relies only on **stable signals**: the result link's `aria-label` (name), the card's leaf-text DOM order (rating/reviews/price/category/address/hours), and the `href` (`!3d<lat>!4d<lng>` for coords, `!19sChIJ…` / `!1s0x..:0x..` for the place id). If Maps changes the card text order, the address/hours heuristics are the first things to revisit.
 - **`?query=` URL form does not render the feed** (returns a redirect shell with no results) — only the path form `/maps/search/<query>` does. Spaces are sent as `+`.
@@ -125,4 +253,19 @@ Per call: ~2–3 s for the default 10 results (dominated by the feed render + a 
 - **Phone, website, and full weekly hours are NOT in the feed card** — they live on the place-detail page and need a per-place navigation to read. Not implemented (would be a `--details` mode); for now use `url` to open a place.
 - **Sponsored results** may appear (Maps sometimes shows one ad, which is also a `/maps/place/` link). They are not filtered out — check the data if it matters.
 - **Consent / cookie wall** (rare in an already-warmed browser) returns zero results. If results come back empty, open the search URL in the browser once to clear it.
-- **No `jq` dependency** — parsing and pretty-printing are done in-page / in JS.
+
+### Directions
+- **Per-leg times are not in the collapsed route summary.** Maps shows only the total for an ordered multi-stop route. Per-leg durations live behind the "Details" expansion (not implemented); use `url` for turn-by-turn.
+- **`distance` can be null** on a trivially short route (Maps may render no distance leaf).
+- **The primary route is "first full-format duration not inside a travel-mode radio."** The mode tabs (`BUTTON[role=radio]`) carry compact best-times (`2h 30m`) that must be excluded; the route list uses the full form (`2 hr 31 min`). Transit alternates (RedCoach/FlixBus) appear in the same panel but have no `via`/`Fastest route`/distance leaves, so they don't contaminate the primary extraction.
+- **Times are current-traffic ("now").** The page gives *now*, not a predictive future departure (the paid API's `departure_time`/`traffic_model` is the one thing the page doesn't give). The label varies: "Fastest route, the usual traffic" vs "Fastest route now due to traffic conditions" — both are matched by `^Fastest route`.
+- **Place-name searches don't render a feed** — that's why `--optimize` resolves places by polling the place-page URL for `!3d!4d`, not by parsing feed cards. A background tab takes ~3-7 s to update the URL; `resolvePlace` polls up to 20 s.
+
+### Optimize
+- **The order is a straight-line estimate, not the true driving-optimal order.** Straight-line (haversine) distance is the "virtualized" edge cost; road-network detours can reorder the true optimum. The reported *driving time/distance* is real (one directions call for the chosen order) — only the *order* is best-effort.
+- **Fixed start, open path.** The first place is the start and is fixed; the path visits every place once and ends anywhere (no return). Not a round trip.
+- **≤12 places, exact.** Held-Karp is exact but exponential; above 12 the command errors rather than guess. N place resolutions run in parallel (N background tabs) + 1 directions call = N+1 browser calls.
+
+### General
+- **No `jq` dependency** — parsing, TSP, and pretty-printing are done in-page / in JS.
+- **Inputs reach the heredoc by placeholder substitution** (node `JSON.stringify` + function-replacements), immune to `&` / `$` / `\` in place names (e.g. `AT&T Stadium`, `Café du Monde`) — the same mechanism the search query uses.

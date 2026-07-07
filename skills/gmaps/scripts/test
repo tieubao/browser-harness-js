@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+# Smoke test for the gmaps skill.
+# Runs a real Google Maps search through the browser and checks that result
+# cards parse into structured fields (name, coords, place_id, url) in both
+# JSON and pretty modes, and that special characters survive the round trip.
+# Requires a Chromium-based browser running with remote debugging (see the cdp
+# skill). Exits 77 if the browser is unreachable, 0 if all checks pass, 1 otherwise.
+set -uo pipefail
+
+script_dir="$(cd "$(dirname "$0")" && pwd)"
+cli="$script_dir/gmaps"
+
+if [ ! -f "$cli" ]; then
+  echo "Error: $cli not found" >&2
+  exit 1
+fi
+
+if ! command -v browser-harness-js >/dev/null 2>&1; then
+  echo "skip: browser-harness-js not on PATH (run scripts/setup first)" >&2
+  exit 77
+fi
+
+# Run the project's own gmaps script, not whatever happens to be on PATH.
+run() { "$cli" "$@" 2>&1 || true; }
+
+# Skip cleanly if the browser isn't reachable.
+probe=$(run "coffee shops in Austin TX" 1)
+case "$probe" in
+  *connect:*) echo "skip: browser not reachable ($(printf '%s' "$probe" | head -1 | sed 's/^[[:space:]]*//'))" >&2; exit 77 ;;
+esac
+
+pass=0
+fail=0
+ok()  { echo "  PASS  $1"; pass=$((pass + 1)); }
+bad() { echo "  FAIL  $1"; printf '%s\n' "$2" | sed 's/^[[:space:]]*/        /' | head -6; fail=$((fail + 1)); }
+expect() { if printf '%s' "$3" | grep -qF "$2"; then ok "$1"; else bad "$1" "$3"; fi; }
+refuse() { if printf '%s' "$3" | grep -qF "$2"; then bad "$1" "$3"; else ok "$1"; fi; }
+
+echo "gmaps smoke test (local business search)"
+
+# JSON: structured fields parse off the feed cards.
+json=$(run --json "coffee shops in Austin TX" 3)
+expect "json: echoes the query"            "\"query\":\"coffee shops in Austin TX\"" "$json"
+expect "json: has a results array"         "\"results\":["                           "$json"
+expect "json: parses a non-null place_id"  "\"place_id\":\""                         "$json"
+expect "json: parses a Maps place url"     "\"url\":\"https://www.google.com/maps/place/" "$json"
+expect "json: parses coordinates"          "\"lat\":"                                "$json"
+refuse "json: no unparsed placeholder"     "__GMAPS_"                                "$json"
+
+# Pretty: human-readable formatting with the star + middle-dot separators.
+pretty=$(run "coffee shops in Austin TX" 2)
+expect "pretty: result header"             "results"                                 "$pretty"
+expect "pretty: star rating glyph"         "★"                                       "$pretty"
+expect "pretty: middle-dot separator"      "·"                                       "$pretty"
+refuse "pretty: no unparsed placeholder"    "__GMAPS_"                                "$pretty"
+
+# Special characters survive the round trip (no placeholder leakage, no $ eaten).
+spec=$(run "café & boulangerie Paris" 1)
+expect "special chars: query echoed verbatim" "café & boulangerie Paris"            "$spec"
+
+echo
+echo "$pass passed, $fail failed"
+[ "$fail" -eq 0 ]

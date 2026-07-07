@@ -1,0 +1,194 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# gmaps — local business search via Google Maps (CDP).
+#
+#   gmaps "coffee shops in Austin TX"            # up to 10 results, pretty
+#   gmaps "sushi near Times Square" 5            # 5 results
+#   gmaps "pharmacy open now Berlin" 20          # 20 (scrolls the feed)
+#   gmaps --json "coffee shops in Austin TX" 5   # raw JSON
+#
+# Free + keyless: the live google.com/maps page is rendered through the browser
+# and a single Runtime.evaluate parses each result card. No Google Places API
+# key, no quota. Each call opens its own tab — safe for parallel use.
+
+# Auto-fix: if browser-harness-js isn't on PATH, try to find and symlink it.
+if ! command -v browser-harness-js >/dev/null 2>&1; then
+  _bhjs="$(cd "$(dirname "$0")/.." && pwd)/../cdp/sdk/browser-harness-js"
+  if [ -f "$_bhjs" ]; then
+    _bindir="$HOME/.local/bin"
+    mkdir -p "$_bindir"
+    ln -sf "$_bhjs" "$_bindir/browser-harness-js"
+    export PATH="$_bindir:$PATH"
+  else
+    echo "gmaps: browser-harness-js not found. Run: bash <skill-dir>/scripts/setup" >&2
+    exit 1
+  fi
+fi
+
+usage() {
+  cat >&2 <<'USAGE'
+Usage: gmaps [--json] <query> [count]
+  --json          Emit raw JSON instead of pretty-printed text
+  <query>         A Google Maps search, e.g. "coffee shops in Austin TX"
+  [count]         Number of results (default 10, capped at 30)
+
+Examples:
+  gmaps "coffee shops in Austin TX"
+  gmaps "sushi near Times Square" 5
+  gmaps --json "pharmacy open now Berlin" 20
+USAGE
+  exit 1
+}
+
+[ $# -lt 1 ] && usage
+
+json_output=false
+if [ "$1" = "--json" ]; then
+  json_output=true
+  shift
+fi
+
+[ $# -lt 1 ] && usage
+query="$1"
+count="${2:-10}"
+
+case "$count" in
+  ''|*[!0-9]*) echo "gmaps: count must be a positive integer" >&2; exit 1 ;;
+esac
+[ "$count" -lt 1 ] && count=1
+[ "$count" -gt 30 ] && count=30
+
+# The query is injected below by placeholder substitution so the heredoc can
+# stay quoted (backticks, $, and regex backslashes in the in-page JS need no
+# bash escaping). The substitution itself is done in node: it JSON.stringifies
+# the raw query into a safe JS literal and uses function-replacements, which
+# are immune to the `&` / `$` / `\` semantics that bash `${var//pat/repl}` and
+# JS String.replace both apply to plain replacement strings.
+code=$(cat <<'GMAPS_EOF'
+const QUERY = __GMAPS_QUERY__
+const JSON_OUT = __GMAPS_JSON__
+const COUNT = __GMAPS_COUNT__
+
+if (!session.isConnected()) { try { await session.connect() } catch (e) { throw new Error("connect: " + e.message) } }
+
+const t = await session.Target.createTarget({ url: "about:blank", background: true })
+const { sessionId } = await session.Target.attachToTarget({ targetId: t.targetId, flatten: true })
+
+try {
+  await cdp(sessionId, "Page.enable", {})
+  await cdp(sessionId, "Page.navigate", {
+    url: "https://www.google.com/maps/search/" + encodeURIComponent(QUERY).replace(/%20/g, "+")
+  })
+
+  // Readiness: poll for place links. Chrome never emits networkIdle for Maps
+  // (continuous XHR polling keeps the network quiet-window from ever opening),
+  // so we wait for the results feed to actually contain results instead.
+  const COUNT_EXPR = `document.querySelectorAll("a[href*='/maps/place/']").length`
+  async function placeCount () {
+    const r = await cdp(sessionId, "Runtime.evaluate", { expression: COUNT_EXPR, returnByValue: true })
+    return Number(r.result.value)
+  }
+  let ready = false
+  const s0 = Date.now()
+  while (Date.now() - s0 < 15000) {
+    await new Promise(r => setTimeout(r, 200))
+    if (await placeCount() > 0) { ready = true; break }
+  }
+  if (!ready) {
+    throw new Error('Google Maps returned no results for "' + QUERY + '" — the page may have hit a consent/cookie wall, or the query matched nothing. Open the URL in the browser once to check.')
+  }
+
+  // Scroll the feed to load up to COUNT results. The feed renders ~7 cards up
+  // front; more stream in as the feed is scrolled to its bottom. Stop at COUNT,
+  // after two consecutive no-growth scrolls (end of results), or after a cap.
+  const SCROLL_EXPR = `(function(){ var f=document.querySelector("div[role=feed]"); if(!f) return; f.scrollTop=f.scrollHeight; f.dispatchEvent(new Event("scroll",{bubbles:true})); })()`
+  let prev = await placeCount()
+  let stable = 0
+  for (let i = 0; i < 25 && prev < COUNT; i++) {
+    await cdp(sessionId, "Runtime.evaluate", { expression: SCROLL_EXPR, returnByValue: true })
+    await new Promise(r => setTimeout(r, 700))
+    const c = await placeCount()
+    if (c === prev) { stable++; if (stable >= 2) break } else stable = 0
+    prev = c
+  }
+
+  // One Runtime.evaluate extracts every card. Stable signals ONLY — Google's
+  // class names are obfuscated and rotate, so the parser never keys off them:
+  //   name           : the result link's aria-label
+  //   rating/reviews : the first leaf tokens matching ^\d+\.\d+$ and ^(\d+)$
+  //   price/category : the first $-prefixed leaf + the leaf right after it
+  //   address        : the first leaf starting with a street number
+  //   hours          : the "Open"/"Closed"/... leaf (+ the "· Closes …" leaf after it)
+  //   lat/lng        : parsed from the href's !3d…!4d… segment
+  //   place_id/url   : the href (and its !19s ChIJ… / !1s 0x..:0x.. token)
+  const EXTRACT_EXPR = `(function(){
+    function parseResult (a) {
+      var name = (a.getAttribute("aria-label") || "").trim();
+      var card = a.closest("[role=article]") || a;
+      var leaf = [];
+      (function walk (el) {
+        if (el.children.length === 0) { var t = (el.textContent || "").replace(/\\s+/g, " ").trim(); if (t) leaf.push(t); }
+        for (var i = 0; i < el.children.length; i++) walk(el.children[i]);
+      })(card);
+      var rating = null, reviews = null, price = null, category = null, address = null;
+      for (var i = 0; i < leaf.length; i++) {
+        if (rating === null && /^\\d+(?:\\.\\d+)?$/.test(leaf[i]) && leaf[i].length <= 4) { rating = parseFloat(leaf[i]); continue; }
+        if (reviews === null && /^\\([\\d,]+\\)$/.test(leaf[i])) { reviews = parseInt(leaf[i].replace(/[\\(\\),]/g, ""), 10); continue; }
+        if (price === null && /^\\$/.test(leaf[i])) { price = leaf[i]; if (i + 1 < leaf.length && leaf[i + 1] !== "·") category = leaf[i + 1]; continue; }
+      }
+      for (var i = 0; i < leaf.length; i++) { if (/^\\d{1,5}[-A-Za-z]*\\s/.test(leaf[i]) && leaf[i] !== name) { address = leaf[i]; break; } }
+      var hState = null, hDetail = null;
+      for (var i = 0; i < leaf.length; i++) {
+        if (!hState && /^(Open|Closed|Open 24 hours|Temporarily closed)$/.test(leaf[i])) { hState = leaf[i]; if (i + 1 < leaf.length && /^[·•]/.test(leaf[i + 1])) hDetail = leaf[i + 1].replace(/^[·•]\\s*/, "").trim(); break; }
+      }
+      var hours = hState ? (hDetail ? hState + " · " + hDetail : hState) : null;
+      var href = a.getAttribute("href") || "";
+      var lat = null, lng = null; var m = href.match(/!3d(-?\\d+(?:\\.\\d+)?)!4d(-?\\d+(?:\\.\\d+)?)/);
+      if (m) { lat = parseFloat(m[1]); lng = parseFloat(m[2]); }
+      var pid = null; var pm = href.match(/!19s(ChIJ[A-Za-z0-9_-]+)/); if (pm) pid = pm[1];
+      if (!pid) { var pm2 = href.match(/!1s(0x[0-9a-f]+:0x[0-9a-f]+)/); if (pm2) pid = pm2[1]; }
+      return { name: name, rating: rating, review_count: reviews, price: price, category: category, address: address, hours: hours, lat: lat, lng: lng, place_id: pid, url: href };
+    }
+    var seen = {}, out = [];
+    var as = document.querySelectorAll("a[href*='/maps/place/']");
+    for (var i = 0; i < as.length; i++) { try { var r = parseResult(as[i]); if (r.url && !seen[r.url]) { seen[r.url] = 1; out.push(r); } } catch (e) {} }
+    return JSON.stringify(out);
+  })()`
+
+  const er = await cdp(sessionId, "Runtime.evaluate", { expression: EXTRACT_EXPR, returnByValue: true })
+  if (er.exceptionDetails) throw new Error("extract eval failed: " + (er.exceptionDetails.exception && er.exceptionDetails.exception.description || er.exceptionDetails.text))
+  let results = JSON.parse(er.result.value)
+  if (results.length > COUNT) results = results.slice(0, COUNT)
+  if (!results.length) throw new Error("Google Maps loaded, but no result cards could be parsed (the page layout may have changed).")
+
+  if (JSON_OUT) return { query: QUERY, count: results.length, results: results }
+
+  function p (v) { return (v === null || v === undefined || v === "") ? "-" : String(v); }
+  var lines = []
+  lines.push(QUERY + "  ·  " + results.length + " result" + (results.length === 1 ? "" : "s"))
+  for (var i = 0; i < results.length; i++) {
+    var r = results[i]
+    lines.push("")
+    lines.push((i + 1) + ". " + p(r.name) + "   ★" + p(r.rating) + " (" + p(r.review_count) + ")" + (r.price ? "   " + r.price : "") + (r.category ? "   " + r.category : ""))
+    var l2 = p(r.address); if (r.hours) l2 += "   ·   " + r.hours
+    lines.push("   " + l2)
+    var l3 = ""
+    if (r.lat !== null && r.lng !== null) l3 = r.lat + ", " + r.lng
+    if (r.place_id) l3 = (l3 ? l3 + "   ·   " : "") + r.place_id
+    if (l3) lines.push("   " + l3)
+    lines.push("   " + r.url)
+  }
+  return lines.join("\n")
+} finally {
+  session.closeTab(t.targetId, sessionId).catch(function () {})
+}
+GMAPS_EOF
+)
+
+# Inject the inputs: node reads the quoted-heredoc code from stdin and
+# replaces the placeholders. The raw query is JSON.stringified into a safe JS
+# literal; function-replacements dodge & / $ pitfalls in the replacement text.
+final=$(node -e 'let c=require("fs").readFileSync(0,"utf8"); c=c.replace(/__GMAPS_QUERY__/g,()=>JSON.stringify(process.argv[1])).replace(/__GMAPS_JSON__/g,()=>process.argv[2]).replace(/__GMAPS_COUNT__/g,()=>process.argv[3]); process.stdout.write(c);' "$query" "$json_output" "$count" <<<"$code")
+
+printf '%s' "$final" | browser-harness-js

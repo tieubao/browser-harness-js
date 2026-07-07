@@ -43,7 +43,7 @@ See [skills/cdp/interaction-skills/](skills/cdp/interaction-skills/) for recipes
 
 ## Skills
 
-This repo contains five skills installable via `npx skills add`:
+This repo contains six skills installable via `npx skills add`:
 
 | Skill | Description |
 |-------|------------|
@@ -53,6 +53,7 @@ This repo contains five skills installable via `npx skills add`:
 | **findata** | Free, keyless financial data via CDP — SEC EDGAR statements + Yahoo Finance prices |
 | **ytdl** | Download YouTube videos browser-natively via CDP — records MediaSource output, no `yt-dlp` binary |
 | **ttdl** | Download TikTok videos browser-natively via CDP — records MediaSource output, no watermark, no signer |
+| **gmaps** | Local business search via Google Maps through CDP — structured results (name, rating, reviews, price, category, address, hours, coords, place ID), no Places API key |
 
 ## Files
 
@@ -72,6 +73,8 @@ This repo contains five skills installable via `npx skills add`:
 - `skills/ytdl/scripts/ytdl` — YouTube download CLI (a `browser-harness-js` heredoc, no runtime)
 - `skills/ttdl/SKILL.md` — TikTok download skill instructions
 - `skills/ttdl/scripts/ttdl` — TikTok download CLI (a `browser-harness-js` heredoc, no runtime)
+- `skills/gmaps/SKILL.md` — Google Maps local-search skill instructions
+- `skills/gmaps/scripts/gmaps` — Google Maps local-search CLI (a `browser-harness-js` heredoc, no runtime)
 
 No helpers file. No `click()`, no `goto()`, no `upload_file()` — just the protocol, typed.
 

@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# Smoke test for the findata skill.
+# Verifies share-class ticker normalization (BRK.B -> BRK-B) works on both the
+# Yahoo price path and the SEC EDGAR statement path. Requires a Chromium-based
+# browser running with remote debugging (see the cdp skill). Exits 77 if the
+# browser is unreachable, 0 if all checks pass, 1 otherwise.
+set -uo pipefail
+
+script_dir="$(cd "$(dirname "$0")" && pwd)"
+cli="$script_dir/findata"
+
+if [ ! -f "$cli" ]; then
+  echo "Error: $cli not found" >&2
+  exit 1
+fi
+
+if ! command -v browser-harness-js >/dev/null 2>&1; then
+  echo "skip: browser-harness-js not on PATH (run scripts/setup first)" >&2
+  exit 77
+fi
+
+# Run the project's own findata script, not whatever happens to be on PATH.
+run() { "$cli" "$@" 2>&1 || true; }
+
+# Skip cleanly if the browser isn't reachable.
+probe=$(run price AAPL)
+case "$probe" in
+  *connect:*) echo "skip: browser not reachable ($(printf '%s' "$probe" | head -1 | sed 's/^[[:space:]]*//'))" >&2; exit 77 ;;
+esac
+
+pass=0
+fail=0
+ok()  { echo "  PASS  $1"; pass=$((pass + 1)); }
+bad() { echo "  FAIL  $1"; printf '%s\n' "$2" | sed 's/^[[:space:]]*/        /' | head -6; fail=$((fail + 1)); }
+expect() { # desc  needle  actual   -> pass if actual contains needle
+  if printf '%s' "$3" | grep -qF "$2"; then ok "$1"; else bad "$1" "$3"; fi
+}
+refuse() { # desc  needle  actual   -> pass if actual does NOT contain needle
+  if printf '%s' "$3" | grep -qF "$2"; then bad "$1" "$3"; else ok "$1"; fi
+}
+
+echo "findata smoke test (share-class ticker normalization)"
+
+out=$(run price BRK.B)
+refuse "price BRK.B: no 'Ticker not found' error" "Ticker not found" "$out"
+expect "price BRK.B: returns a price snapshot"     "USD"               "$out"
+
+out=$(run income BRK.B --limit 1 --json)
+expect "income BRK.B --json: resolves to cik 1067983" '"cik":1067983' "$out"
+
+out=$(run price BRK-B)
+refuse "price BRK-B (hyphen form): no 'Ticker not found'" "Ticker not found" "$out"
+
+out=$(run price BF.B)
+refuse "price BF.B: generalizes to another share-class ticker" "Ticker not found" "$out"
+
+echo
+echo "$pass passed, $fail failed"
+[ "$fail" -eq 0 ]

@@ -123,7 +123,7 @@ if (!session.isConnected()) { try { await session.connect() } catch (e) { throw 
 
 const JSON_OUT = ${JSON_OUT}
 const SUB = "${SUB_JS}"
-const TICKER = "${TICKER_JS}"
+const TICKER = "${TICKER_JS}".toUpperCase().replace(/\./g, "-")
 const PERIOD = "${PERIOD_JS}"
 const LIMIT = ${LIMIT}
 const INTERVAL = "${INTERVAL_JS}"

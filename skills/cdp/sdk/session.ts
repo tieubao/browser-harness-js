@@ -265,9 +265,16 @@ export class Session implements Transport {
   }
 
   // Transport implementation. Called by the generated domain bindings.
-  _call(method: string, params: unknown = {}, opts?: { sessionId?: string }): Promise<unknown> {
+  _call(method: string, params: unknown = {}, opts?: { sessionId?: string }, reconnected = false): Promise<unknown> {
+    // Self-heal: a giant CDP response (e.g. getFullAXTree on a huge page) or a
+    // browser hiccup can close the WebSocket. Reconnect once and retry rather
+    // than poisoning every subsequent call with `Not connected`. After a
+    // reconnect the active-session pointer / prior flat sessionIds may be stale,
+    // but a stale sessionId surfaces a clean CDP `session not found` (re-attach),
+    // never a wrong-target action.
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-      return Promise.reject(new Error('Not connected. Call session.connect(...) first.'));
+      if (reconnected) return Promise.reject(new Error('Not connected. Call session.connect(...) first.'));
+      return this.connect().then(() => this._call(method, params, opts, true));
     }
     const id = this.nextId++;
     const msg: Record<string, unknown> = { id, method, params: params ?? {} };

@@ -106,7 +106,8 @@ These globals are pre-loaded — no imports needed:
 - `detectBrowsers()` — scan OS-specific profile dirs for running Chromium-based browsers with remote debugging on. Returns `[{name, profileDir, port, wsPath, wsUrl, mtimeMs}]`, sorted by most recently launched.
 - `resolveWsUrl(opts)` — resolve a WS URL from `{wsUrl}` | `{port, host?}` | `{profileDir}`. For the no-args auto-detect flow, call `session.connect()` directly instead.
 - `CDP` — the generated namespaces (`CDP.Page`, `CDP.Runtime`, …) for type-name reference.
-- `axView(nodes, opts?)` — compressed accessibility-tree view: a pure projection over a raw `Accessibility.getFullAXTree`/`queryAXTree` result. Drops ~96% structural noise, assigns `[n]` refs → `backendDOMNodeId`. See `interaction-skills/snapshot.md`.
+- `axView(nodes, opts?)` — compressed accessibility-tree view: a pure projection over a raw `Accessibility.getFullAXTree`/`queryAXTree` result. Drops ~96% structural noise, assigns `[n]` refs → `backendDOMNodeId`. Options: `{ interactive, refs, maxDepth, redactSensitive }`. See `interaction-skills/snapshot.md`.
+- `axDiff(prev, next)` / `parseAxRefs(view)` / `axClick(ref, refs)` / `axType(ref, refs, text)` — multi-step snapshot helpers (diff, ref map, click/type by ref). See `interaction-skills/snapshot.md`.
 - `cdp(sessionId, method, params)` — call any CDP method on an **explicit** `sessionId` without touching the active-session pointer: `cdp(sid, 'Page.enable', {})`. The multi-tab primitive: the one-tab-per-call skills route every call this way so concurrent tabs never race `session.use`. Equivalent to `session._call(method, params, { sessionId })`.
 - `session.closeTab(targetId, sessionId?)` — close a tab and detach: `window.close()` on the session, then `Target.closeTarget`. Fire-and-forget in a `finally` (`.catch(() => {})`) so cleanup is guaranteed and never blocks the return. Closes are serialized.
 
@@ -148,7 +149,7 @@ Each recipe leads with the shortest CDP call that works, then the trap — in `s
 For a named element (a button, link, textbox, heading), prefer the accessibility tree over CSS selectors — it finds by semantic role + accessible name (Playwright's `getByRole`/`getByText` model) and crosses shadow boundaries. Two tools, by task:
 
 - **Targeted find** (you know the role/name): `session.Accessibility.queryAXTree` — ~30 tokens. Needs a DOM `nodeId` (from `session.DOM.getDocument`) and the active session (`session.use` first; the bare `{role, accessibleName}` form errors, and the `cdp(sessionId, …)` route hangs). No `Accessibility.enable` needed.
-- **Explore an unfamiliar page** (don't know what to ask for, pick from many, summarize layout): `axView(nodes)` over `session.Accessibility.getFullAXTree({})` — a compressed snapshot with `[n]` refs, 7–22K tokens.
+- **Explore an unfamiliar page** (don't know what to ask for, pick from many, summarize layout): `axView(nodes, { interactive: true })` first over `session.Accessibility.getFullAXTree({})`, then full `axView(nodes)` if needed — compressed snapshot with `[n]` refs. Multi-step: keep the previous string and use `axDiff(prev, next)`.
 
 ```js
 await session.use(targetId)
@@ -157,9 +158,9 @@ const { root } = await session.DOM.getDocument({})
 const { nodes } = await session.Accessibility.queryAXTree({ nodeId: root.nodeId, role: 'button', accessibleName: 'Submit' })
 const node = nodes.find(n => !n.ignored)   // node.backendDOMNodeId → DOM.getBoxModel → Input.dispatchMouseEvent
 
-// Explore: compressed whole-page snapshot
+// Explore: interactive-first compressed snapshot
 const { nodes: ax } = await session.Accessibility.getFullAXTree({})
-return axView(ax)
+return axView(ax, { interactive: true })
 ```
 
 Use DOM queries (`DOM.querySelector`, `Runtime.evaluate` with `querySelector`) for structural context, when the tree returns nothing (canvas, non-semantic divs), or when you already have a stable selector. Full guides: [`accessibility-tree.md`](interaction-skills/accessibility-tree.md) (queryAXTree) and [`snapshot.md`](interaction-skills/snapshot.md) (axView).
@@ -330,7 +331,7 @@ All paths are relative to `<skill-dir>` (the install path — see top of this do
 - `/usr/local/bin/browser-harness-js` → `<skill-dir>/sdk/browser-harness-js` (the CLI)
 - `sdk/repl.ts` — HTTP server (`node:http` on `127.0.0.1:9876`)
 - `sdk/session.ts` — `Session` class (transport, connect, target routing, events)
-- `sdk/axview.ts` — `axView(nodes, opts)`: compressed accessibility-tree projection, injected as a global (see `interaction-skills/snapshot.md`)
+- `sdk/axview.ts` — `axView` / `axDiff` / `parseAxRefs`: compressed accessibility-tree projection + helpers, injected as globals (see `interaction-skills/snapshot.md`)
 - `sdk/generated.ts` — codegen output: every CDP method as a typed wrapper
 - `sdk/gen.ts` — codegen script
 - `sdk/{browser,js}_protocol.json` — upstream protocol (vendored)

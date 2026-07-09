@@ -112,7 +112,7 @@ powershell -NoProfile -Command "(New-Object -ComObject WScript.Shell).AppActivat
 
 ## WebSocket payload limits — any large CDP response can close the socket
 
-The CDP WebSocket has a per-message size limit. A single response large enough to exceed it closes the socket — the call rejects with `CDP socket closed`, and **every call after fails until you reconnect** (`await session.connect()`). This is a property of the *connection*, not any one domain: any big-enough response can trigger it. Common culprits:
+The CDP WebSocket has a per-message size limit. A single response large enough to exceed it closes the socket — the call rejects with `CDP socket closed`. This is a property of the *connection*, not any one domain: any big-enough response can trigger it. Common culprits:
 
 - `Accessibility.getFullAXTree` on a giant page (huge tables, infinite lists, heavy SPAs) — the most common trigger; compress the result with `axView` or scope it.
 - `Runtime.evaluate` with `returnByValue: true` returning a huge object/string (`document.body.innerHTML`, a big JSON blob).
@@ -128,7 +128,7 @@ Two rules to stay under the limit:
    - `DOM.getDocument({ depth: 1 })` and drill with `querySelector`/`requestNode` instead of a deep dump.
    - `Network.getResponseBody` only when you need the body; otherwise read headers/length.
 
-If a call does close the socket (`CDP socket closed`), `await session.connect()` to re-establish before any further call — the session, active target, and any `globalThis.*` you set are gone, so re-`use()` the target you were driving.
+If a call does close the socket (`CDP socket closed`), the **next call auto-heals** — `_call` detects the dead socket, reconnects once, and retries, so the daemon no longer needs a manual `await session.connect()`. What does *not* survive a drop is the **flat session**: the browser tears down `Target.attachToTarget` sessions when the WS closes, so the next call on the old `sessionId` rejects with `CDP -32001: Session with given id not found` — a clean signal to **re-`attachToTarget`** (the target itself persists). `globalThis.*` you set survive (they live in the daemon, not the socket). So after a drop: re-attach to your target, re-`use()` it, and continue. If you'd rather force a fresh connection, `await session.connect()` still works.
 
 ## Stale daemon — the running REPL lags the installed files
 
@@ -136,7 +136,7 @@ If a call does close the socket (`CDP socket closed`), `await session.connect()`
 
 Two tells that the daemon is stale:
 
-1. **`ReferenceError: <global> is not defined`** for a global the docs describe (e.g. `axView`) — or `typeof axView` returning `"undefined"`. The docs you read are new; the daemon is old.
+1. **`ReferenceError: <global> is not defined`** for a global the docs describe (e.g. `axView`, `axDiff`, `axClick`) — or `typeof axView` returning `"undefined"`. The docs you read are new; the daemon is old.
 
 2. **Version mismatch.** The launcher reads the on-disk version fresh; the daemon serves its boot-cached version in `/health`:
 

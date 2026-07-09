@@ -14,7 +14,7 @@
  */
 
 import { Session, listPageTargets, resolveWsUrl, detectBrowsers } from './session.ts';
-import { axView } from './axview.ts';
+import { axView, axDiff, parseAxRefs } from './axview.ts';
 import * as Generated from './generated.ts';
 import { createServer, type IncomingMessage } from 'node:http';
 import { readFileSync } from 'node:fs';
@@ -34,8 +34,43 @@ const session = new Session();
 (globalThis as any).resolveWsUrl = resolveWsUrl;
 (globalThis as any).detectBrowsers = detectBrowsers;
 (globalThis as any).axView = axView;
+(globalThis as any).axDiff = axDiff;
+(globalThis as any).parseAxRefs = parseAxRefs;
 (globalThis as any).CDP = Generated;
 (globalThis as any).cdp = (sid: string, method: string, params: unknown) => session._call(method, params, { sessionId: sid });
+
+/** Resolve an axView ref number (or `[n]` string) to backendDOMNodeId via a refs Map or parseAxRefs(view). */
+function resolveAxBackendId(
+  ref: number | string,
+  refs: Map<number, number> | string,
+): number {
+  const n = typeof ref === 'string' ? Number(String(ref).replace(/\[|\]/g, '')) : ref;
+  if (!Number.isFinite(n)) throw new Error(`Invalid ax ref: ${ref}`);
+  const map = typeof refs === 'string' ? parseAxRefs(refs) : refs;
+  const backendNodeId = map.get(n);
+  if (backendNodeId == null) throw new Error(`Unknown ax ref [${n}] — re-snapshot; refs are only valid for one getFullAXTree`);
+  return backendNodeId;
+}
+
+/** Click the center of an axView ref. `refs` is a Map from parseAxRefs or the axView string itself. */
+async function axClick(ref: number | string, refs: Map<number, number> | string): Promise<void> {
+  const backendNodeId = resolveAxBackendId(ref, refs);
+  const { model } = await session.DOM.getBoxModel({ backendNodeId });
+  const [x, y] = model.content.slice(0, 2);
+  const cx = x + model.width / 2;
+  const cy = y + model.height / 2;
+  await session.Input.dispatchMouseEvent({ type: 'mousePressed', x: cx, y: cy, button: 'left', clickCount: 1 });
+  await session.Input.dispatchMouseEvent({ type: 'mouseReleased', x: cx, y: cy, button: 'left', clickCount: 1 });
+}
+
+/** Focus an axView ref (click) then insert text. */
+async function axType(ref: number | string, refs: Map<number, number> | string, text: string): Promise<void> {
+  await axClick(ref, refs);
+  await session.Input.insertText({ text });
+}
+
+(globalThis as any).axClick = axClick;
+(globalThis as any).axType = axType;
 
 const PORT = Number(process.env.CDP_REPL_PORT ?? 9876);
 const startedAt = Date.now();

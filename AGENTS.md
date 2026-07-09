@@ -98,16 +98,39 @@ Conventions:
   `../cdp/sdk/browser-harness-js` (relative to the script — resolves to the
   sibling `cdp` skill in both the repo and an install).
 - One tab per call: `Target.createTarget({ background: true })` →
-  `attachToTarget` → per-call `sessionId` → … → fire-and-forget `closeTab` in
-  `finally`. This is what makes calls safe to run in parallel.
+  `attachToTarget` → per-call `sessionId` → route calls with the
+  `cdp(sessionId, method, params)` global → … → fire-and-forget `closeTab` in
+  `finally`. This is what makes calls safe to run in parallel. The
+  navigate-and-wait shape (`Page.setLifecycleEventsEnabled` + arm
+  `session.waitFor('Page.lifecycleEvent', …'networkIdle')` *before*
+  `Page.navigate`) and the one-tab-per-call template are in
+  `skills/cdp/interaction-skills/lifecycle-readiness.md` — read it before
+  re-deriving. Use a foreground tab (no `background: true`) when the page
+  must autoplay or feed `MediaSource` (see `media-capture.md`).
 - **No `jq`**, no extra runtime deps. `node` is required (the REPL needs it);
   use it for things like JSON-safe string literals or date math.
-- Pass shell args into the heredoc via **placeholder substitution** (a quoted
-  heredoc + a tiny `node -e` that JSON.stringifies the raw value and uses
-  *function*-replacements). Do not `export` env vars and read `process.env` —
-  the REPL daemon is long-lived and won't see newly exported vars. Do not use
-  bash `${var//pat/$repl}` for values containing `&` or `$` (it re-interprets
-  them as the match / captures).
+- Pass shell args into the heredoc. Keep the heredoc **quoted** (`<<'EOF'`)
+  so backticks, `$`, and regex backslashes in the in-page JS need no bash
+  escaping, then inject the args by one of:
+  - **Placeholder substitution (preferred):** put `__TOKEN__` placeholders in
+    the quoted heredoc and rewrite them with a `node -e` that `JSON.stringify`s
+    the raw values into safe JS literals, using *function*-replacements
+    (`c.replace(/__P__/g, () => JSON.stringify(v))`). Function-replacements
+    dodge the `&`/`$`/`\` semantics that bash `${var//pat/$repl}` *and* JS
+    `String.replace` both apply to plain replacement strings, so it's safe for
+    values containing `&` or `$`. `gmaps` uses this — copy it as the template.
+  - **Inline escaping (for a single interpolated value, e.g. one URL):** escape
+    the value with `sed` into a JS string literal and interpolate `'${js_val}'`
+    inside the heredoc. Copy the exact `sed` line and its comment from
+    `gsearch/scripts/gsearch` — it escapes `\`, `$`, `` ` ``, `'` for a JS
+    single-quoted string. Trap: the `$` rule must match a literal `\$`, not
+    end-of-line; the old `s/\$/\\$/g` form treated `$` as the EOL anchor and
+    appended `$` to every line. `gsearch`/`xsearch`/`findata`/`ytdl`/`ttdl` use
+    this.
+  Do not `export` env vars and read `process.env` — the REPL daemon is
+  long-lived and won't see newly exported vars. Do not use bash
+  `${var//pat/$repl}` for values containing `&` or `$` (it re-interprets them
+  as the match / captures).
 
 **`setup`** is the same template across all skills: ensure `~/.local/bin` is on
 PATH, symlink the CLI there, and symlink `browser-harness-js` from

@@ -228,11 +228,13 @@ export function axView(nodes: any[], opts: AxViewOptions = {}): string {
     const p = propsOf(n);
     const f: string[] = [];
     if (p.focused) f.push('focused');
-    if (p.checked === true) f.push('checked');
+    if (p.checked === true || p.checked === 'true') f.push('checked');
+    else if (p.checked === 'mixed') f.push('mixed');
+    if (p.selected === true) f.push('selected');
     if (p.expanded === true) f.push('expanded');
     if (p.disabled) f.push('disabled');
     if (p.required) f.push('required');
-    if (p.pressed) f.push('pressed');
+    if (p.pressed === true || p.pressed === 'true') f.push('pressed');
     if (p.scrollable === true) f.push('scrollable');
     let e = '';
     if ('level' in p) e = ` (h${p.level})`;

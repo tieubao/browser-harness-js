@@ -68,7 +68,7 @@ const { nodes } = await session.Accessibility.getFullAXTree({})
 return axView(nodes, { interactive: true })
 ```
 
-Output is an indented tree with `[n]` refs on interactive + named nodes, a trailing `# refs -> backendDOMNodeId` map, and state flags (`<focused checked expanded disabled scrollable>`, `(h2)`, `="value"`):
+Output is an indented tree with `[n]` refs on interactive + named nodes, a trailing `# refs -> backendDOMNodeId` map, and state flags (`<focused checked selected pressed expanded disabled scrollable>`, plus `<mixed>` for tri-state checkboxes, `(h2)`, `="value"`):
 
 ```
 [1] RootWebArea "Chromium (web browser) - Wikipedia"

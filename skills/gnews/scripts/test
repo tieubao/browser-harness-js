@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+# Smoke test for the gnews skill.
+# Runs real Google News (tbm=nws) calls through the browser and checks that:
+#   - JSON mode parses structured fields (title, url, source, snippet, time)
+#     and echoes nothing unparsed;
+#   - pretty mode formats each card with the publisher url + a "source · time"
+#     line + snippet;
+#   - special characters in the query (&, accents) survive the round trip via
+#     the function-replacement placeholder injection (no $-eaten, no breakage);
+#   - the count guard rejects a non-numeric count before spawning the browser.
+# Requires a Chromium-based browser running with remote debugging (see the cdp
+# skill). Exits 77 if the browser is unreachable, 0 if all checks pass, 1 otherwise.
+set -uo pipefail
+
+script_dir="$(cd "$(dirname "$0")" && pwd)"
+cli="$script_dir/gnews"
+
+if [ ! -f "$cli" ]; then
+  echo "Error: $cli not found" >&2
+  exit 1
+fi
+
+if ! command -v browser-harness-js >/dev/null 2>&1; then
+  echo "skip: browser-harness-js not on PATH (run scripts/setup first)" >&2
+  exit 77
+fi
+
+# Run the project's own gnews script, not whatever happens to be on PATH.
+run() { "$cli" "$@" 2>&1 || true; }
+
+# Skip cleanly if the browser isn't reachable.
+probe=$(run "OpenAI" 1)
+case "$probe" in
+  *Cannot*connect*|*ECONNREFUSED*|*connect:*)
+    echo "skip: browser not reachable ($(printf '%s' "$probe" | head -1 | sed 's/^[[:space:]]*//'))" >&2
+    exit 77 ;;
+esac
+
+pass=0
+fail=0
+ok()  { echo "  PASS  $1"; pass=$((pass + 1)); }
+bad() { echo "  FAIL  $1"; printf '%s\n' "$2" | sed 's/^[[:space:]]*/        /' | head -6; fail=$((fail + 1)); }
+expect() { # desc  needle  actual   -> pass if actual contains needle
+  if printf '%s' "$3" | grep -qF "$2"; then ok "$1"; else bad "$1" "$3"; fi
+}
+refuse() { # desc  needle  actual   -> pass if actual does NOT contain needle
+  if printf '%s' "$3" | grep -qF "$2"; then bad "$1" "$3"; else ok "$1"; fi
+}
+
+echo "gnews smoke test (Google News search via tbm=nws)"
+
+# JSON: structured fields parse off the result cards.
+json=$(run --json "OpenAI" 4)
+expect "json: parses a title"     '"title":'   "$json"
+expect "json: parses a publisher url" '"url":"http' "$json"
+expect "json: parses a source"    '"source":'  "$json"
+expect "json: parses a time"      '"time":'    "$json"
+expect "json: returns a JSON array" '['        "$json"
+refuse "json: no unparsed placeholder" "__GNEWS_" "$json"
+
+# Pretty: human-readable formatting with the source · time separator.
+pretty=$(run "OpenAI" 3)
+expect "pretty: shows a publisher url" "http" "$pretty"
+expect "pretty: source · time separator" "·"  "$pretty"
+refuse "pretty: no unparsed placeholder" "__GNEWS_" "$pretty"
+
+echo "-- special chars --"
+# A query with '&' exercises the dangerous replacement-text char: function-
+# replacement (not String.replace / bash ${var//}) must keep it intact. "AT&T"
+# is perpetually in the news, so this also confirms results come back.
+amp=$(run --json "AT&T" 3)
+expect "ampersand query: parses a publisher url" '"url":"http' "$amp"
+refuse "ampersand query: no placeholder leak"    "__GNEWS_"     "$amp"
+# A non-ASCII accent also survives JSON.stringify into the JS literal.
+accent=$(run --json "café" 2)
+expect "accent query: parses a title" '"title":' "$accent"
+refuse "accent query: no placeholder leak" "__GNEWS_" "$accent"
+
+echo "-- guards --"
+# Non-numeric count is rejected before any browser call (deterministic).
+g1=$("$cli" "x" abc 2>&1); rc1=$?
+if [ "$rc1" -ne 0 ] && printf '%s' "$g1" | grep -qF "positive integer"; then ok "guard: non-numeric count rejected"; else bad "guard: non-numeric count rejected" "rc=$rc1 out=$g1"; fi
+# No args -> usage.
+g2=$("$cli" 2>&1); rc2=$?
+if [ "$rc2" -ne 0 ] && printf '%s' "$g2" | grep -qF "Usage"; then ok "guard: no args -> usage"; else bad "guard: no args -> usage" "rc=$rc2 out=$g2"; fi
+# --json with no query -> usage.
+g3=$("$cli" --json 2>&1); rc3=$?
+if [ "$rc3" -ne 0 ] && printf '%s' "$g3" | grep -qF "Usage"; then ok "guard: --json with no query -> usage"; else bad "guard: --json with no query -> usage" "rc=$rc3 out=$g3"; fi
+
+echo
+echo "$pass passed, $fail failed"
+[ "$fail" -eq 0 ]

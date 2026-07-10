@@ -1,0 +1,140 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# gnews — Google News search via CDP (the news tab of Google Search, tbm=nws).
+#
+#   gnews "your query"            # pretty-printed, up to 10 results
+#   gnews "your query" 5          # 5 results, pretty-printed
+#   gnews --json "your query" 3   # raw JSON
+#
+# Free + keyless: the live google.com/search?tbm=nws page is rendered through
+# the browser and a single Runtime.evaluate reads every result. No API key, no
+# account, no jq. The news tab returns the publisher's DIRECT url (no
+# news.google.com redirect wrapper). Each call opens its own tab with a
+# per-call sessionId — safe for parallel use.
+
+# Auto-fix: if browser-harness-js isn't on PATH, try to find and symlink it.
+if ! command -v browser-harness-js >/dev/null 2>&1; then
+  _bhjs="$(cd "$(dirname "$0")/.." && pwd)/../cdp/sdk/browser-harness-js"
+  if [ -f "$_bhjs" ]; then
+    _bindir="$HOME/.local/bin"
+    mkdir -p "$_bindir"
+    ln -sf "$_bhjs" "$_bindir/browser-harness-js"
+    export PATH="$_bindir:$PATH"
+  else
+    echo "gnews: browser-harness-js not found. Run: bash <skill-dir>/scripts/setup" >&2
+    exit 1
+  fi
+fi
+
+usage() { echo "Usage: gnews [--json] <query> [count]" >&2; exit 1; }
+[ $# -lt 1 ] && usage
+
+json_output=false
+if [ "$1" = "--json" ]; then
+  json_output=true
+  shift
+fi
+
+[ $# -lt 1 ] && usage
+query="$1"
+count="${2:-10}"
+
+# Reject a non-numeric count before spawning the browser — it flows into a JS
+# numeric literal, so a bad value would otherwise fail to parse the snippet.
+case "$count" in
+  ''|*[!0-9]*) echo "gnews: count must be a positive integer, got '$count'" >&2; exit 1 ;;
+esac
+
+# Quoted heredoc so backticks, $, and regex backslashes in the in-page JS need
+# no bash escaping. Inputs are injected as __GNEWS_*__ placeholders below.
+code=$(cat <<'GNEWS_EOF'
+const QUERY = __GNEWS_QUERY__
+const COUNT = __GNEWS_COUNT__
+const JSON_OUT = __GNEWS_JSON__
+
+if (!session.isConnected()) {
+  try { await session.connect() } catch (e) { throw new Error("Cannot connect to browser: " + e.message) }
+}
+
+const t = await session.Target.createTarget({ url: "about:blank", background: true })
+const { sessionId } = await session.Target.attachToTarget({ targetId: t.targetId, flatten: true })
+
+try {
+  await cdp(sessionId, "Page.enable", {})
+  // setLifecycleEventsEnabled is required — without it Chrome emits zero
+  // Page.lifecycleEvent and networkIdle would never fire.
+  await cdp(sessionId, "Page.setLifecycleEventsEnabled", { enabled: true })
+  // Arm BEFORE Page.navigate: lifecycle events fire once, and a fast load can
+  // fire networkIdle between navigate returning and the listener subscribing.
+  const ready = session.waitFor({ method: 'Page.lifecycleEvent', sessionId, predicate: (p) => p.name === 'networkIdle', timeoutMs: 30_000 })
+  await cdp(sessionId, "Page.navigate", {
+    url: "https://www.google.com/search?q=" + encodeURIComponent(QUERY) + "&tbm=nws&num=" + COUNT
+  })
+  await ready
+
+  // Google's news tab (tbm=nws) renders each result as an <a> wrapping a
+  // div[role=heading] title. Selectors are class-agnostic: keep anchors that
+  // contain a role=heading and whose href is off-Google, so obfuscated Google
+  // class churn can't break extraction. Each card's innerText reads:
+  //   source \n title \n [snippet] \n . \n time
+  // — the standalone "." line separates the snippet from the trailing relative
+  // time and is absent on cards with no snippet (source/title/time only).
+  // The href is the publisher's direct URL (no news.google.com redirect wrapper).
+  const expression = `(() => {
+    const ext = a => { try { return !/^(www\\.)?google\\./.test(new URL(a.href).hostname) } catch { return false } };
+    const cards = [...document.querySelectorAll("a[href]")].filter(a => a.querySelector("div[role=heading]") && ext(a));
+    const ex = a => {
+      const title = (a.querySelector("div[role=heading]")?.textContent || "").trim();
+      let lines = (a.innerText || "").replace(/\\u00a0/g, " ").split("\\n").map(s => s.trim()).filter(s => s.length > 0);
+      let source = "";
+      let rest = lines.slice();
+      if (rest[0] && rest[0] !== title) { source = rest[0]; rest = rest.slice(1); }
+      if (rest[0] === title) rest = rest.slice(1);
+      const dot = rest.indexOf(".");
+      let snippet = "", time = "";
+      if (dot >= 0) { snippet = rest.slice(0, dot).join(" ").trim(); time = rest.slice(dot + 1).join(" ").trim(); }
+      else { time = rest.length ? rest.join(" ").trim() : ""; }
+      return { title, url: a.href, source, snippet, time };
+    };
+    return JSON.stringify(cards.slice(0, ${COUNT}).map(ex));
+  })()`
+
+  const result = await cdp(sessionId, "Runtime.evaluate", { expression, returnByValue: true })
+  const results = JSON.parse(result.result.value)
+
+  if (JSON_OUT) {
+    // Return the JSON string (not the array) so output is always valid JSON —
+    // the REPL renders empty arrays as '' by default, which would give `jq`/
+    // `JSON.parse` callers a parse error on a 0-result query.
+    return JSON.stringify(results)
+  } else {
+    return results.map(r => {
+      let s = r.title + "\n  " + r.url
+      const meta = [r.source, r.time].filter(Boolean).join(" · ")
+      if (meta) s += "\n  " + meta
+      if (r.snippet) s += "\n  " + r.snippet
+      return s
+    }).join("\n\n")
+  }
+} finally {
+  // Fire-and-forget closeTab — guaranteed cleanup even on errors,
+  // without blocking the response.
+  session.closeTab(t.targetId, sessionId).catch(() => {})
+}
+GNEWS_EOF
+)
+
+# Inject the inputs: node reads the quoted-heredoc code from stdin and replaces
+# the placeholders. Raw values are JSON.stringified into safe JS literals;
+# function-replacements dodge & / $ pitfalls in the replacement text.
+final=$(node -e '
+let c = require("fs").readFileSync(0, "utf8");
+let query = process.argv[1], count = process.argv[2], json = process.argv[3];
+c = c.replace(/__GNEWS_QUERY__/g, () => JSON.stringify(query))
+    .replace(/__GNEWS_COUNT__/g, () => String(count))
+    .replace(/__GNEWS_JSON__/g, () => json);
+process.stdout.write(c);
+' "$query" "$count" "$json_output" <<<"$code")
+
+printf '%s' "$final" | browser-harness-js

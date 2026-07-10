@@ -43,12 +43,13 @@ See [skills/cdp/interaction-skills/](skills/cdp/interaction-skills/) for recipes
 
 ## Skills
 
-This repo contains six skills installable via `npx skills add`:
+This repo contains seven skills installable via `npx skills add`:
 
 | Skill | Description |
 |-------|------------|
 | **cdp** | Drive any Chromium-based browser via CDP — 56 domains, 652 typed methods |
 | **gsearch** | Search the web via Google through CDP — structured results in under 1 second |
+| **gnews** | Search Google News through CDP (`tbm=nws`) — structured results (title, url, source, time, snippet) with the publisher's direct URL, no redirect wrapper |
 | **xsearch** | Search X (Twitter) via CDP — structured results (requires an active X login) |
 | **findata** | Free, keyless financial data via CDP — SEC EDGAR statements + Yahoo Finance prices |
 | **ytdl** | Download YouTube videos browser-natively via CDP — records MediaSource output, no `yt-dlp` binary |
@@ -65,6 +66,8 @@ This repo contains six skills installable via `npx skills add`:
 - `skills/cdp/sdk/generated.ts` — every CDP method as `session.<Domain>.<method>(params)` (generated)
 - `skills/gsearch/SKILL.md` — Google Search skill instructions
 - `skills/gsearch/scripts/gsearch` — Google Search CLI
+- `skills/gnews/SKILL.md` — Google News skill instructions
+- `skills/gnews/scripts/gnews` — Google News CLI (a `browser-harness-js` heredoc, no runtime)
 - `skills/xsearch/SKILL.md` — X (Twitter) Search skill instructions
 - `skills/xsearch/scripts/xsearch` — X Search CLI
 - `skills/findata/SKILL.md` — financial-data skill instructions

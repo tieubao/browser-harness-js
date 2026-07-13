@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+# Smoke test for the gsearch skill.
+# Verifies the `follow` subcommand: option-ordering guards and live text/JSON
+# extraction through the browser. Exits 77 if the browser is unreachable,
+# 0 if all checks pass, 1 otherwise.
+set -uo pipefail
+
+script_dir="$(cd "$(dirname "$0")" && pwd)"
+cli="$script_dir/gsearch"
+
+if [ ! -f "$cli" ]; then
+  echo "Error: $cli not found" >&2
+  exit 1
+fi
+
+if ! command -v browser-harness-js >/dev/null 2>&1; then
+  echo "skip: browser-harness-js not on PATH (run scripts/setup first)" >&2
+  exit 77
+fi
+
+# Run the project's own gsearch script, not whatever happens to be on PATH.
+run() { "$cli" "$@" 2>&1 || true; }
+
+# Skip cleanly if the browser isn't reachable. This also serves as the first
+# live follow, so a successful probe is not wasted work.
+probe=$(run follow https://example.com)
+case "$probe" in
+  *Cannot*connect*|*ECONNREFUSED*|*connect:*|*WS*error*)
+    echo "skip: browser not reachable ($(printf '%s' "$probe" | head -1 | sed 's/^[[:space:]]*//'))" >&2
+    exit 77 ;;
+esac
+
+pass=0
+fail=0
+ok()  { echo "  PASS  $1"; pass=$((pass + 1)); }
+bad() { echo "  FAIL  $1"; printf '%s\n' "$2" | sed 's/^[[:space:]]*/        /' | head -6; fail=$((fail + 1)); }
+expect() { if printf '%s' "$3" | grep -qF "$2"; then ok "$1"; else bad "$1" "$3"; fi; }
+
+echo "gsearch smoke test (follow: text + JSON + guards)"
+
+# Live text follow of a stable page.
+text=$(run follow https://example.com)
+expect "text: example.com yields Example Domain" "Example Domain" "$text"
+# Selector-scoped extraction still finds the h1.
+h1=$(run follow https://example.com --selector h1)
+expect "text: --selector h1 yields the heading" "Example Domain" "$h1"
+
+# Live JSON follow of a stable public JSON endpoint.
+json=$(run follow --json https://jsonplaceholder.typicode.com/todos/1)
+expect "json: parses a JSON object" '"userId":1' "$json"
+expect "json: parses the title field" "delectus aut autem" "$json"
+# Flags work before AND after the URL.
+json2=$(run follow https://jsonplaceholder.typicode.com/todos/1 --json)
+expect "json: --json after url parses too" '"userId":1' "$json2"
+
+echo "-- guards --"
+# No URL -> usage, non-zero exit.
+g1=$("$cli" follow 2>&1); rc1=$?
+if [ "$rc1" -ne 0 ] && printf '%s' "$g1" | grep -qF "Usage"; then ok "guard: no url -> usage"; else bad "guard: no url -> usage" "rc=$rc1 out=$g1"; fi
+# Unknown option -> error, non-zero exit.
+g2=$("$cli" follow https://example.com --bogus 2>&1); rc2=$?
+if [ "$rc2" -ne 0 ] && printf '%s' "$g2" | grep -qF "unknown option"; then ok "guard: unknown option rejected"; else bad "guard: unknown option rejected" "rc=$rc2 out=$g2"; fi
+# Extra positional -> error, non-zero exit.
+g3=$("$cli" follow https://example.com extra 2>&1); rc3=$?
+if [ "$rc3" -ne 0 ] && printf '%s' "$g3" | grep -qF "unexpected argument"; then ok "guard: extra positional rejected"; else bad "guard: extra positional rejected" "rc=$rc3 out=$g3"; fi
+# Bad --wait -> error, non-zero exit (mentions the valid set).
+g4=$("$cli" follow https://example.com --wait bogus 2>&1); rc4=$?
+if [ "$rc4" -ne 0 ] && printf '%s' "$g4" | grep -qF "networkIdle"; then ok "guard: bad --wait rejected"; else bad "guard: bad --wait rejected" "rc=$rc4 out=$g4"; fi
+
+echo
+echo "$pass passed, $fail failed"
+[ "$fail" -eq 0 ]

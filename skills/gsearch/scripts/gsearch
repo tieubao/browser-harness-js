@@ -15,6 +15,124 @@ if ! command -v browser-harness-js >/dev/null 2>&1; then
   fi
 fi
 
+# --- follow: open a result link and read its page text or JSON -------------
+# gsearch follow <url> [--selector S] [--json] [--settle MS] [--wait networkIdle|almostIdle|load]
+# Replaces hand-rolling the create-tab/navigate/wait/evaluate recipe for every
+# result link. --json uses the poll-innerText recipe (application/json fires no
+# Page lifecycle events and Chrome's JSON viewer is racy); see
+# skills/cdp/interaction-skills/json-navigation.md.
+if [ $# -ge 1 ] && [ "$1" = "follow" ]; then
+  shift
+  [ $# -lt 1 ] && { echo "Usage: gsearch follow <url> [--selector S] [--json] [--settle MS] [--wait networkIdle|almostIdle|load]" >&2; exit 1; }
+  follow_selector="article, main, [role=main]"
+  follow_json="false"
+  follow_settle="0"
+  follow_wait="networkIdle"
+  follow_url=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --selector) [ $# -ge 2 ] || { echo "gsearch follow: --selector requires a value" >&2; exit 1; }; follow_selector="$2"; shift 2 ;;
+      --settle)   [ $# -ge 2 ] || { echo "gsearch follow: --settle requires a number of milliseconds" >&2; exit 1; }; follow_settle="$2"; shift 2 ;;
+      --wait)     [ $# -ge 2 ] || { echo "gsearch follow: --wait requires networkIdle|almostIdle|load" >&2; exit 1; }; follow_wait="$2"; shift 2 ;;
+      --json)     follow_json="true"; shift ;;
+      --) shift; if [ $# -ge 1 ]; then follow_url="$1"; shift; fi; break ;;
+      -*) echo "gsearch follow: unknown option: $1" >&2; exit 1 ;;
+      *)
+        if [ -z "$follow_url" ]; then follow_url="$1"; shift; else echo "gsearch follow: unexpected argument: $1" >&2; exit 1; fi
+        ;;
+    esac
+  done
+  [ -z "$follow_url" ] && { echo "Usage: gsearch follow <url> [--selector S] [--json] [--settle MS] [--wait networkIdle|almostIdle|load]" >&2; exit 1; }
+  case "$follow_url" in *://*) ;; *) follow_url="https://$follow_url" ;; esac
+  case "$follow_wait" in networkIdle|almostIdle|load) ;; *) echo "gsearch follow: --wait must be networkIdle|almostIdle|load" >&2; exit 1 ;; esac
+  case "$follow_settle" in ''|*[!0-9]*) echo "gsearch follow: --settle must be a number of milliseconds" >&2; exit 1 ;; esac
+
+  code=$(cat <<'GSEARCH_FOLLOW_EOF'
+if (!session.isConnected()) {
+  try { await session.connect() } catch (e) { throw new Error("Cannot connect to browser: " + e.message) }
+}
+
+const URL = __GSEARCH_URL__
+const SELECTOR = __GSEARCH_SELECTOR__
+const SETTLE = __GSEARCH_SETTLE__
+const WAIT = __GSEARCH_WAIT__
+const JSON_MODE = __GSEARCH_JSON__
+
+const t = await session.Target.createTarget({ url: "about:blank", background: true })
+const { sessionId } = await session.Target.attachToTarget({ targetId: t.targetId, flatten: true })
+
+try {
+  await cdp(sessionId, "Page.enable", {})
+  await cdp(sessionId, "Page.setLifecycleEventsEnabled", { enabled: true })
+
+  if (JSON_MODE) {
+    // application/json navigations fire NO Page lifecycle events (networkIdle
+    // never fires), and Chrome's JSON viewer renders the body into the DOM on
+    // its own schedule — so poll document.body.innerText until JSON.parse
+    // succeeds rather than waiting on a lifecycle event. Reading innerText
+    // once at a fixed time gives '' or a partial/truncated blob when the
+    // viewer hasn't finished; the poll IS the head validation. Bail early if
+    // the response is actually HTML (error page / login wall / anti-bot
+    // challenge). See skills/cdp/interaction-skills/json-navigation.md.
+    await cdp(sessionId, "Page.navigate", { url: URL })
+    const EXPR = `(function(){
+      var t = document.body && document.body.innerText;
+      if (!t) return JSON.stringify({ ready: false, ct: document.contentType, len: 0 });
+      var j;
+      try { j = JSON.parse(t); } catch (e) { return JSON.stringify({ ready: false, ct: document.contentType, len: t.length, head: t.slice(0, 140) }); }
+      return JSON.stringify({ ready: true, value: j });
+    })()`
+    const start = Date.now()
+    while (Date.now() - start < 15000) {
+      await new Promise(r => setTimeout(r, 80))
+      const r = await cdp(sessionId, "Runtime.evaluate", { expression: EXPR, returnByValue: true })
+      if (r.exceptionDetails) throw new Error("json eval failed: " + ((r.exceptionDetails.exception && r.exceptionDetails.exception.description) || r.exceptionDetails.text))
+      const v = JSON.parse(r.result.value)
+      if (v.ready) return v.value
+      if (v.ct && /text\/html/i.test(v.ct) && v.len > 0) throw new Error("non-JSON response (" + v.ct + "): " + v.head)
+    }
+    throw new Error("timeout waiting for JSON at " + URL)
+  }
+
+  // HTML content page. Arm the lifecycle wait BEFORE Page.navigate (a fast
+  // load can fire networkIdle between navigate returning and the listener
+  // subscribing), wait, optionally settle for lazy/SPA content, then extract
+  // the first matching selector with a body.innerText fallback.
+  const eventName = WAIT === "load" ? "load" : WAIT === "almostIdle" ? "networkAlmostIdle" : "networkIdle"
+  const ready = session.waitFor({ method: "Page.lifecycleEvent", sessionId, predicate: (p) => p.name === eventName, timeoutMs: 30_000 })
+  await cdp(sessionId, "Page.navigate", { url: URL })
+  await ready
+  if (SETTLE > 0) await new Promise(r => setTimeout(r, SETTLE))
+  const result = await cdp(sessionId, "Runtime.evaluate", {
+    expression: "document.querySelector(" + JSON.stringify(SELECTOR) + ")?.innerText || (document.body && document.body.innerText) || ''",
+    returnByValue: true
+  })
+  return result.result.value
+} finally {
+  session.closeTab(t.targetId, sessionId).catch(() => {})
+}
+GSEARCH_FOLLOW_EOF
+)
+
+  # Inject inputs: node reads the quoted heredoc from stdin and replaces the
+  # placeholders. Raw values are JSON.stringified into safe JS literals;
+  # function-replacements dodge & / $ pitfalls in the replacement text.
+  final=$(node -e '
+let c=require("fs").readFileSync(0,"utf8");
+let url=process.argv[1], selector=process.argv[2], settle=process.argv[3], wait=process.argv[4], jsonmode=process.argv[5];
+c=c.replace(/__GSEARCH_URL__/g,()=>JSON.stringify(url))
+    .replace(/__GSEARCH_SELECTOR__/g,()=>JSON.stringify(selector))
+    .replace(/__GSEARCH_SETTLE__/g,()=>String(Number(settle)||0))
+    .replace(/__GSEARCH_WAIT__/g,()=>JSON.stringify(wait))
+    .replace(/__GSEARCH_JSON__/g,()=>jsonmode);
+process.stdout.write(c);
+' "$follow_url" "$follow_selector" "$follow_settle" "$follow_wait" "$follow_json" <<<"$code")
+
+  follow_raw=$(printf '%s' "$final" | browser-harness-js)
+  printf '%s\n' "$follow_raw"
+  exit 0
+fi
+
 usage() { echo "Usage: gsearch [--json] <query> [count]" >&2; exit 1; }
 [ $# -lt 1 ] && usage
 

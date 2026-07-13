@@ -5,6 +5,7 @@ description: >-
   snippet) in under 1 second. Use when the user asks to search the web, look
   something up, find a link, or research a topic. Requires browser-harness-js
   on PATH and a Chromium-based browser with remote debugging enabled.
+  Also opens a result link with `follow <url>` to read its page text or JSON.
 setup: bash <skill-dir>/scripts/setup
 compatibility: Requires browser-harness-js on PATH and a running Chromium browser with remote debugging (chrome://inspect or --remote-debugging-port).
 ---
@@ -73,6 +74,20 @@ Each result is `{ title, url, snippet }`:
 
 ## Following a result link
 
+`gsearch follow <url>` opens a result link directly — no need to re-search or route through Google — and returns the page's readable text, or with `--json` the parsed JSON. It packages the connect/create-tab/navigate/wait/evaluate flow so you don't hand-roll it (or reach for `curl`, which bot-walled sites reject) for every link:
+
+```bash
+gsearch follow https://example.com/some-article                   # readable text (article/main/body)
+gsearch follow https://example.com/some-article --selector "pre"  # custom CSS selector
+gsearch follow https://example.com/some-article --settle 2000     # extra ms for lazy/SPA content
+gsearch follow https://example.com/some-article --wait almostIdle # networkIdle (default) | almostIdle | load
+gsearch follow https://example.com/api.json --json                # URL is JSON: poll, parse, print JSON
+```
+
+Flags may appear before or after the URL. The default selector is `article, main, [role=main]`; `--json` switches to the JSON recipe below.
+
+### Under the hood (manual)
+
 Open a result `url` directly through `browser-harness-js` — no need to re-search or route through Google. Same connect/create-tab/evaluate flow as ad-hoc search, but navigate to the link and extract page text:
 
 ```bash
@@ -111,6 +126,7 @@ EOF
   - `networkAlmostIdle` (250ms quiet window) — for pages with continuous XHR polling that never reach the full 500ms.
   - `loadEventFired` — when you genuinely need every subresource loaded (rare for text extraction).
   - A short post-ready `await new Promise(r => setTimeout(r, 1000))` before the evaluate — for pages that lazy-render content *after* `networkIdle` (e.g. SPA hydration, lazy image packs).
+- **JSON endpoints (`--json`)**: `application/json` navigations fire **no** `Page` lifecycle events, and Chrome's JSON viewer renders the body into `document.body.innerText` on its own schedule. Don't `waitFor('networkIdle', …)` (it hangs) and don't read `innerText` once at a fixed time (you get `''` or a partial/truncated blob before the viewer finishes). `gsearch follow --json` polls `innerText` until `JSON.parse` succeeds (the poll IS the head validation) and bails early if the response is actually `text/html` (error page / login wall / anti-bot challenge). For the raw recipes and the anti-bot `fetch()` trap, see the `cdp` skill's [json-navigation.md](../cdp/interaction-skills/json-navigation.md).
 
 ## Ad-hoc search without the script
 

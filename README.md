@@ -24,6 +24,8 @@ One persistent WebSocket, 56 domains, 652 typed wrappers, zero wrapping of what 
 npx skills add https://github.com/monotykamary/browser-harness-js
 ```
 
+Each skill's CLI is symlinked onto PATH by its own `scripts/setup` — run `bash <skill-dir>/scripts/setup` (declared in each skill's `setup` frontmatter field).
+
 Or paste this into your agent — it'll install the skill, put the CLI on your PATH, and run a first task:
 
 ```text

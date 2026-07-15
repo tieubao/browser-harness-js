@@ -15,9 +15,6 @@ compatibility: Requires `browser-harness-js` on PATH + a Chromium browser with r
 
 # ytdl — browser-native YouTube downloader
 
-> ⚠️ **Required before first use:** run `bash <skill-dir>/scripts/setup` to put the
-> `ytdl` (and, if missing, `browser-harness-js`) CLI on PATH.
-
 A thin `browser-harness-js` heredoc, exactly like `gsearch`/`xsearch`. There is
 **no Bun program, no vendored solver, no HTTP client impersonation**. Every
 hard thing YouTube does to play a video — cookies, poToken, the n-signature,
@@ -33,30 +30,6 @@ ytdl "https://www.youtube.com/watch?v=..." -q audio   # audio only
 ytdl "https://www.youtube.com/watch?v=..." --info      # title / duration / qualities
 ytdl "https://www.youtube.com/watch?v=..." -o Name -d ~/Videos
 ```
-
-## Setup (once)
-
-```bash
-bash <skill-dir>/scripts/setup
-```
-
-Or symlink manually:
-
-```bash
-mkdir -p ~/.local/bin
-ln -sf <skill-dir>/scripts/ytdl ~/.local/bin/ytdl
-```
-
-Verify (prints available qualities, no download):
-
-```bash
-ytdl "https://www.youtube.com/watch?v=dQw4w9WgXcQ" --info
-```
-
-You must have a **logged-in YouTube tab** open in the browser for any video
-that isn't fully public (made-for-kids, age-gated, members-only). ytdl opens
-its own background tab but borrows the browser's cookie jar — if you can watch
-it in the browser, ytdl can record it.
 
 ## Quality targets
 

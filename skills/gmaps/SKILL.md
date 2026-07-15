@@ -22,9 +22,6 @@ compatibility: >-
 
 # gmaps — Google Maps via CDP (search, directions, best-effort TSP)
 
-> ⚠️ **Required before first use:** run `bash <skill-dir>/scripts/setup` to put the
-> `gmaps` and `browser-harness-js` CLIs on PATH. Nothing works until this is done.
-
 Free, keyless access to Google Maps through CDP — the same data the metered **Google Places** and **Directions** APIs sell, sourced directly from the rendered page. No API key, no quota, no `jq`. Three modes:
 
 - **search** (default) — local business results for a query.
@@ -32,15 +29,6 @@ Free, keyless access to Google Maps through CDP — the same data the metered **
 - **`--optimize`** — best-effort fastest *visiting order* (open-path TSP, fixed start = first place).
 
 Every call opens its own background tab and WebSocket session — safe for parallel use.
-
-## Setup (once)
-
-The `browser-harness-js` CLI must be on PATH and a Chromium-based browser must be running with remote debugging. See the `cdp` skill for browser setup.
-
-```bash
-bash <skill-dir>/scripts/setup
-gmaps "coffee shops in Austin TX"        # verify
-```
 
 ## Commands
 

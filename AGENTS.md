@@ -65,7 +65,7 @@ browser-harness-js --restart
 
 ```
 skills/<name>/
-  SKILL.md          # frontmatter (below) + user-facing docs
+  SKILL.md          # frontmatter (below) + LLM-operating docs (lean)
   scripts/
     <name>          # the CLI: bash + one `browser-harness-js` heredoc
     setup           # symlink installer — identical template across skills
@@ -89,6 +89,8 @@ compatibility: >-
   a logged-in tab, …).
 ---
 ```
+
+The SKILL.md **body** is LLM-operating docs — what the skill returns, when to use it, the CLI commands/flags/examples, result shapes, and traps. Keep human setup (install, symlink onto PATH, one-time OS grants like macOS Accessibility) in the **README**, not the skill body — the `setup`/`compatibility` frontmatter fields and the README's Installation section carry it. The model reads SKILL.md on every skill load, so keep it to what the model needs to *use* the skill, not set it up.
 
 **The CLI** is plain bash that ends in a `browser-harness-js <<'EOF' … EOF`
 heredoc returning a string (pretty) or an object/array (JSON via `--json`).

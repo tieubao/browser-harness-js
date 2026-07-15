@@ -12,19 +12,7 @@ compatibility: Requires browser-harness-js on PATH and a running Chromium-based 
 
 # findata — free financial data via CDP
 
-> ⚠️ **Required before first use:** run `bash <skill-dir>/scripts/setup` to put the
-> `findata` and `browser-harness-js` CLIs on PATH. Nothing works until this is done.
-
 Free, keyless financial data scraped/fetched through a real browser via CDP — the same data the paid `financialdatasets.ai` API sells, but sourced directly from the free public origins (SEC EDGAR for statements, Yahoo Finance for prices). Each call opens its own tab and WebSocket session — safe for parallel use.
-
-## Setup (once)
-
-The `browser-harness-js` CLI must be on PATH and a Chromium-based browser must be running with remote debugging. See the `cdp` skill for browser setup.
-
-```bash
-bash <skill-dir>/scripts/setup
-findata price AAPL        # verify
-```
 
 ## Commands
 

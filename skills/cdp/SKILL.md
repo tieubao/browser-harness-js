@@ -10,39 +10,15 @@ description: >-
   Chromium-based browser via CDP — single tab or multi-tab, attach to an
   existing browser or launch a new one with --remote-debugging-port.
 setup: bash <skill-dir>/scripts/setup
+compatibility: >-
+  Requires `node` on PATH (the REPL server is Node-native — TypeScript type stripping from Node 23.6) and a Chromium-based browser with remote debugging (chrome://inspect or --remote-debugging-port).
 ---
 
 # CDP — `browser-harness-js` skill
 
-> ⚠️ **Required before first use:** run `bash <skill-dir>/scripts/setup` to put the
-> `browser-harness-js` CLI on PATH. Nothing works until this is done.
-
 Custom codegen'd CDP SDK (every method from browser_protocol.json + js_protocol.json gets a typed wrapper) plus a tiny HTTP server that holds one persistent CDP `Session`. The `browser-harness-js` CLI auto-starts the server on first use and forwards JS snippets to it.
 
 The SDK lives in the skill's `sdk/` directory. In the rest of this doc, `<skill-dir>` refers to wherever `npx skills add` installed the skill (Claude Code: `~/.claude/skills/cdp`; Cursor: `~/.cursor/skills/cdp`; other agents vary). The CLI should be on PATH as `browser-harness-js`.
-
-## Setup (once, first use)
-
-`npx skills add` drops the skill into your agent's skills directory but does NOT put the CLI on PATH. Run the setup script:
-
-```bash
-bash <skill-dir>/scripts/setup
-```
-
-The script creates `~/.local/bin` if needed, adds it to your PATH in `~/.zshrc` (or `~/.bashrc`), and symlinks the CLI. After running it, verify:
-
-```bash
-browser-harness-js --status
-```
-
-Or symlink manually:
-
-```bash
-mkdir -p ~/.local/bin
-ln -sf <skill-dir>/sdk/browser-harness-js ~/.local/bin/browser-harness-js
-```
-
-The CLI requires `node` on PATH (the server is Node-native — TypeScript type stripping is on by default from Node 23.6). It prints a clear error if `node` is missing; no runtime is auto-installed.
 
 ## How to use
 

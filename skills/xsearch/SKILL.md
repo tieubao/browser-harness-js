@@ -10,29 +10,9 @@ compatibility: Requires browser-harness-js on PATH, a running Chromium browser w
 
 # X Search
 
-> ⚠️ **Required before first use:** run `bash <skill-dir>/scripts/setup` to put the
-> `xsearch` and `browser-harness-js` CLIs on PATH. Nothing works until this is done.
-
 > ⚠️ **You must be logged in to X in the browser.** X's search page does not show results to logged-out visitors — it redirects to a login wall. The browser session used by `browser-harness-js` must have an active X login.
 
 Search X (Twitter) and extract structured results via CDP. No external dependencies beyond `browser-harness-js` (which provides the CDP session). Each call opens its own tab and WebSocket session — safe for parallel use.
-
-## Setup (once)
-
-The `browser-harness-js` CLI must be on PATH and a Chromium-based browser must be running with remote debugging. See the `cdp` skill for browser setup.
-
-Run the setup script to symlink `xsearch` (and `browser-harness-js`, if missing) onto your PATH:
-
-```bash
-bash <skill-dir>/scripts/setup
-```
-
-Or symlink manually:
-
-```bash
-mkdir -p ~/.local/bin
-ln -sf <skill-dir>/scripts/xsearch ~/.local/bin/xsearch
-```
 
 ## Quick search
 

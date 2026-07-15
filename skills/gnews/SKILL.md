@@ -15,37 +15,11 @@ compatibility: >-
 
 # Google News
 
-> ⚠️ **Required before first use:** run `bash <skill-dir>/scripts/setup` to put the
-> `gnews` and `browser-harness-js` CLIs on PATH. Nothing works until this is done.
-
 Search Google News and extract structured results via CDP. Hits Google Search's
 news tab (`tbm=nws`) through the user's own browser, so the rendered page — not a
 raw fetch — drives the extraction. No external dependencies beyond
 `browser-harness-js` (which provides the CDP session). Each call opens its own
 tab with a per-call `sessionId` — safe for parallel use.
-
-## Setup (once)
-
-The `browser-harness-js` CLI must be on PATH and a Chromium-based browser must be running with remote debugging. See the `cdp` skill for browser setup.
-
-Run the setup script to symlink `gnews` (and `browser-harness-js`, if missing) onto your PATH:
-
-```bash
-bash <skill-dir>/scripts/setup
-```
-
-The script creates `~/.local/bin` if needed, adds it to your PATH in `~/.zshrc` (or `~/.bashrc`), and symlinks the CLI. After running it, verify:
-
-```bash
-gnews "test" 1
-```
-
-Or symlink manually:
-
-```bash
-mkdir -p ~/.local/bin
-ln -sf <skill-dir>/scripts/gnews ~/.local/bin/gnews
-```
 
 ## Quick search
 

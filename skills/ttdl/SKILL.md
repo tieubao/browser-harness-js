@@ -17,9 +17,6 @@ compatibility: Requires `browser-harness-js` on PATH + a Chromium browser with r
 
 # ttdl — browser-native TikTok downloader
 
-> ⚠️ **Required before first use:** run `bash <skill-dir>/scripts/setup` to put the
-> `ttdl` (and, if missing, `browser-harness-js`) CLI on PATH.
-
 A thin `browser-harness-js` heredoc, exactly like `gsearch`/`xsearch`/`ytdl`.
 There is **no Bun program, no vendored signer, no HTTP client impersonation**.
 Every hard thing TikTok does to play a video — the signed CDN URL, the adaptive
@@ -36,30 +33,6 @@ ttdl "https://vm.tiktok.com/ZMxxxxx/"                            # short link (b
 ttdl 7642721752497310989                                         # bare numeric ID
 ttdl "https://www.tiktok.com/@user/video/..." -o Name -d ~/Videos
 ```
-
-## Setup (once)
-
-```bash
-bash <skill-dir>/scripts/setup
-```
-
-Or symlink manually:
-
-```bash
-mkdir -p ~/.local/bin
-ln -sf <skill-dir>/scripts/ttdl ~/.local/bin/ttdl
-```
-
-Verify (prints title / author / duration / resolution, no download):
-
-```bash
-ttdl "https://www.tiktok.com/@itscheffatty/video/7642721752497310989" --info
-```
-
-You must have a **logged-in TikTok tab** open in the browser for any video that
-isn't fully public (region-locked, age-gated, followers-only). ttdl opens its
-own background tab but borrows the browser's cookie jar — if you can watch it in
-the browser, ttdl can record it.
 
 ## Quality targets
 

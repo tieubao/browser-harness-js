@@ -94,7 +94,7 @@ EOF
 | `browser-harness-js --stop`     | Graceful shutdown. Drops session state. |
 | `browser-harness-js --restart`  | Stop + start fresh. |
 | `browser-harness-js --logs`     | `tail -f` the server log (`/tmp/browser-harness-js.log`). |
-| `browser-harness-js --auto-allow '<js>'` | Set `session.autoAllow = true` on the daemon, then eval the JS. Auto-dismisses Dia's "Allow debugging connection?" prompt on connect (macOS). |
+| `browser-harness-js --no-auto-allow '<js>'` | Set `session.autoAllow = false` on the daemon, then eval the JS. Opts out of auto-dismissing Dia's "Allow debugging connection?" prompt (on by default, macOS). |
 
 Env vars: `CDP_REPL_PORT` (default `9876`), `CDP_REPL_LOG` (default `/tmp/browser-harness-js.log`).
 
@@ -208,19 +208,7 @@ Per-candidate WS-open timeout defaults to **5s** — live browsers answer with o
 await session.connect({ timeoutMs: 30_000 })
 ```
 
-**Auto-dismissing Dia's Allow prompt (macOS).** Dia gates the debugging connection behind an `Allow debugging connection?` prompt whose default button is **Return** — and among Chromium browsers, *only* Dia shows it. Pass `autoAllow: true` and the SDK fires a Return at the Dia process via `osascript` the moment the WS-open stalls, so connect completes with no manual click:
-
-```js
-await session.connect({ autoAllow: true })
-```
-
-Or set it persistently on the daemon so every connect (and auto-heal reconnect) inherits it:
-
-```bash
-browser-harness-js --auto-allow 'await session.connect()'
-```
-
-`autoAllow` is a no-op for non-Dia browsers and on non-macOS. It needs **macOS Accessibility** for the process running `browser-harness-js` (the `node` binary). If it's missing, the keystroke is dropped — `osascript` errors `-25211: not allowed assistive access` and `connect` stalls to `timeoutMs` instead of finishing in ~1s. Grant it once: System Settings → Privacy & Security → Accessibility → add/toggle `node` (the grant is per binary path, so mise/nvm/asdf need a re-grant per version; Homebrew's stable path persists). Tunable via `autoAllowDelayMs` (default 600ms — a live WS opens in ~100ms, so 'still connecting at 600ms' reliably means the prompt is up).
+**Dia's Allow prompt is auto-dismissed (macOS, on by default).** Dia gates the debugging connection behind an `Allow debugging connection?` prompt (Return = Allow) — the only Chromium browser that does. The SDK auto-dismisses it: when the WS-open stalls, it fires a Return at the Dia process via `osascript`, so `connect()` needs no manual click — a no-op for every other browser. Opt out with `autoAllow: false` or `browser-harness-js --no-auto-allow`. If `connect()` stalls past `timeoutMs` against a Dia browser, the user likely needs to grant macOS Accessibility to `node` (see the README). Tunable via `autoAllowDelayMs` (default 600ms).
 
 **If you see `No detected browser accepted a connection`** — the browsers have `DevToolsActivePort` files but none are currently serving WS. Most common cause: remote-debugging is enabled but the user hasn't clicked **Allow** on the prompt yet. Tell them to click Allow, then retry (or bump `timeoutMs`).
 

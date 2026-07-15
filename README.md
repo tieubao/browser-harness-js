@@ -39,6 +39,12 @@ If Chrome asks you to tick a remote-debugging checkbox, do it — that's how the
 
 <img src="docs/setup-remote-debugging.png" alt="Remote debugging setup" width="520" style="border-radius: 12px;" />
 
+### macOS: Dia's "Allow debugging connection?" prompt
+
+Dia (The Browser Company) is the only Chromium browser that gates the CDP connection behind an `Allow debugging connection?` prompt — **Return** dismisses it. The SDK auto-dismisses it for you (on by default, macOS only, a no-op for every other browser): when the WebSocket open stalls, it fires a Return at the Dia process via `osascript`, so `session.connect()` needs no manual click. Opt out with `autoAllow: false` (or `browser-harness-js --no-auto-allow`).
+
+This needs **macOS Accessibility** for the `node` binary running the SDK. If it's missing, the keystroke is dropped — `osascript` errors `-25211: not allowed assistive access` and `connect()` stalls to `timeoutMs` instead of finishing in ~1s. Grant it once: **System Settings → Privacy & Security → Accessibility → add/toggle `node`**. The grant is per binary path, so version managers that install each version at its own path (mise, nvm, asdf) need a re-grant on version bump; a stable-path install (Homebrew) persists across upgrades.
+
 See [skills/cdp/interaction-skills/](skills/cdp/interaction-skills/) for recipes on the mechanics that are not obvious from the CDP method list alone.
 
 ## Skills

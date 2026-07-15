@@ -31,11 +31,13 @@ export type ConnectOptions = {
    *  The only case that legitimately needs longer is waiting on the Chrome
    *  "Allow" popup — bump to 30000 if you expect the user to click it. */
   timeoutMs?: number;
-  /** Auto-dismiss Dia's "Allow debugging connection?" prompt via osascript
-   *  Return (macOS only). No-op unless the connected browser is Dia — the
-   *  only Chromium browser with this prompt. Persisted on the Session so
-   *  auto-heal reconnects inherit it. Needs macOS Accessibility permission;
-   *  if missing, the connect just waits on timeoutMs. */
+  /** Opt OUT of auto-dismissing Dia's "Allow debugging connection?" prompt.
+   *  On by default (macOS, Dia only): when the WS-open stalls the SDK fires a
+   *  Return at the Dia process via osascript, so connect needs no manual
+   *  click — a no-op for every other browser. Set false to disable.
+   *  Persisted on the Session so auto-heal reconnects inherit it. Needs
+   *  macOS Accessibility permission; if missing, the connect just waits on
+   *  timeoutMs (see the README for the one-time grant). */
   autoAllow?: boolean;
   /** ms after the WS-open attempt before auto-dismissing Dia's prompt.
    *  Default 600 — a live WS opens in ~100ms, so "still connecting at 600ms"
@@ -67,11 +69,12 @@ export class Session implements Transport {
   private eventListeners: Array<(method: string, params: unknown, sessionId?: string) => void> = [];
   private connectPromise?: Promise<void>;
 
-  /** When true, connect()/reconnect auto-dismisses Dia's "Allow debugging
-   *  connection?" prompt (macOS, via osascript Return). Set via
-   *  connect({ autoAllow: true }) or the --auto-allow CLI flag. Persisted so
-   *  the auto-heal reconnect in _call inherits it. Only acts for Dia. */
-  autoAllow = false;
+  /** On by default: connect()/reconnect auto-dismisses Dia's "Allow
+   *  debugging connection?" prompt (macOS, via osascript Return) — a no-op
+   *  for every other browser. Persisted so the auto-heal reconnect in _call
+   *  inherits it. Set false via connect({ autoAllow: false }) or
+   *  --no-auto-allow to opt out. */
+  autoAllow = true;
 
   // Generated bindings — one per CDP domain.
   // Initialized lazily after construction so `_call` is available.

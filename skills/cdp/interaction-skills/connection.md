@@ -37,6 +37,14 @@ Per-candidate WS-open timeout defaults to **5s**. A live browser either opens or
 await session.connect({ profileDir, timeoutMs: 30_000 })
 ```
 
+**Auto-dismissing Dia's prompt (macOS).** Dia shows an `Allow debugging connection?` prompt (Return = Allow) — the only Chromium browser that does. Instead of waiting for a manual click, pass `autoAllow: true` and the SDK fires a Return at the Dia process via `osascript` the moment the WS-open stalls:
+
+```js
+await session.connect({ autoAllow: true })
+```
+
+Needs **macOS Accessibility** for the `node` binary running the SDK. If missing, `osascript` errors `-25211: not allowed assistive access`, the keystroke is dropped, and `connect` stalls to `timeoutMs` instead of ~1s — grant it in System Settings → Privacy & Security → Accessibility. No-op for non-Dia browsers and on non-macOS. Set it persistently on the daemon with the `--auto-allow` CLI flag.
+
 If `session.connect()` reports `No detected browser accepted a connection`, it means every browser with `DevToolsActivePort` answered 403 or closed without opening — most likely the user hasn't clicked Allow yet. Ask them to, then retry.
 
 ## The omnibox popup problem

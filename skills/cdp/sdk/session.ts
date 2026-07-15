@@ -9,6 +9,7 @@
 import { bindDomains, type Domains, type Transport } from './generated.ts';
 import { readFile, readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
+import { execFile } from 'node:child_process';
 
 type Pending = {
   resolve: (v: unknown) => void;
@@ -30,6 +31,16 @@ export type ConnectOptions = {
    *  The only case that legitimately needs longer is waiting on the Chrome
    *  "Allow" popup — bump to 30000 if you expect the user to click it. */
   timeoutMs?: number;
+  /** Auto-dismiss Dia's "Allow debugging connection?" prompt via osascript
+   *  Return (macOS only). No-op unless the connected browser is Dia — the
+   *  only Chromium browser with this prompt. Persisted on the Session so
+   *  auto-heal reconnects inherit it. Needs macOS Accessibility permission;
+   *  if missing, the connect just waits on timeoutMs. */
+  autoAllow?: boolean;
+  /** ms after the WS-open attempt before auto-dismissing Dia's prompt.
+   *  Default 600 — a live WS opens in ~100ms, so "still connecting at 600ms"
+   *  means the prompt is up. Measured from WebSocket creation. */
+  autoAllowDelayMs?: number;
 };
 
 /** A Chromium-based browser detected as running on this machine. */
@@ -55,6 +66,12 @@ export class Session implements Transport {
   private activeSessionId: string | undefined;
   private eventListeners: Array<(method: string, params: unknown, sessionId?: string) => void> = [];
   private connectPromise?: Promise<void>;
+
+  /** When true, connect()/reconnect auto-dismisses Dia's "Allow debugging
+   *  connection?" prompt (macOS, via osascript Return). Set via
+   *  connect({ autoAllow: true }) or the --auto-allow CLI flag. Persisted so
+   *  the auto-heal reconnect in _call inherits it. Only acts for Dia. */
+  autoAllow = false;
 
   // Generated bindings — one per CDP domain.
   // Initialized lazily after construction so `_call` is available.
@@ -85,6 +102,9 @@ export class Session implements Transport {
     if (this.isConnected()) return;
     // Another connect is in flight — ride on it.
     if (this.connectPromise) return this.connectPromise;
+    // Persist autoAllow so the auto-heal reconnect in _call (no-arg connect)
+    // inherits it.
+    if (opts.autoAllow !== undefined) this.autoAllow = opts.autoAllow;
     this.connectPromise = this._connect(opts);
     try {
       await this.connectPromise;
@@ -98,9 +118,14 @@ export class Session implements Transport {
 
   private async _connect(opts: ConnectOptions = {}): Promise<void> {
     const timeoutMs = opts.timeoutMs ?? 5_000;
+    const autoAllowDelayMs = opts.autoAllowDelayMs ?? 600;
     if (opts.wsUrl || opts.profileDir || opts.port) {
       const wsUrl = await resolveWsUrl(opts);
-      await this.openWs(wsUrl, timeoutMs);
+      // Only resolve the browser name when auto-allow is on — it gates the
+      // Dia-only prompt dismissal and would otherwise add a detectBrowsers() scan
+      // to every explicit connect.
+      const name = this.autoAllow ? await browserNameFor(opts, wsUrl) : undefined;
+      await this.openWs(wsUrl, timeoutMs, { autoAllow: this.autoAllow, name, autoAllowDelayMs });
       return;
     }
     const browsers = await detectBrowsers();
@@ -113,7 +138,7 @@ export class Session implements Transport {
     const errors: string[] = [];
     for (const b of browsers) {
       try {
-        await this.openWs(b.wsUrl, timeoutMs);
+        await this.openWs(b.wsUrl, timeoutMs, { autoAllow: this.autoAllow, name: b.name, autoAllowDelayMs });
         return;
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
@@ -125,18 +150,37 @@ export class Session implements Transport {
     );
   }
 
-  private openWs(wsUrl: string, timeoutMs: number): Promise<void> {
+  private openWs(
+    wsUrl: string,
+    timeoutMs: number,
+    allow?: { autoAllow: boolean; name?: string; autoAllowDelayMs: number },
+  ): Promise<void> {
     return new Promise<void>((res, rej) => {
       const ws = new WebSocket(wsUrl);
       let done = false;
+      let allowTried = false;
       const finish = (err?: Error) => {
         if (done) return;
         done = true;
         clearTimeout(timer);
+        if (allowTimer) clearTimeout(allowTimer);
         if (err) { try { ws.close(); } catch { /* ignore */ } rej(err); }
         else res();
       };
       const timer = setTimeout(() => finish(new Error(`timed out after ${timeoutMs}ms`)), timeoutMs);
+      // Dia gates the WS-open behind an "Allow debugging connection?" prompt
+      // (Return = Allow). If the WS is still CONNECTING past autoAllowDelayMs,
+      // the prompt is up — fire one Return at the Dia process and keep
+      // waiting. No-op for non-Dia browsers and on non-macOS.
+      const allowTimer =
+        allow && allow.autoAllow && allow.name === 'Dia' && process.platform === 'darwin'
+          ? setTimeout(() => {
+              if (done || allowTried) return;
+              if (ws.readyState !== WebSocket.CONNECTING) return;
+              allowTried = true;
+              dismissDiaAllowPrompt();
+            }, allow.autoAllowDelayMs)
+          : null;
       ws.addEventListener('open', () => finish());
       ws.addEventListener('error', (e) => finish(new Error(`WS error: ${(e as any)?.message ?? 'connect failed (likely 403, permission not granted, or port closed)'}`)));
       ws.addEventListener('message', (e) => this.onMessage(String(e.data)));
@@ -319,6 +363,40 @@ export class CdpError extends Error {
 /** Browser-level methods never take a sessionId. */
 function isBrowserLevel(method: string): boolean {
   return method.startsWith('Browser.') || method.startsWith('Target.');
+}
+
+/** Best-effort browser name for the Dia-only auto-allow gate. For { profileDir }
+ *  it matches the candidate list directly (no file reads); otherwise falls back
+ *  to detectBrowsers() and matches by WS URL / port. undefined for a remote
+ *  { wsUrl } — which keeps auto-allow off (only local Dia is targeted). */
+async function browserNameFor(opts: ConnectOptions, wsUrl: string): Promise<string | undefined> {
+  if (opts.profileDir) {
+    const byDir = getBrowserCandidates().find(c => c.profileDir === opts.profileDir);
+    if (byDir) return byDir.name;
+  }
+  const browsers = await detectBrowsers();
+  return browsers.find(b => b.wsUrl === wsUrl || (opts.port != null && b.port === opts.port))?.name;
+}
+
+/** Dismiss Dia's "Allow debugging connection?" prompt by sending Return to the
+ *  Dia process via osascript (macOS). Dia maps Return -> Allow; bringing Dia
+ *  to front first (best-effort try) covers the switched-away case. Fire-and-
+ *  forget: the WS 'open' lands ~100ms after the keystroke. Gated on
+ *  name === 'Dia' in openWs, so the process name is hardcoded here. Needs
+ *  macOS Accessibility permission; without it osascript errors and the connect
+ *  just waits on its timeout. */
+function dismissDiaAllowPrompt(): void {
+  if (process.platform !== 'darwin') return;
+  try {
+    execFile('osascript', [
+      '-e', 'tell application "System Events"',
+      '-e', 'try',
+      '-e', 'set frontmost of process "Dia" to true',
+      '-e', 'end try',
+      '-e', 'tell process "Dia" to keystroke return',
+      '-e', 'end tell',
+    ], () => { /* fire-and-forget; osascript errors are non-fatal */ });
+  } catch { /* spawn failure — best effort */ }
 }
 
 /**

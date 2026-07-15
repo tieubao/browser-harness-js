@@ -17,6 +17,7 @@
 #   browser-harness-js --restart  # stop + start fresh (drops session state)
 #   browser-harness-js --start    # explicit start (no-op if already running)
 #   browser-harness-js --version  # print the SDK version (from the on-disk files)
+#   browser-harness-js --auto-allow 'await session.connect()'  # macOS: auto-dismiss Dia's "Allow debugging connection?" prompt (Return) before connect
 
 set -euo pipefail
 
@@ -82,6 +83,17 @@ post_eval() {
   fi
 }
 
+# Extract --auto-allow (may precede the code arg, e.g. --auto-allow 'await session.connect()')
+AUTO_ALLOW=0
+POS=()
+for a in "$@"; do
+  case "$a" in
+    --auto-allow) AUTO_ALLOW=1 ;;
+    *) POS+=("$a") ;;
+  esac
+done
+set -- "${POS[@]+"${POS[@]}"}"
+
 case "${1:-}" in
   --status)
     if is_up; then
@@ -120,11 +132,17 @@ case "${1:-}" in
     ;;
   "")
     start_repl
+    if [ "$AUTO_ALLOW" = "1" ]; then
+      post_eval 'session.autoAllow = true' >/dev/null 2>&1 || true
+    fi
     code="$(cat)"
     post_eval "$code"
     ;;
   *)
     start_repl
+    if [ "$AUTO_ALLOW" = "1" ]; then
+      post_eval 'session.autoAllow = true' >/dev/null 2>&1 || true
+    fi
     post_eval "$1"
     ;;
 esac

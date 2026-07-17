@@ -16,6 +16,16 @@ type Pending = {
   reject: (e: unknown) => void;
 };
 
+export type CdpCallObservation = {
+  method: string;
+  params: unknown;
+  sessionId?: string;
+  result: unknown;
+  durationMs: number;
+};
+
+export type CdpCallObserver = (call: CdpCallObservation) => void | Promise<void>;
+
 export type ConnectOptions = {
   /** Full WS URL: ws://host:port/devtools/browser/<id>. Escape hatch. */
   wsUrl?: string;
@@ -67,6 +77,7 @@ export class Session implements Transport {
   private pending = new Map<number, Pending>();
   private activeSessionId: string | undefined;
   private eventListeners: Array<(method: string, params: unknown, sessionId?: string) => void> = [];
+  private callObserver?: CdpCallObserver;
   private connectPromise?: Promise<void>;
 
   /** On by default: connect()/reconnect auto-dismisses Dia's "Allow
@@ -238,7 +249,7 @@ export class Session implements Transport {
         await new Promise(r => setTimeout(r, 100));
       }
       try {
-        await this.Target.closeTarget({ targetId });
+        await this.domains.Target.closeTarget({ targetId });
       } catch { /* already gone */ }
     };
     // Serialize: each close waits for the previous one to finish.
@@ -263,6 +274,11 @@ export class Session implements Transport {
 
   getActiveSession(): string | undefined {
     return this.activeSessionId;
+  }
+
+  /** Observe successful CDP calls. Observer failures never break the protocol call. */
+  setCallObserver(observer: CdpCallObserver | undefined): void {
+    this.callObserver = observer;
   }
 
   /** Subscribe to all CDP events. Returns an unsubscribe fn. */
@@ -329,9 +345,36 @@ export class Session implements Transport {
     if (sid && !isBrowserLevel(method)) {
       msg.sessionId = sid;
     }
-    return new Promise((resolve, reject) => {
+    const startedAt = performance.now();
+    const wire = JSON.stringify(msg);
+    // Observe the immutable wire params, not an object the caller can mutate
+    // while Chrome is processing the request.
+    const observedParams = (JSON.parse(wire) as { params?: unknown }).params ?? {};
+    const response = new Promise<unknown>((resolve, reject) => {
       this.pending.set(id, { resolve, reject });
-      this.ws!.send(JSON.stringify(msg));
+      this.ws!.send(wire);
+    });
+    if (!this.callObserver) return response;
+    return response.then(async result => {
+      try {
+        const observation = Promise.resolve(this.callObserver?.({
+          method,
+          params: observedParams,
+          sessionId: sid,
+          result,
+          durationMs: performance.now() - startedAt,
+        }));
+        // Diagnostics may add bounded latency, but a stalled screenshot or disk
+        // must never leave an otherwise successful CDP action unresolved.
+        await new Promise<void>(resolveObservation => {
+          const timer = setTimeout(resolveObservation, 5_000);
+          const done = () => { clearTimeout(timer); resolveObservation(); };
+          observation.then(done, done);
+        });
+      } catch {
+        // Recording and diagnostics must never change protocol behavior.
+      }
+      return result;
     });
   }
 

@@ -364,33 +364,33 @@ export function axDiff(prev: string, next: string): string {
   const dp: number[][] = Array.from({ length: n + 1 }, () => Array(m + 1).fill(0));
   for (let i = n - 1; i >= 0; i--) {
     for (let j = m - 1; j >= 0; j--) {
-      dp[i][j] =
-        a[i].key === b[j].key
-          ? dp[i + 1][j + 1] + 1
-          : Math.max(dp[i + 1][j], dp[i][j + 1]);
+      dp[i]![j] =
+        a[i]!.key === b[j]!.key
+          ? dp[i + 1]![j + 1]! + 1
+          : Math.max(dp[i + 1]![j]!, dp[i]![j + 1]!);
     }
   }
   const out: string[] = [];
   let i = 0;
   let j = 0;
   while (i < n && j < m) {
-    if (a[i].key === b[j].key) {
+    if (a[i]!.key === b[j]!.key) {
       i++;
       j++;
-    } else if (dp[i + 1][j] >= dp[i][j + 1]) {
-      out.push('- ' + a[i].raw.trimStart());
+    } else if (dp[i + 1]![j]! >= dp[i]![j + 1]!) {
+      out.push('- ' + a[i]!.raw.trimStart());
       i++;
     } else {
-      out.push('+ ' + b[j].raw.trimStart());
+      out.push('+ ' + b[j]!.raw.trimStart());
       j++;
     }
   }
   while (i < n) {
-    out.push('- ' + a[i].raw.trimStart());
+    out.push('- ' + a[i]!.raw.trimStart());
     i++;
   }
   while (j < m) {
-    out.push('+ ' + b[j].raw.trimStart());
+    out.push('+ ' + b[j]!.raw.trimStart());
     j++;
   }
   return out.length ? out.join('\n') : '(no changes)';

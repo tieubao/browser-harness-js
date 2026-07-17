@@ -15,6 +15,7 @@
 
 import { Session, listPageTargets, resolveWsUrl, detectBrowsers } from './session.ts';
 import { axView, axDiff, parseAxRefs } from './axview.ts';
+import { RecordingManager } from './recording.ts';
 import * as Generated from './generated.ts';
 import { createServer, type IncomingMessage } from 'node:http';
 import { readFileSync } from 'node:fs';
@@ -26,6 +27,8 @@ import { readFileSync } from 'node:fs';
 const VERSION = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version as string;
 
 const session = new Session();
+const recording = new RecordingManager(session);
+session.setCallObserver(recording.observe);
 (globalThis as any).session = session;
 (globalThis as any).Session = Session;
 // Bind helpers to the singleton session so the agent calls `listPageTargets()`
@@ -55,22 +58,29 @@ function resolveAxBackendId(
 /** Click the center of an axView ref. `refs` is a Map from parseAxRefs or the axView string itself. */
 async function axClick(ref: number | string, refs: Map<number, number> | string): Promise<void> {
   const backendNodeId = resolveAxBackendId(ref, refs);
-  const { model } = await session.DOM.getBoxModel({ backendNodeId });
-  const [x, y] = model.content.slice(0, 2);
+  const { model } = await session.domains.DOM.getBoxModel({ backendNodeId });
+  const x = model.content[0]!;
+  const y = model.content[1]!;
   const cx = x + model.width / 2;
   const cy = y + model.height / 2;
-  await session.Input.dispatchMouseEvent({ type: 'mousePressed', x: cx, y: cy, button: 'left', clickCount: 1 });
-  await session.Input.dispatchMouseEvent({ type: 'mouseReleased', x: cx, y: cy, button: 'left', clickCount: 1 });
+  await session.domains.Input.dispatchMouseEvent({ type: 'mousePressed', x: cx, y: cy, button: 'left', clickCount: 1 });
+  await session.domains.Input.dispatchMouseEvent({ type: 'mouseReleased', x: cx, y: cy, button: 'left', clickCount: 1 });
 }
 
 /** Focus an axView ref (click) then insert text. */
 async function axType(ref: number | string, refs: Map<number, number> | string, text: string): Promise<void> {
   await axClick(ref, refs);
-  await session.Input.insertText({ text });
+  await session.domains.Input.insertText({ text });
 }
 
 (globalThis as any).axClick = axClick;
 (globalThis as any).axType = axType;
+(globalThis as any).startRecording = (name?: string, title?: string) => recording.start(name, title);
+(globalThis as any).stopRecording = () => recording.stop();
+(globalThis as any).recordingStatus = () => recording.status();
+// Snake-case aliases ease migration from browser-harness recordings.
+(globalThis as any).start_recording = (name?: string, title?: string) => recording.start(name, title);
+(globalThis as any).stop_recording = () => recording.stop();
 
 const PORT = Number(process.env.CDP_REPL_PORT ?? 9876);
 const startedAt = Date.now();

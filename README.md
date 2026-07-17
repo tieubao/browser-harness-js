@@ -49,13 +49,29 @@ This needs **macOS Accessibility** for the `node` binary running the SDK. If it'
 
 See [skills/cdp/interaction-skills/](skills/cdp/interaction-skills/) for recipes on the mechanics that are not obvious from the CDP method list alone.
 
+## Browser-use-style videos
+
+Recording is off by default. With explicit consent, the SDK can capture local screenshots and privacy-scrubbed action metadata from raw `Page.*` and `Input.*` calls, then compact a long task into a deterministic explanatory video with authentic cursor endpoints, clicks, typing, result frames, captions, and verified outcomes. It is an evidence editor, not a sped-up screen recorder.
+
+```bash
+recording="$(browser-harness-js 'await startRecording("demo", "Verify account settings")')"
+# Perform and verify the task with browser-harness-js.
+browser-harness-js 'await stopRecording()'
+browser-harness-js video init "$recording" --require-explicit
+# Author edit-brief.json, review every used full-resolution frame, then:
+browser-harness-js video review "$recording"
+browser-harness-js video export "$recording" --reviewed
+```
+
+Raw screenshots and non-password typed text can contain sensitive content and stay local under `~/.browser-harness-js`; recording therefore requires consent. The pipeline hashes source evidence and reviewed artifacts, masks password typing during capture, hides all other typing from compositions unless explicitly reviewed, supports page-coordinate redactions, and verifies the final H.264 MP4 with `ffprobe`/`ffmpeg`. See [`make-video.md`](skills/cdp/interaction-skills/make-video.md).
+
 ## Skills
 
-This repo contains seven skills installable via `npx skills add`:
+This repo contains eight skills installable via `npx skills add`:
 
 | Skill | Description |
 |-------|------------|
-| **cdp** | Drive any Chromium-based browser via CDP — 56 domains, 652 typed methods |
+| **cdp** | Drive any Chromium-based browser via CDP — 56 domains, 652 typed methods; consent-based action recording and polished explanatory videos |
 | **gsearch** | Search the web via Google through CDP — structured results in under 1 second; `follow <url>` opens a result link and reads its page text or JSON |
 | **gnews** | Search Google News through CDP (`tbm=nws`) — structured results (title, url, source, time, snippet) with the publisher's direct URL, no redirect wrapper |
 | **xsearch** | Search X (Twitter) via CDP — structured results (requires an active X login) |
@@ -69,7 +85,10 @@ This repo contains seven skills installable via `npx skills add`:
 - `skills/cdp/SKILL.md` — day-to-day usage; how to connect, pick a tab, call methods, persist state
 - `skills/cdp/sdk/browser-harness-js` — tiny CLI that auto-spawns the server and forwards snippets
 - `skills/cdp/sdk/repl.ts` — Node HTTP server holding one persistent `Session`
-- `skills/cdp/sdk/session.ts` — the `Session` class: transport, connect, target routing, events
+- `skills/cdp/sdk/session.ts` — the `Session` class: transport, connect, target routing, events, call observation
+- `skills/cdp/sdk/recording.ts` — consent, privacy scrubbing, action traces, and screenshot capture
+- `skills/cdp/sdk/video.ts` — edit-brief compiler and content-hashed provenance
+- `skills/cdp/sdk/video-render.ts` / `skills/cdp/sdk/video-template.html` — review renderer and verified MP4 export
 - `skills/cdp/sdk/gen.ts` — codegen: reads `browser_protocol.json` + `js_protocol.json` → typed wrappers
 - `skills/cdp/sdk/generated.ts` — every CDP method as `session.<Domain>.<method>(params)` (generated)
 - `skills/gsearch/SKILL.md` — Google Search skill instructions

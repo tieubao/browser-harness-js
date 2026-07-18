@@ -6,6 +6,12 @@
 // touched the live logged-in daily-driver browser when a caller thought it
 // was talking to a scoped, isolated instance.
 //
+// Also covers a same-day hardening pass (fable advisor review of the
+// original fix, 2026-07-18): the pin that scopes _call()'s self-heal
+// reconnect went stale across a close()+auto-detect-reconnect on the same
+// Session, and the in-flight race guard didn't recognize `profileDir` as an
+// explicit target at all.
+//
 // Uses a fake global WebSocket (no real Chrome needed), so no real browser
 // is ever launched or attached to. NOT fully offline, though: `{ wsUrl }`
 // is a pure passthrough in resolveWsUrl (zero I/O) and the wsUrl/port/host
@@ -15,13 +21,25 @@
 // failure-tolerant) filesystem reads against whatever's actually on this
 // machine. The profileDir tests do real, self-contained filesystem I/O on
 // purpose (a temp dir with a fake DevToolsActivePort file) since profileDir
-// resolution genuinely needs to read one to compare.
+// resolution genuinely needs to read one to compare. The auto-detect-clears-
+// the-pin test does the same trick against a temp $HOME so detectBrowsers()
+// finds a fake candidate instead of scanning this machine's real browsers --
+// it still never opens a real WebSocket (FakeWebSocket is swapped in for the
+// whole test either way).
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { Session, explicitTargetMismatch } from './session.ts';
+
+class FakeMessageEvent extends Event {
+  data: string;
+  constructor(data: string) {
+    super('message');
+    this.data = data;
+  }
+}
 
 class FakeWebSocket extends EventTarget {
   static CONNECTING = 0;
@@ -42,8 +60,24 @@ class FakeWebSocket extends EventTarget {
     this.readyState = FakeWebSocket.CLOSED;
     this.dispatchEvent(new Event('close'));
   }
-  send(_data: string): void {
-    // no-op: these tests never exercise _call(), only connect()'s fast path.
+  send(data: string): void {
+    // Echo a fake-but-well-formed CDP response for any request with an `id`,
+    // so a real _call() round trip resolves. Needed for the self-heal test
+    // below, which must exercise the ACTUAL internal reconnect logic in
+    // _call() (not a caller-driven reconnect) -- that requires a live
+    // request/response cycle, not just connect()'s fast path.
+    let msg: { id?: number };
+    try {
+      msg = JSON.parse(data);
+    } catch {
+      return;
+    }
+    if (typeof msg.id === 'number') {
+      const { id } = msg;
+      queueMicrotask(() => {
+        this.dispatchEvent(new FakeMessageEvent(JSON.stringify({ id, result: {} })));
+      });
+    }
   }
 }
 
@@ -247,27 +281,118 @@ test('connect(): a concurrent connect() with the SAME explicit target rides the 
   });
 });
 
-// --- pinned-target auto-heal coverage (round-2 review finding) -------------
-// _call()'s self-heal reconnect (not exercised directly here -- it needs a
-// real _call() round trip) is covered indirectly: this proves the PINNING
-// mechanism itself (an explicit connect sets a target _call's heal path can
-// read) works, since _call's heal logic is a one-line consumer of it
-// (`this.pinnedWsUrl ? { wsUrl: this.pinnedWsUrl } : {}`) and is not
-// independently retestable without exercising the full WebSocket message
-// protocol this test file deliberately doesn't fake (see the file header).
+// --- profileDir in-flight race coverage (2026-07-18 hardening: targetKey()
+// didn't recognize profileDir at all, so a concurrent connect({ profileDir })
+// call silently rode whatever else was in flight instead of throwing) -------
 
-test('connect(): an explicit connect pins the target so a later same-target reconnect (simulating heal) still works after a drop', async () => {
+test('connect(): a concurrent connect() with a DIFFERENT explicit profileDir rejects instead of riding the in-flight one', async () => {
+  await withFakeWebSocket(async () => {
+    const session = new Session();
+    const dirA = fakeProfileDir(9222, 'race-profile-a');
+    const dirB = fakeProfileDir(9333, 'race-profile-b');
+    try {
+      const first = session.connect({ profileDir: dirA });
+      const second = session.connect({ profileDir: dirB });
+      await assert.rejects(second, /already in flight/);
+      await first; // the original call must still succeed normally
+      assert.equal(session.isConnected(), true);
+    } finally {
+      rmSync(dirA, { recursive: true, force: true });
+      rmSync(dirB, { recursive: true, force: true });
+    }
+  });
+});
+
+test('connect(): a concurrent connect() with the SAME explicit profileDir rides the in-flight one (no throw)', async () => {
+  await withFakeWebSocket(async () => {
+    const session = new Session();
+    const dir = fakeProfileDir(9222, 'race-profile-same');
+    try {
+      const first = session.connect({ profileDir: dir });
+      const second = session.connect({ profileDir: dir });
+      await Promise.all([first, second]);
+      assert.equal(session.isConnected(), true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// --- pinned-target auto-heal coverage ---------------------------------------
+// This test exercises the REAL self-heal path inside _call() (not a caller-
+// driven reconnect) via the echoing FakeWebSocket above: a genuine protocol
+// round trip proves the fake responds like a real CDP endpoint, then the WS
+// is dropped and a second _call() must succeed by internally reconnecting to
+// the PINNED target. This is mutation-provable: comment out the
+// `this.pinnedWsUrl = this.ws?.url` assignment (or the `pinnedWsUrl ? {
+// wsUrl } : {}` read in _call()'s heal branch) and this test fails, because
+// heal falls through to blind auto-detect, which finds no candidates in this
+// sandboxed test environment (no DevToolsActivePort anywhere under a real
+// $HOME during a normal test run) and rejects.
+
+test('connect(): an explicit connect pins the target so the SELF-HEAL reconnect inside _call() (not a caller-driven reconnect) retries the pinned target after a drop, never blind auto-detect', async () => {
   await withFakeWebSocket(async () => {
     const session = new Session();
     const url = 'ws://127.0.0.1:9222/devtools/browser/fake-id-1';
     await session.connect({ wsUrl: url });
     assert.equal(session.isConnected(), true);
+    // A real protocol round trip via the echoing FakeWebSocket -- proves the
+    // fake behaves like a live CDP endpoint before we rely on it for heal.
+    await session._call('Target.getTargets', {});
     // simulate the WS dropping (what _call's heal path reacts to)
     (session as unknown as { ws: { close(): void } }).ws.close();
     assert.equal(session.isConnected(), false);
-    // a reconnect to the SAME pinned target must still succeed (this is
-    // exactly what _call's heal path does internally via pinnedWsUrl).
-    await session.connect({ wsUrl: url });
+    // No caller-driven reconnect here -- _call()'s OWN internal self-heal
+    // must fire and pick the pinned target.
+    await session._call('Target.getTargets', {});
     assert.equal(session.isConnected(), true);
+    assert.equal((session as unknown as { ws: { url: string } }).ws.url, url);
   });
 });
+
+// --- pin lifecycle: a later auto-detect connect() must CLEAR a stale
+// explicit pin (2026-07-18 hardening: a Session reused across a close() +
+// auto-detect reconnect kept the OLD explicit pin, so a later WS drop's
+// self-heal would silently reattach to the stale target instead of the
+// browser this Session actually auto-detected onto). ------------------------
+
+test(
+  'connect(): a later auto-detect connect() clears a stale explicit pin, so self-heal reconnects to the auto-detected target -- not the old pinned one',
+  { skip: process.platform !== 'darwin' },
+  async () => {
+    await withFakeWebSocket(async () => {
+      const session = new Session();
+      const pinnedUrl = 'ws://127.0.0.1:9222/devtools/browser/explicit-a';
+      await session.connect({ wsUrl: pinnedUrl });
+      assert.equal((session as unknown as { pinnedWsUrl?: string }).pinnedWsUrl, pinnedUrl);
+      session.close();
+
+      // Auto-detect connect (no explicit target) lands on a DIFFERENT
+      // browser -- faked via a temp $HOME with one candidate profile dir's
+      // DevToolsActivePort file (same technique as fakeProfileDir, just
+      // planted where detectBrowsers()'s hardcoded candidate list expects
+      // it). No real filesystem outside the temp dir, and no real WebSocket
+      // (FakeWebSocket stays swapped in), is ever touched.
+      const fakeHome = mkdtempSync(join(tmpdir(), 'bhjs-session-test-autodetect-home-'));
+      const chromeDir = join(fakeHome, 'Library', 'Application Support', 'Google', 'Chrome');
+      mkdirSync(chromeDir, { recursive: true });
+      writeFileSync(join(chromeDir, 'DevToolsActivePort'), '9333\n/devtools/browser/auto-detected-b');
+      const realHome = process.env.HOME;
+      process.env.HOME = fakeHome;
+      try {
+        await session.connect();
+      } finally {
+        process.env.HOME = realHome;
+        rmSync(fakeHome, { recursive: true, force: true });
+      }
+      assert.equal(session.isConnected(), true);
+      assert.equal(
+        (session as unknown as { ws: { url: string } }).ws.url,
+        'ws://127.0.0.1:9333/devtools/browser/auto-detected-b',
+      );
+      // The fix under test: the pin from the earlier explicit connect must
+      // be CLEARED, not left stale at the old explicit target.
+      assert.equal((session as unknown as { pinnedWsUrl?: string }).pinnedWsUrl, undefined);
+    });
+  },
+);

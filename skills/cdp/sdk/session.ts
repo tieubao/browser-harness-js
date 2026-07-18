@@ -65,6 +65,14 @@ export type ConnectOptions = {
 function targetKey(opts: ConnectOptions): string | undefined {
   if (opts.wsUrl !== undefined) return `wsUrl:${opts.wsUrl}`;
   if (opts.port !== undefined) return `port:${opts.host ?? '127.0.0.1'}:${opts.port}`;
+  // profileDir: raw string, no I/O. Good enough for the in-flight RACE check
+  // (targetKey's other caller, below `connectPromise`) -- two different
+  // profileDir strings are always a different target, no resolve needed to
+  // know that. explicitTargetMismatch (the ALREADY-connected check) special-
+  // cases profileDir before ever consulting this function, specifically so
+  // this branch does NOT change its behavior -- see the guard at the top of
+  // explicitTargetMismatch below.
+  if (opts.profileDir !== undefined) return `profileDir:${opts.profileDir}`;
   return undefined;
 }
 
@@ -77,9 +85,12 @@ function targetKey(opts: ConnectOptions): string | undefined {
  * Only wsUrl and port+host are checked here (both are synchronous, already-
  * known values -- no I/O needed to compare them). `profileDir` needs an
  * async resolve to compare and is checked separately, at the connect() call
- * site, only when a caller actually passes it.
+ * site, only when a caller actually passes it -- always deferred here (even
+ * though targetKey() now recognizes it, for the in-flight race check), so
+ * this function's contract is unchanged.
  */
 export function explicitTargetMismatch(opts: ConnectOptions, connectedWsUrl: string): string | undefined {
+  if (opts.profileDir !== undefined) return undefined;
   const wantKey = targetKey(opts);
   if (wantKey === undefined) return undefined;
   const u = new URL(connectedWsUrl);
@@ -240,8 +251,22 @@ export class Session implements Transport {
       // instead of a second explicit connect() call. Not pinned for an
       // original auto-detect connect (no explicit target): re-running
       // auto-detect on heal is the existing, intended behavior there.
+      //
+      // The ELSE branch matters just as much as the IF: a Session can be
+      // reused across a close() + reconnect (nothing here forces a fresh
+      // `new Session()` between calls), so a LATER successful connect() with
+      // no explicit target must CLEAR a pin left over from an EARLIER
+      // explicit one. Without this, self-heal in _call() would silently
+      // reconnect to the stale explicit target after the WS drops -- even
+      // though the caller moved on to auto-detect and this Session is now
+      // attached to a different browser. Same silent-wrong-target hazard,
+      // reached by switching an existing Session's mode instead of a second
+      // explicit connect() call or a race. (Found 2026-07-18, fable advisor
+      // pass on the original PR.)
       if (opts.wsUrl !== undefined || opts.port !== undefined || opts.profileDir !== undefined) {
         this.pinnedWsUrl = this.ws?.url;
+      } else {
+        this.pinnedWsUrl = undefined;
       }
     } catch (e) {
       this.connectPromise = undefined;

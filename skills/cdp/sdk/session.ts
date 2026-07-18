@@ -56,25 +56,41 @@ export type ConnectOptions = {
 };
 
 /**
+ * Canonical, synchronous target identity for a ConnectOptions -- used to
+ * compare two explicit targets WITHOUT resolving either of them (wsUrl and
+ * port+host are both already-known values; no I/O). Returns undefined for
+ * "no explicit target" (auto-detect), which is never a mismatch against
+ * anything (auto-detect legitimately picks whatever's running).
+ */
+function targetKey(opts: ConnectOptions): string | undefined {
+  if (opts.wsUrl !== undefined) return `wsUrl:${opts.wsUrl}`;
+  if (opts.port !== undefined) return `port:${opts.host ?? '127.0.0.1'}:${opts.port}`;
+  return undefined;
+}
+
+/**
  * Does `opts` (an explicit connect target) mismatch the WS URL a Session is
  * ALREADY connected to? Returns a human-readable description of the mismatch
  * for the error message, or undefined if there's no conflict (opts has no
- * explicit target, or it agrees with the current connection).
+ * explicit wsUrl/port target, or it agrees with the current connection).
  *
- * Only wsUrl and port are checked (see the comment at the connect() call
- * site for why profileDir is out of scope here).
+ * Only wsUrl and port+host are checked here (both are synchronous, already-
+ * known values -- no I/O needed to compare them). `profileDir` needs an
+ * async resolve to compare and is checked separately, at the connect() call
+ * site, only when a caller actually passes it.
  */
 export function explicitTargetMismatch(opts: ConnectOptions, connectedWsUrl: string): string | undefined {
-  if (opts.wsUrl !== undefined && opts.wsUrl !== connectedWsUrl) {
-    return `wsUrl ${opts.wsUrl}`;
+  const wantKey = targetKey(opts);
+  if (wantKey === undefined) return undefined;
+  const u = new URL(connectedWsUrl);
+  const connectedKey = `port:${u.hostname}:${Number(u.port)}`;
+  if (opts.wsUrl !== undefined) {
+    return opts.wsUrl !== connectedWsUrl ? `wsUrl ${opts.wsUrl}` : undefined;
   }
-  if (opts.port !== undefined) {
-    const connectedPort = Number(new URL(connectedWsUrl).port);
-    if (opts.port !== connectedPort) {
-      return `port ${opts.port} (connected on port ${connectedPort})`;
-    }
-  }
-  return undefined;
+  // opts.port must be set here (targetKey returned non-undefined and wsUrl is not set).
+  return wantKey !== connectedKey
+    ? `port ${opts.port} on host ${opts.host ?? '127.0.0.1'} (connected on ${u.hostname}:${u.port})`
+    : undefined;
 }
 
 /** A Chromium-based browser detected as running on this machine. */
@@ -101,6 +117,22 @@ export class Session implements Transport {
   private eventListeners: Array<(method: string, params: unknown, sessionId?: string) => void> = [];
   private callObserver?: CdpCallObserver;
   private connectPromise?: Promise<void>;
+  /** The opts a currently in-flight connect() was started with, so a second
+   *  concurrent connect() call with a DIFFERENT explicit target can be
+   *  rejected instead of silently riding the first call's target -- the
+   *  same silent-wrong-target hazard as the already-connected fast path,
+   *  reached through the race-condition door instead. */
+  private connectingOpts?: ConnectOptions;
+  /** The resolved wsUrl of the last successful connect(), but ONLY when that
+   *  connect had an explicit target (wsUrl/port/profileDir). Used to pin the
+   *  auto-heal reconnect in _call() to the SAME target after a WS drop,
+   *  instead of letting it fall through to auto-detect -- which would pick
+   *  "whatever's most recently launched" and could silently reattach to a
+   *  different (e.g. daily-driver) browser than the one this Session was
+   *  explicitly scoped to. Left unset for an original auto-detect connect
+   *  (no explicit target): re-running auto-detect on heal is the existing,
+   *  intended behavior for that case, not a bug. */
+  private pinnedWsUrl?: string;
 
   /** On by default: connect()/reconnect auto-dismisses Dia's "Allow
    *  debugging connection?" prompt (macOS, via osascript Return) — a no-op
@@ -135,22 +167,39 @@ export class Session implements Transport {
    */
   async connect(opts: ConnectOptions = {}): Promise<void> {
     // Fast path: already connected -- but not blindly. If the caller passed
-    // an explicit target (wsUrl or port) that doesn't match what this Session
-    // is ALREADY attached to, silently riding the existing connection would
-    // execute the caller's next actions against the WRONG browser instance.
-    // This is a real safety bug, not a hypothetical: a caller asking for an
-    // explicit scoped port got silently redirected onto whatever this Session
-    // object happened to already be connected to, and touched the live
-    // logged-in daily-driver browser instead of the intended isolated one.
-    // Fail loud instead: this class holds ONE WebSocket, so a caller that
-    // genuinely wants a different target should construct a fresh
-    // `new Session()`, not reuse this one across ports. (profileDir mismatches
-    // are NOT checked here -- resolving a profileDir to a port/wsUrl needs an
-    // async call, which would turn this fast path into a slow one for the
-    // common no-arg reconnect-heal case; wsUrl and port are both already-known
-    // strings/numbers, so checking them costs nothing.)
+    // an explicit target (wsUrl, port+host, or profileDir) that doesn't
+    // match what this Session is ALREADY attached to, silently riding the
+    // existing connection would execute the caller's next actions against
+    // the WRONG browser instance. This is a real safety bug, not a
+    // hypothetical: a caller asking for an explicit scoped port got
+    // silently redirected onto whatever this Session object happened to
+    // already be connected to, and touched the live logged-in daily-driver
+    // browser instead of the intended isolated one. Fail loud instead: this
+    // class holds ONE WebSocket, so a caller that genuinely wants a
+    // different target should construct a fresh `new Session()`, not reuse
+    // this one across targets.
     if (this.isConnected()) {
-      const mismatch = explicitTargetMismatch(opts, this.ws!.url);
+      let mismatch = explicitTargetMismatch(opts, this.ws!.url);
+      // profileDir needs an async resolve to compare against the current
+      // connection -- unlike wsUrl/port+host, it's not an already-known
+      // value. Only pay that cost when a caller actually passes profileDir;
+      // the common no-arg reconnect-heal call (see _call's auto-heal below)
+      // never does, so this never slows down that hot path. `{ profileDir }`
+      // is the documented way to target a specific browser when several are
+      // running (README/SKILL docs), i.e. exactly the scoped-vs-daily-driver
+      // scenario this whole check exists for -- it needs the same guard.
+      if (!mismatch && opts.profileDir !== undefined) {
+        try {
+          const resolved = await resolveWsUrl({ profileDir: opts.profileDir });
+          if (resolved !== this.ws!.url) {
+            mismatch = `profileDir ${opts.profileDir} (resolves to ${resolved})`;
+          }
+        } catch (e) {
+          // Couldn't even resolve it to compare -- don't silently ride the
+          // existing connection when agreement can't be verified either.
+          mismatch = `profileDir ${opts.profileDir} (could not resolve: ${e instanceof Error ? e.message : String(e)})`;
+        }
+      }
       if (mismatch) {
         throw new Error(
           `connect(): already connected to ${this.ws!.url}, but called with an explicit ${mismatch} that ` +
@@ -160,20 +209,48 @@ export class Session implements Transport {
       }
       return;
     }
-    // Another connect is in flight — ride on it.
-    if (this.connectPromise) return this.connectPromise;
+    // Another connect is in flight. Ride it UNLESS this call has an explicit
+    // target that disagrees with what the in-flight call is connecting to --
+    // same hazard as the already-connected case, reached via a race instead
+    // of a second sequential call. (wsUrl/port+host only, same as above --
+    // no in-flight resolved wsUrl exists yet to compare a profileDir against.)
+    if (this.connectPromise) {
+      const wantKey = targetKey(opts);
+      if (wantKey !== undefined && wantKey !== targetKey(this.connectingOpts ?? {})) {
+        throw new Error(
+          `connect(): a connect is already in flight (to ${JSON.stringify(this.connectingOpts ?? {})}), but ` +
+          'called with a different explicit target. Wait for the in-flight connect to settle, or construct ' +
+          'a new Session() for a different target.',
+        );
+      }
+      return this.connectPromise;
+    }
     // Persist autoAllow so the auto-heal reconnect in _call (no-arg connect)
     // inherits it.
     if (opts.autoAllow !== undefined) this.autoAllow = opts.autoAllow;
+    this.connectingOpts = opts;
     this.connectPromise = this._connect(opts);
     try {
       await this.connectPromise;
+      // Pin the target so a later auto-heal reconnect in _call() (after a WS
+      // drop) retries THIS SAME target instead of falling through to
+      // auto-detect, which could silently reattach to a different (e.g.
+      // daily-driver) browser -- the identical silent-retarget hazard this
+      // whole fix exists to close, reached through the reconnect door
+      // instead of a second explicit connect() call. Not pinned for an
+      // original auto-detect connect (no explicit target): re-running
+      // auto-detect on heal is the existing, intended behavior there.
+      if (opts.wsUrl !== undefined || opts.port !== undefined || opts.profileDir !== undefined) {
+        this.pinnedWsUrl = this.ws?.url;
+      }
     } catch (e) {
       this.connectPromise = undefined;
+      this.connectingOpts = undefined;
       throw e;
     }
     // Clear once settled so future calls can reconnect after a WS drop.
     this.connectPromise = undefined;
+    this.connectingOpts = undefined;
   }
 
   private async _connect(opts: ConnectOptions = {}): Promise<void> {
@@ -381,9 +458,19 @@ export class Session implements Transport {
     // reconnect the active-session pointer / prior flat sessionIds may be stale,
     // but a stale sessionId surfaces a clean CDP `session not found` (re-attach),
     // never a wrong-target action.
+    //
+    // Reconnect to the PINNED target (this.pinnedWsUrl), not blind auto-detect,
+    // when this Session was originally connected to an explicit target. A
+    // blind no-arg connect() here would silently reattach to "whatever's most
+    // recently launched" -- the same silent-wrong-target hazard connect()'s
+    // own explicit-mismatch check exists to close, just reached through the
+    // reconnect door instead. If the pinned target is genuinely gone, this
+    // fails loud (a connect error), which is correct: don't fall back to a
+    // different browser just because the intended one is unreachable.
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       if (reconnected) return Promise.reject(new Error('Not connected. Call session.connect(...) first.'));
-      return this.connect().then(() => this._call(method, params, opts, true));
+      const healOpts: ConnectOptions = this.pinnedWsUrl ? { wsUrl: this.pinnedWsUrl } : {};
+      return this.connect(healOpts).then(() => this._call(method, params, opts, true));
     }
     const id = this.nextId++;
     const msg: Record<string, unknown> = { id, method, params: params ?? {} };

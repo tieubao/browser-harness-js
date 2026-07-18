@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "$0")" && pwd)"
+skill_dir="$(dirname "$script_dir")"
+cli="$skill_dir/scripts/pipe-browse"
+
+if [ ! -f "$cli" ]; then
+  echo "Error: $cli not found" >&2
+  exit 1
+fi
+
+echo "pipe-browse: installing playwright + a chromium build (this skill launches its own browser, it does not attach to one you already have open)..."
+( cd "$skill_dir" && npm install --no-audit --no-fund && npx playwright install chromium )
+
+target_dir="$HOME/.local/bin"
+
+if ! echo ":$PATH:" | grep -q ":$target_dir:"; then
+  mkdir -p "$target_dir"
+  profile=""
+  for f in "$HOME/.zshrc" "$HOME/.bashrc" "$HOME/.profile"; do
+    if [ -f "$f" ]; then
+      profile="$f"
+      break
+    fi
+  done
+  if [ -n "$profile" ] && ! grep -q '\.local/bin' "$profile"; then
+    printf '\nexport PATH="$HOME/.local/bin:$PATH"\n' >> "$profile"
+    echo "Added $target_dir to PATH in $profile"
+  fi
+  export PATH="$target_dir:$PATH"
+fi
+
+mkdir -p "$target_dir"
+ln -sf "$cli" "$target_dir/pipe-browse"
+echo "Linked: $target_dir/pipe-browse"

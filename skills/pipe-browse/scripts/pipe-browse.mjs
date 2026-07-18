@@ -47,12 +47,31 @@ if (!verb || !profileName || (verb !== 'open' && rest.length === 0)) {
   process.exit(2);
 }
 
+// Reject anything that isn't a bare directory-name-shaped string BEFORE it
+// ever reaches resolve(). Without this, an absolute path or a "../" segment
+// in profileName escapes ~/.local/share/pipe-browse/profiles/ entirely --
+// worst case, it points launchPersistentContext at a REAL, everyday browser
+// profile (cookies/logins for every site you use daily), which is strictly
+// worse than the TCP-debug-port exposure this whole tool exists to avoid.
+// profileName can come from an agent-supplied CLI arg, so treat it as
+// untrusted input, not just a typo guard.
+if (!/^[A-Za-z0-9_-]+$/.test(profileName)) {
+  console.error(`pipe-browse: profile name must be alphanumeric/underscore/hyphen only, got: ${JSON.stringify(profileName)}`);
+  process.exit(2);
+}
+
 const profileDir = resolve(homedir(), '.local/share/pipe-browse/profiles', profileName);
-mkdirSync(profileDir, { recursive: true });
+mkdirSync(profileDir, { recursive: true, mode: 0o700 });
 
 const headless = verb === 'open' ? false : !flags.headed;
 const ctx = await chromium.launchPersistentContext(profileDir, {
   headless,
+  // Chromium's OS-level renderer sandbox stays ON (Playwright's default
+  // otherwise pushes --no-sandbox, meant for root/Docker/CI environments,
+  // not a normal user session) -- this tool exists to protect sensitive
+  // (bank/brokerage) pages, so the sandbox should stay up against a
+  // malicious ad or third-party script on exactly those pages.
+  chromiumSandbox: true,
   ...(flags.exe ? { executablePath: flags.exe } : {}),
   viewport: { width: 1280, height: 900 },
 });

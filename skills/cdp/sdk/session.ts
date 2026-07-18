@@ -55,6 +55,28 @@ export type ConnectOptions = {
   autoAllowDelayMs?: number;
 };
 
+/**
+ * Does `opts` (an explicit connect target) mismatch the WS URL a Session is
+ * ALREADY connected to? Returns a human-readable description of the mismatch
+ * for the error message, or undefined if there's no conflict (opts has no
+ * explicit target, or it agrees with the current connection).
+ *
+ * Only wsUrl and port are checked (see the comment at the connect() call
+ * site for why profileDir is out of scope here).
+ */
+export function explicitTargetMismatch(opts: ConnectOptions, connectedWsUrl: string): string | undefined {
+  if (opts.wsUrl !== undefined && opts.wsUrl !== connectedWsUrl) {
+    return `wsUrl ${opts.wsUrl}`;
+  }
+  if (opts.port !== undefined) {
+    const connectedPort = Number(new URL(connectedWsUrl).port);
+    if (opts.port !== connectedPort) {
+      return `port ${opts.port} (connected on port ${connectedPort})`;
+    }
+  }
+  return undefined;
+}
+
 /** A Chromium-based browser detected as running on this machine. */
 export type DetectedBrowser = {
   /** Short label, e.g. 'Google Chrome', 'Brave', 'Comet'. */
@@ -112,8 +134,32 @@ export class Session implements Transport {
    * directly to that single URL with a generous timeout.
    */
   async connect(opts: ConnectOptions = {}): Promise<void> {
-    // Fast path: already connected.
-    if (this.isConnected()) return;
+    // Fast path: already connected -- but not blindly. If the caller passed
+    // an explicit target (wsUrl or port) that doesn't match what this Session
+    // is ALREADY attached to, silently riding the existing connection would
+    // execute the caller's next actions against the WRONG browser instance.
+    // This is a real safety bug, not a hypothetical: a caller asking for an
+    // explicit scoped port got silently redirected onto whatever this Session
+    // object happened to already be connected to, and touched the live
+    // logged-in daily-driver browser instead of the intended isolated one.
+    // Fail loud instead: this class holds ONE WebSocket, so a caller that
+    // genuinely wants a different target should construct a fresh
+    // `new Session()`, not reuse this one across ports. (profileDir mismatches
+    // are NOT checked here -- resolving a profileDir to a port/wsUrl needs an
+    // async call, which would turn this fast path into a slow one for the
+    // common no-arg reconnect-heal case; wsUrl and port are both already-known
+    // strings/numbers, so checking them costs nothing.)
+    if (this.isConnected()) {
+      const mismatch = explicitTargetMismatch(opts, this.ws!.url);
+      if (mismatch) {
+        throw new Error(
+          `connect(): already connected to ${this.ws!.url}, but called with an explicit ${mismatch} that ` +
+          'does not match. Refusing to silently continue on the wrong target -- construct a new Session() ' +
+          'for a different browser/port instead of reusing this one.',
+        );
+      }
+      return;
+    }
     // Another connect is in flight — ride on it.
     if (this.connectPromise) return this.connectPromise;
     // Persist autoAllow so the auto-heal reconnect in _call (no-arg connect)

@@ -105,4 +105,4 @@ one install target (`~/.local/bin/pipe-browse`, whichever `setup` ran last wins 
 symlink), which is convenient (a login made via either copy is usable by the other)
 but means a future bugfix landing in only one copy silently doesn't reach the other.
 Port the two fixes above back to the experiment copy, or retire it in favor of this
-one.
+one -- done, `add2900d` (ops-toolkit, same day).

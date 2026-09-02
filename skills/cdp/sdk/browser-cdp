@@ -1,0 +1,99 @@
+#!/usr/bin/env node
+// browser-cdp: the ONE-SHOT sibling of browser-harness-js. Same browser, same CDP, no REPL daemon:
+// each command opens one page websocket through the /json HTTP endpoints, does its work, and
+// exits, printing to stdout. Use it for a five-command job (open a page, read it, click once)
+// where starting a persistent session is the heavier tool, and for callers that want plain
+// stdout without the REPL's single-bare-expression print rule. Multi-step, stateful automation
+// stays on `browser-harness-js` (events, recordings, learnings, typed 652-method SDK).
+// Zero dependencies: Node >= 22 ships fetch + WebSocket.
+//
+//   browser-cdp open <url> [waitMs]        new tab; prints URL, TITLE, TARGET, then body text
+//   browser-cdp read <targetId> [waitMs]   same dump for an existing tab
+//   browser-cdp eval <targetId> <js>       evaluate an expression in the tab, print JSON
+//                                          (operator-supplied JS run via Runtime.evaluate on the
+//                                          operator's own browser; that is the feature)
+//   browser-cdp click <targetId> <x> <y>   real mouse click via Input.dispatchMouseEvent
+//                                          (React handlers that ignore el.click() honour this)
+//   browser-cdp close <targetId>
+//   browser-cdp list                       page targets: id, url, title
+//
+// BROWSER_CDP_PORT overrides 9222. Text dumps are capped at BROWSER_CDP_MAX chars (default 6000).
+const [cmd, arg, a3, a4] = process.argv.slice(2);
+const wait = Number(a3 || 6000);
+const base = `http://127.0.0.1:${process.env.BROWSER_CDP_PORT || 9222}`;
+const maxText = Number(process.env.BROWSER_CDP_MAX || 6000);
+
+async function targets() { return (await fetch(`${base}/json`)).json(); }
+async function target(id) {
+  const t = (await targets()).find((x) => x.id === id);
+  if (!t) throw new Error(`target not found: ${id}`);
+  return t;
+}
+async function connect(t) {
+  const ws = new WebSocket(t.webSocketDebuggerUrl);
+  await new Promise((res, rej) => { ws.addEventListener("open", res); ws.addEventListener("error", rej); });
+  let seq = 0;
+  ws.rpc = (method, params = {}) => new Promise((resolve, reject) => {
+    const id = ++seq;
+    const onMsg = (ev) => {
+      const m = JSON.parse(ev.data);
+      if (m.id !== id) return;
+      ws.removeEventListener("message", onMsg);
+      m.error ? reject(new Error(JSON.stringify(m.error))) : resolve(m.result);
+    };
+    ws.addEventListener("message", onMsg);
+    ws.send(JSON.stringify({ id, method, params }));
+  });
+  return ws;
+}
+async function evalIn(ws, expression) {
+  const r = await ws.rpc("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true });
+  if (r.exceptionDetails) throw new Error(r.exceptionDetails.text || "evaluate failed");
+  return r.result.value;
+}
+async function dump(t) {
+  const ws = await connect(t);
+  await new Promise((r) => setTimeout(r, wait));
+  const v = await evalIn(ws, "JSON.stringify({url: location.href, title: document.title, text: document.body ? document.body.innerText : ''})");
+  ws.close();
+  const p = JSON.parse(v);
+  console.log("URL:", p.url);
+  console.log("TITLE:", p.title);
+  console.log("TARGET:", t.id);
+  console.log("---");
+  console.log(p.text.slice(0, maxText));
+}
+
+const commands = {
+  async open() {
+    if (!arg) throw new Error("open needs a url");
+    const res = await fetch(`${base}/json/new?${encodeURIComponent(arg)}`, { method: "PUT" });
+    await dump(await res.json());
+  },
+  async read() { await dump(await target(arg)); },
+  async eval() {
+    const ws = await connect(await target(arg));
+    const v = await evalIn(ws, a3);
+    ws.close();
+    console.log(JSON.stringify(v, null, 1));
+  },
+  async click() {
+    const ws = await connect(await target(arg));
+    const x = Number(a3), y = Number(a4);
+    await ws.rpc("Input.dispatchMouseEvent", { type: "mouseMoved", x, y });
+    await ws.rpc("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", clickCount: 1 });
+    await ws.rpc("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", clickCount: 1 });
+    ws.close();
+    console.log("clicked", x, y);
+  },
+  async close() { console.log(await (await fetch(`${base}/json/close/${arg}`)).text()); },
+  async list() {
+    for (const t of await targets()) if (t.type === "page") console.log(`${t.id}\t${t.url}\t${t.title}`);
+  },
+};
+
+if (!commands[cmd]) {
+  console.error("usage: browser-cdp open <url> [waitMs] | read <targetId> [waitMs] | eval <targetId> <js> | click <targetId> <x> <y> | close <targetId> | list");
+  process.exit(64);
+}
+commands[cmd]().catch((e) => { console.error(e.message); process.exit(1); });

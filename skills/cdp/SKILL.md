@@ -73,6 +73,9 @@ EOF
 | `browser-harness-js recordings [--latest\|enable\|disable]` | Show recording status, select the latest trace, or persist local recording consent. |
 | `browser-harness-js video init\|review\|export <recording>` | Prepare, review, and export a concise evidence-based browser video. |
 | `browser-harness-js --no-auto-allow '<js>'` | Set `session.autoAllow = false` on the daemon, then eval the JS. Opts out of auto-dismissing Dia's "Allow debugging connection?" prompt (on by default, macOS). |
+| `browser-cdp open <url> [waitMs]` / `read <targetId>` / `eval <targetId> <js>` / `click <targetId> <x> <y>` / `close <targetId>` / `list` | The ONE-SHOT sibling (`sdk/browser-cdp`, Node built-ins only): no daemon, one page websocket per command over the browser's `/json` endpoints, plain stdout. For a five-command job (open a page, read it, click once) or a caller that cannot live with the REPL's single-bare-expression print rule. Multi-step, stateful work stays on the REPL. |
+
+The REPL prints ONLY when the whole snippet is one bare expression. `const t = await listPageTargets(); t.length` executes silently and looks like a hang; `(await listPageTargets()).length` prints. For multi-statement work, store the result on `globalThis` and read it back with a second bare-expression call, or use `browser-cdp`.
 
 Env vars: `CDP_REPL_PORT` (default `9876`), `CDP_REPL_LOG` (default `/tmp/browser-harness-js.log`), `CDP_RECORD` (`1`/`0` preference override), `CDP_RECORD_IDLE_SECONDS` (automatic recording rollover, default `180`), `CDP_RECORDINGS_DIR` (storage override), `BROWSER_HARNESS_JS_HOME` (state root, default `~/.browser-harness-js`).
 

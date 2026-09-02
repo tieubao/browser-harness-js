@@ -1,0 +1,22 @@
+{
+  "id": "figma-com",
+  "name": "Figma (team admin console)",
+  "domains": ["figma.com", "www.figma.com"],
+  "notes": ["notes/overview.md"],
+  "nodeTools": {
+    "adminPeople": {
+      "description": "Every member of a Figma TEAM with seat type, email and last-active, read from the team admin console on the logged-in tab (scrolls the virtualized grid, de-duplicates by email). Opens its own tab and closes it.",
+      "path": "tools/admin.mjs",
+      "callable": "adminPeople",
+      "args": { "teamId": {"type": "string", "required": true, "description": "Numeric Figma team id from the /files/team/<id>/ URL."} },
+      "returns": {"type": "array", "description": "[{name, seat, email, lastActive}]"}
+    },
+    "adminPlan": {
+      "description": "The Settings > Plan block of the team admin console: 'Upgrade your plan' means the free Starter plan; a paid team shows its plan and seats. Opens its own tab and closes it.",
+      "path": "tools/admin.mjs",
+      "callable": "adminPlan",
+      "args": { "teamId": {"type": "string", "required": true} },
+      "returns": {"type": "string", "description": "The Plan block text, first line to the Resources heading."}
+    }
+  }
+}

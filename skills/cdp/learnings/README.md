@@ -67,6 +67,13 @@ questions — the source is concatenated inside an `(async function(args){ ... }
 wrapper). It runs in the browser page via `Runtime.evaluate`, returns whatever
 the named function returns.
 
+## Editing a node-tool
+
+The REPL loads node-tools with a plain `import()`, which Node caches for the life of the
+process: an edit to `tools/<name>.mjs` is NOT picked up until `browser-harness-js --restart`
+(then reconnect with `session.connect({ wsUrl })`). Symptom: the old behaviour keeps running
+no matter what you change.
+
 When to add a domain: only when you keep re-deriving the same per-site
 recipe (court selectors, an API reverse-engineered from a Network panel, an
 anti-click-wrap extraction). Interaction-skill recipes that are page-mechanic

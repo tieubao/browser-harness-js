@@ -31,3 +31,8 @@ fi
 mkdir -p "$target_dir"
 ln -sf "$cli" "$target_dir/browser-harness-js"
 echo "Linked: $target_dir/browser-harness-js"
+echo
+echo "Preferred connect path — load the unpacked extension:"
+echo "  chrome://extensions → Developer mode → Load unpacked"
+echo "  $skill_dir/extension"
+echo "Remote debugging (chrome://inspect) remains the fallback."

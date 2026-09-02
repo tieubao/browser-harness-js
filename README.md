@@ -37,7 +37,9 @@ interesting one.
 
 (The CLI requires [`node`](https://nodejs.org) on PATH — TypeScript type stripping is on by default from Node 23.6. No runtime is auto-installed.)
 
-If Chrome asks you to tick a remote-debugging checkbox, do it — that's how the agent attaches:
+**Preferred connect path:** load the unpacked extension at `skills/cdp/extension` (`chrome://extensions` → Developer mode → Load unpacked). The worker relays CDP to the daemon over `ws://127.0.0.1:9876/extension` — no `--remote-debugging-port`, no Allow popup. `session.connect()` uses it when present.
+
+**Fallback:** if Chrome asks you to tick a remote-debugging checkbox, do it — that's how the agent attaches without the extension:
 
 <img src="docs/setup-remote-debugging.png" alt="Remote debugging setup" width="520" style="border-radius: 12px;" />
 
@@ -49,21 +51,18 @@ This needs **macOS Accessibility** for the `node` binary running the SDK. If it'
 
 See [skills/cdp/interaction-skills/](skills/cdp/interaction-skills/) for recipes on the mechanics that are not obvious from the CDP method list alone.
 
-## Browser-use-style videos
+## Session recording (rrweb)
 
-Recording is off by default. With explicit consent, the SDK can capture local screenshots and privacy-scrubbed action metadata from raw `Page.*` and `Input.*` calls, then compact a long task into a deterministic explanatory video with authentic cursor endpoints, clicks, typing, result frames, captions, and verified outcomes. It is an evidence editor, not a sped-up screen recorder.
+Recording is off by default. With explicit consent, the SDK injects [rrweb](https://github.com/rrweb-io/rrweb) into page targets and writes a local event log. Replay is the rrweb Replayer — a fidelity tape of DOM mutations, not a screenshot-compiled explainer.
 
 ```bash
-recording="$(browser-harness-js 'await startRecording("demo", "Verify account settings")')"
-# Perform and verify the task with browser-harness-js.
+recording="$(browser-harness-js 'await session.connect(); await startRecording("demo", "Verify account settings")')"
+# Perform and verify the task with browser-harness-js (or let the user browse).
 browser-harness-js 'await stopRecording()'
-browser-harness-js video init "$recording" --require-explicit
-# Author edit-brief.json, review every used full-resolution frame, then:
-browser-harness-js video review "$recording"
-browser-harness-js video export "$recording" --reviewed
+browser-harness-js recordings replay "$recording"
 ```
 
-Raw screenshots and non-password typed text can contain sensitive content and stay local under `~/.browser-harness-js`; recording therefore requires consent. The pipeline hashes source evidence and reviewed artifacts, masks password typing during capture, hides all other typing from compositions unless explicitly reviewed, supports page-coordinate redactions, and verifies the final H.264 MP4 with `ffprobe`/`ffmpeg`. See [`make-video.md`](skills/cdp/interaction-skills/make-video.md).
+The jsonl can contain page content and stays local under `~/.browser-harness-js`; recording therefore requires consent. Form inputs are masked during capture. See [`make-video.md`](skills/cdp/interaction-skills/make-video.md).
 
 ## Skills
 
@@ -71,7 +70,7 @@ This repo contains nine skills installable via `npx skills add`:
 
 | Skill | Description |
 |-------|------------|
-| **cdp** | Drive any Chromium-based browser, including Helium, via CDP — 56 domains, 652 typed methods; consent-based action recording and polished explanatory videos |
+| **cdp** | Drive any Chromium-based browser, including Helium, via CDP — 56 domains, 652 typed methods; Chrome extension relay preferred, remote debugging fallback; consent-based rrweb session recording |
 | **gsearch** | Search the web via Google through CDP — structured results in under 1 second; `follow <url>` opens a result link and reads its page text or JSON |
 | **gnews** | Search Google News through CDP (`tbm=nws`) — structured results (title, url, source, time, snippet) with the publisher's direct URL, no redirect wrapper |
 | **xsearch** | Search X (Twitter) via CDP — structured results (requires an active X login) |
@@ -87,10 +86,12 @@ This repo contains nine skills installable via `npx skills add`:
 - `skills/cdp/sdk/browser-harness-js`, tiny CLI that auto-spawns the server and forwards snippets
 - `skills/cdp/sdk/browser-cdp`, the one-shot sibling: `open / read / eval / click / close / list` against the running browser with no daemon, one page websocket per command, plain stdout (Node built-ins only)
 - `skills/cdp/sdk/repl.ts` — Node HTTP server holding one persistent `Session`
+- `skills/cdp/extension/` — MV3 CDP relay (`chrome.debugger`); preferred `session.connect()` pipe
 - `skills/cdp/sdk/session.ts` — the `Session` class: transport, connect, target routing, events, call observation
-- `skills/cdp/sdk/recording.ts` — consent, privacy scrubbing, action traces, and screenshot capture
-- `skills/cdp/sdk/video.ts` — edit-brief compiler and content-hashed provenance
-- `skills/cdp/sdk/video-render.ts` / `skills/cdp/sdk/video-template.html` — review renderer and verified MP4 export
+- `skills/cdp/sdk/extension-hub.ts` / `ws-server.ts` — inbound `/extension` WebSocket and connect() preference
+- `skills/cdp/sdk/chrome.ts` — `ext.*` helpers for Chrome tab/window/group commands (extension transport)
+- `skills/cdp/sdk/recording.ts` — consent, pinned rrweb fetch/cache, injection, local replay server
+- `skills/cdp/sdk/rrweb-replay.html` — player UI for `recordings replay`
 - `skills/cdp/sdk/gen.ts` — codegen: reads `browser_protocol.json` + `js_protocol.json` → typed wrappers
 - `skills/cdp/sdk/generated.ts` — every CDP method as `session.<Domain>.<method>(params)` (generated)
 - `skills/cdp/sdk/helpers.ts` — agent helpers for exactly the "things CDP structurally lacks" carve-out below: `drainSignals()` / `attachSignals()` (drainable signal queue), `pageInfo()` (modal-dialog detection), `resolveLocator()` / `parseAxLocators()` (locator resolution via the accessibility tree), `help()` (per-helper self-documentation), and the per-site recipe registry `listLearnings()` / `learnings(domain, tool, args)` over `skills/cdp/learnings/<domain>/manifest.json`

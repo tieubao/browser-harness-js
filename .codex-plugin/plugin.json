@@ -1,6 +1,6 @@
 {
   "name": "browser-harness-js",
-  "version": "0.9.0",
+  "version": "0.10.2",
   "description": "Drive any Chromium-based browser via the DevTools Protocol from JavaScript.",
   "author": {
     "name": "monotykamary",
@@ -21,7 +21,7 @@
       "Browser automation",
       "Typed CDP methods",
       "Cross-tab parallel use",
-      "Consent-based recording + explanatory videos"
+      "Consent-based rrweb session recording"
     ],
     "defaultPrompt": [
       "Open a website and inspect the page via the accessibility tree.",

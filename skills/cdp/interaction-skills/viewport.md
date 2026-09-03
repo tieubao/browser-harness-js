@@ -61,6 +61,57 @@ Mobile triggers responsive breakpoints and enables touch events. Sites with `@me
 
 If `Runtime.evaluate('innerWidth')` returns 0, you're attached to a non-window surface (omnibox popup, a DevTools target). See `connection.md` / `tabs.md` — use `listPageTargets()` and re-route with `session.use(...)`.
 
+## Layout sweep: measure one element across widths
+
+A layout bug that "looks wrong on smaller screens" is a number that varies with viewport width. Loop the width, read the number out of the DOM at every stop, and let the table say where the bug lives before you touch CSS. The same loop re-run after the fix is the proof.
+
+```js
+globalThis.rows = []
+for (const w of [390, 600, 768, 900, 1024, 1100, 1200, 1280, 1366, 1440, 1548, 1600, 1920]) {
+  await session.Emulation.setDeviceMetricsOverride({ width: w, height: 900, deviceScaleFactor: 1, mobile: w < 768 })
+  await session.Page.navigate({ url: 'http://localhost:3000/some/page' })
+  await new Promise(r => setTimeout(r, 2500))   // or a real readiness signal, see lifecycle-readiness.md
+  const { result } = await session.Runtime.evaluate({
+    returnByValue: true,
+    expression: `(() => {
+      const h = document.querySelector('h1')
+      const rg = document.createRange(); rg.selectNodeContents(h)
+      const lines = [...rg.getClientRects()]               // one rect per rendered line
+      const box = h.getBoundingClientRect(), cs = getComputedStyle(h)
+      const ctl = document.querySelector('article p').getBoundingClientRect()  // a control element
+      const textRight = Math.max(...lines.map(r => r.right))
+      return JSON.stringify({
+        w: innerWidth, col: Math.round(box.width),
+        boxRight: Math.round(box.right), ctlRight: Math.round(ctl.right),
+        gap: Math.round(box.right - textRight),
+        lines: Math.round(box.height / parseFloat(cs.lineHeight)),
+        fs: cs.fontSize, tw: cs.textWrapStyle || cs.textWrap,
+      })
+    })()`,
+  })
+  globalThis.rows.push(result.value)
+}
+```
+
+Then, as a separate one-line call: `globalThis.rows.join("\n")`.
+
+Why each piece is there:
+
+- `setDeviceMetricsOverride` **before** `Page.navigate` (the `matchMedia` trap below), one navigate per stop.
+- `Range.getClientRects()` gives one rectangle per rendered line, so `max(right)` is the true text edge; `getBoundingClientRect()` alone is the box the CSS gave it, which hides a ragged right edge.
+- A **control column** (here the paragraph's right edge) rules out a whole class of cause in the same row: if `boxRight === ctlRight` at every width, it is not padding.
+- Rows go into `globalThis` and print once: the REPL prints a single bare expression; a multi-statement snippet runs silently and looks like a hang.
+- Read the table for the **constant** before forming a theory (a column width that does not change across a band of viewports is the usual one), then sweep the suspect variable with the same probe:
+
+```js
+for (const px of [40, 38, 36, 34, 32]) {
+  // same page, same probe, one change:
+  // h.style.setProperty('font-size', px + 'px', 'important')
+}
+```
+
+Screenshots do not replace the numbers here: a headless capture taken before the web font loads wraps text with the fallback face and can show a "fixed" layout that is not. Numbers read after a settle delay do not have that problem.
+
 ## Traps
 
 - **Coordinate clicks become wrong as soon as the viewport changes.** Re-read rects with `getBoundingClientRect()` after any resize, not just after scrolling.

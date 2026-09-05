@@ -14,6 +14,9 @@
 //                                          operator's own browser; that is the feature)
 //   browser-cdp click <targetId> <x> <y>   real mouse click via Input.dispatchMouseEvent
 //                                          (React handlers that ignore el.click() honour this)
+//   browser-cdp pdf <targetId> <out.pdf>   Page.printToPDF at print-service options (US Letter,
+//                                          zero margins, backgrounds on, CSS @page honoured);
+//                                          the browser's own --print-to-pdf keeps default margins
 //   browser-cdp close <targetId>
 //   browser-cdp list                       page targets: id, url, title
 //
@@ -86,6 +89,19 @@ const commands = {
     ws.close();
     console.log("clicked", x, y);
   },
+  async pdf() {
+    if (!a3) throw new Error("pdf needs <targetId> <out.pdf>");
+    const ws = await connect(await target(arg));
+    const r = await ws.rpc("Page.printToPDF", {
+      printBackground: true, preferCSSPageSize: true,
+      paperWidth: 8.5, paperHeight: 11,
+      marginTop: 0, marginBottom: 0, marginLeft: 0, marginRight: 0,
+    });
+    ws.close();
+    const { writeFileSync } = await import("node:fs");
+    writeFileSync(a3, Buffer.from(r.data, "base64"));
+    console.log("wrote", a3);
+  },
   async close() { console.log(await (await fetch(`${base}/json/close/${arg}`)).text()); },
   async list() {
     for (const t of await targets()) if (t.type === "page") console.log(`${t.id}\t${t.url}\t${t.title}`);
@@ -93,7 +109,7 @@ const commands = {
 };
 
 if (!commands[cmd]) {
-  console.error("usage: browser-cdp open <url> [waitMs] | read <targetId> [waitMs] | eval <targetId> <js> | click <targetId> <x> <y> | close <targetId> | list");
+  console.error("usage: browser-cdp open <url> [waitMs] | read <targetId> [waitMs] | eval <targetId> <js> | click <targetId> <x> <y> | pdf <targetId> <out.pdf> | close <targetId> | list");
   process.exit(64);
 }
 commands[cmd]().catch((e) => { console.error(e.message); process.exit(1); });

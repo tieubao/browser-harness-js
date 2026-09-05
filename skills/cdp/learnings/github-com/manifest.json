@@ -1,0 +1,19 @@
+{
+  "id": "github-com",
+  "name": "GitHub (classic PAT form)",
+  "domains": ["github.com"],
+  "notes": ["notes/overview.md"],
+  "nodeTools": {
+    "patForm": {
+      "description": "Drive the classic Personal Access Token form: open the prefilled URL, set description + expiration through the native input setter, ensure the requested scopes are checked, click Generate, extract the ghp_ token by regex. Stops on a 'Confirm access' sudo re-auth page rather than clicking through it.",
+      "path": "tools/pat.mjs",
+      "callable": "patForm",
+      "args": {
+        "description": {"type": "string", "required": true},
+        "scopes": {"type": "array", "required": false, "description": "scope values, e.g. [\"admin:org\"]"},
+        "expirationLabel": {"type": "string", "required": false, "description": "visible label to click, default \"No expiration\""}
+      },
+      "returns": {"type": "object", "description": "{token} on success; {stop, ...} on sudo / missing scopes / no button / token not found"}
+    }
+  }
+}

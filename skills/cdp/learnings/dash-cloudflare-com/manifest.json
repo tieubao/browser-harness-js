@@ -1,0 +1,47 @@
+{
+  "id": "dash-cloudflare-com",
+  "name": "Cloudflare dashboard (cookie-authenticated API)",
+  "domains": ["dash.cloudflare.com"],
+  "notes": ["notes/overview.md"],
+  "nodeTools": {
+    "whoami": {
+      "description": "Signed-in user's email, read from the dashboard profile page. Returns {stop:\"sudo\"|\"turnstile\"|\"no-email-found\"} instead of clicking through a blocking page.",
+      "path": "tools/dash.mjs",
+      "callable": "whoami",
+      "args": {},
+      "returns": {"type": "string", "description": "email address, or {stop} on a blocking page"}
+    },
+    "api": {
+      "description": "Cookie-authenticated fetch(\"/api/v4\"+path) on the logged-in dash.cloudflare.com tab, acting as the signed-in user (no token, no CSRF header needed; GET/POST/PATCH verified 2026-09-04). Use for anything a scoped user token cannot reach: reading /user/tokens/permission_groups, writing a zone setting outside the token's policy.",
+      "path": "tools/dash.mjs",
+      "callable": "api",
+      "args": {
+        "path": {"type": "string", "required": true, "description": "e.g. \"/user/tokens\" or \"/zones/<id>/settings/ssl\""},
+        "method": {"type": "string", "required": false, "description": "default GET"},
+        "body": {"type": "object", "required": false}
+      },
+      "returns": {"type": "object", "description": "parsed JSON response body, or {stop} on a blocking page"}
+    },
+    "mintToken": {
+      "description": "Mint a user API token via the dashboard session. Built on api(). The minted value is returned to the caller only, never logged by this tool.",
+      "path": "tools/dash.mjs",
+      "callable": "mintToken",
+      "args": {
+        "name": {"type": "string", "required": true},
+        "policies": {"type": "array", "required": true, "description": "Cloudflare token policy objects: [{effect, resources, permission_groups}]"}
+      },
+      "returns": {"type": "object", "description": "{id, value} on success; {error} or {stop} otherwise"}
+    },
+    "setZoneSetting": {
+      "description": "PATCH one zone setting via the dashboard session. Built on api().",
+      "path": "tools/dash.mjs",
+      "callable": "setZoneSetting",
+      "args": {
+        "zoneId": {"type": "string", "required": true},
+        "key": {"type": "string", "required": true, "description": "e.g. ssl, always_use_https, min_tls_version, automatic_https_rewrites"},
+        "value": {"type": "string", "required": true}
+      },
+      "returns": {"type": "object", "description": "{key, value} on success; {error} or {stop} otherwise"}
+    }
+  }
+}

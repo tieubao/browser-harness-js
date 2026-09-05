@@ -14,9 +14,14 @@
 //                                          operator's own browser; that is the feature)
 //   browser-cdp click <targetId> <x> <y>   real mouse click via Input.dispatchMouseEvent
 //                                          (React handlers that ignore el.click() honour this)
-//   browser-cdp pdf <targetId> <out.pdf>   Page.printToPDF at print-service options (US Letter,
-//                                          zero margins, backgrounds on, CSS @page honoured);
-//                                          the browser's own --print-to-pdf keeps default margins
+//   browser-cdp pdf <targetId> <out.pdf> [--force]
+//                                          Page.printToPDF at print-service options: a CSS @page
+//                                          size or margin wins when the page declares one, else
+//                                          US Letter with zero margins; backgrounds on. The
+//                                          browser's own --print-to-pdf keeps default margins.
+//                                          Refuses a path not ending .pdf and never overwrites
+//                                          without --force: the path is argv, and an agent's argv
+//                                          can carry text it just read off an untrusted page.
 //   browser-cdp close <targetId>
 //   browser-cdp list                       page targets: id, url, title
 //
@@ -90,7 +95,10 @@ const commands = {
     console.log("clicked", x, y);
   },
   async pdf() {
-    if (!a3) throw new Error("pdf needs <targetId> <out.pdf>");
+    if (!a3) throw new Error("pdf needs <targetId> <out.pdf> [--force]");
+    if (!a3.endsWith(".pdf")) throw new Error(`refusing to write ${a3}: output path must end in .pdf`);
+    const { existsSync, writeFileSync } = await import("node:fs");
+    if (existsSync(a3) && a4 !== "--force") throw new Error(`refusing to overwrite ${a3}: pass --force`);
     const ws = await connect(await target(arg));
     const r = await ws.rpc("Page.printToPDF", {
       printBackground: true, preferCSSPageSize: true,
@@ -98,7 +106,6 @@ const commands = {
       marginTop: 0, marginBottom: 0, marginLeft: 0, marginRight: 0,
     });
     ws.close();
-    const { writeFileSync } = await import("node:fs");
     writeFileSync(a3, Buffer.from(r.data, "base64"));
     console.log("wrote", a3);
   },
@@ -109,7 +116,7 @@ const commands = {
 };
 
 if (!commands[cmd]) {
-  console.error("usage: browser-cdp open <url> [waitMs] | read <targetId> [waitMs] | eval <targetId> <js> | click <targetId> <x> <y> | pdf <targetId> <out.pdf> | close <targetId> | list");
+  console.error("usage: browser-cdp open <url> [waitMs] | read <targetId> [waitMs] | eval <targetId> <js> | click <targetId> <x> <y> | pdf <targetId> <out.pdf> [--force] | close <targetId> | list");
   process.exit(64);
 }
 commands[cmd]().catch((e) => { console.error(e.message); process.exit(1); });

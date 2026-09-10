@@ -1,4 +1,4 @@
-# dichvucong-dancuquocgia-gov-vn
+# dvc-cutru (dichvucong.dancuquocgia.gov.vn)
 
 The Bộ Công an residence portal: đăng ký tạm trú, gia hạn tạm trú and the other cư trú
 procedures. It is where a ward's residence services actually run; the national portal
@@ -8,14 +8,14 @@ to VNeID SSO (sso.dancuquocgia.gov.vn) when logged out. The login (QR or passwor
 with the human; every tool returns `{stop: "login-needed"}` instead of touching that page.
 
 ```js
-await learnings("dichvucong-dancuquocgia-gov-vn")
-await learnings("dichvucong-dancuquocgia-gov-vn", "open", { procedure: "TAMTRU_02" })
-await learnings("dichvucong-dancuquocgia-gov-vn", "status")
-await learnings("dichvucong-dancuquocgia-gov-vn", "fill", household)
-await learnings("dichvucong-dancuquocgia-gov-vn", "attach", { attachments: household.attachments })
-await learnings("dichvucong-dancuquocgia-gov-vn", "draft")
-await learnings("dichvucong-dancuquocgia-gov-vn", "printCt01", { dir: "/abs/dir" })
-await learnings("dichvucong-dancuquocgia-gov-vn", "submit")
+await learnings("dvc-cutru")
+await learnings("dvc-cutru", "open", { procedure: "TAMTRU_02" })
+await learnings("dvc-cutru", "status")
+await learnings("dvc-cutru", "fill", household)
+await learnings("dvc-cutru", "attach", { attachments: household.attachments })
+await learnings("dvc-cutru", "draft")
+await learnings("dvc-cutru", "printCt01", { dir: "/abs/dir" })
+await learnings("dvc-cutru", "submit")
 ```
 
 ## The form (dang-ky-tam-tru.html)

@@ -1,4 +1,4 @@
-// learnings/dichvucong-dancuquocgia-gov-vn/tools/cutru.mjs
+// learnings/dvc-cutru/tools/cutru.mjs
 // Residence filings (đăng ký / gia hạn tạm trú, Bộ Công an portal) driven on the signed-in
 // tab. Distilled 2026-09-10 from a gia hạn tạm trú filing. The portal is a jQuery +
 // bootstrap-table form behind a VNeID login that stays with the human; every tool here
@@ -67,7 +67,7 @@ async function requireForm(ctx) {
 
 export async function status(ctx) {
   const tab = await pickTab(ctx);
-  if (!tab) return { state: "no-portal-tab", hint: 'learnings("dichvucong-dancuquocgia-gov-vn","open",{procedure:"TAMTRU_02"}), then the human logs in with VNeID' };
+  if (!tab) return { state: "no-portal-tab", hint: 'learnings("dvc-cutru","open",{procedure:"TAMTRU_02"}), then the human logs in with VNeID' };
   if (/sso\.dancuquocgia/.test(tab.url)) return { stop: "login-needed", state: "login-needed", url: tab.url };
   if (FORM.test(tab.url)) {
     const s = await evaluate(ctx, `(()=>({ dossier: (document.body.innerText.match(/G01\\.[0-9.]+-[0-9]+-[0-9]+/) || [null])[0], fee: (document.getElementById("txtTONGPHI")||{}).value, reporter: (document.getElementById("txtFULLNAME")||{}).value, members: [...document.querySelectorAll("#divListNormal tbody tr")].map(r=>[...r.querySelectorAll("input[type=text]")].map(e=>e.value).join(" | ")), files: [...document.querySelectorAll("#dossier tbody tr")].map(r=>r.innerText.trim().replace(/\\s+/g," ").replace(/Bản gốc Bản sao Bản chứng thực Giấy tờ điện tử /,"").slice(0,100)) }))()`);

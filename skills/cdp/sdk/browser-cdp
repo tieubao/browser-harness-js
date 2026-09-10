@@ -24,8 +24,17 @@
 //                                          can carry text it just read off an untrusted page.
 //   browser-cdp close <targetId>
 //   browser-cdp list                       page targets: id, url, title
+//   browser-cdp learn new <short-id> --domains a.example,b.example [--name "Human name"]
+//                                          scaffold skills/cdp/learnings/<short-id>/
+//                                          (manifest.json + notes/overview.md + tools/<short-id>.mjs)
+//                                          so a new per-site learning starts from the registry's
+//                                          shape instead of a scratch script. Refuses an id that
+//                                          already exists, fails [a-z0-9-]{2,40}, or has no --domains.
+//   browser-cdp learn list                 ids under skills/cdp/learnings/ (one per line)
 //
 // BROWSER_CDP_PORT overrides 9222. Text dumps are capped at BROWSER_CDP_MAX chars (default 6000).
+import { listLearningIds, scaffoldLearning } from './learn-scaffold.ts';
+
 const [cmd, arg, a3, a4] = process.argv.slice(2);
 const wait = Number(a3 || 6000);
 const base = `http://127.0.0.1:${process.env.BROWSER_CDP_PORT || 9222}`;
@@ -113,10 +122,30 @@ const commands = {
   async list() {
     for (const t of await targets()) if (t.type === "page") console.log(`${t.id}\t${t.url}\t${t.title}`);
   },
+  async learn() {
+    if (arg === "list") {
+      for (const id of await listLearningIds()) console.log(id);
+      return;
+    }
+    if (arg === "new") {
+      const rest = process.argv.slice(4);
+      const id = rest[0];
+      if (!id) throw new Error("learn new needs <short-id>");
+      let domains, name;
+      for (let i = 1; i < rest.length; i++) {
+        if (rest[i] === "--domains") domains = rest[++i];
+        else if (rest[i] === "--name") name = rest[++i];
+      }
+      const root = await scaffoldLearning({ id, domains: (domains || "").split(","), name });
+      console.log("created", root);
+      return;
+    }
+    throw new Error("learn needs a subcommand: new <short-id> --domains a,b [--name \"...\"] | list");
+  },
 };
 
 if (!commands[cmd]) {
-  console.error("usage: browser-cdp open <url> [waitMs] | read <targetId> [waitMs] | eval <targetId> <js> | click <targetId> <x> <y> | pdf <targetId> <out.pdf> [--force] | close <targetId> | list");
+  console.error("usage: browser-cdp open <url> [waitMs] | read <targetId> [waitMs] | eval <targetId> <js> | click <targetId> <x> <y> | pdf <targetId> <out.pdf> [--force] | close <targetId> | list | learn new <short-id> --domains a,b [--name \"...\"] | learn list");
   process.exit(64);
 }
 commands[cmd]().catch((e) => { console.error(e.message); process.exit(1); });

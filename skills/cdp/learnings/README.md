@@ -79,3 +79,13 @@ recipe (court selectors, an API reverse-engineered from a Network panel, an
 anti-click-wrap extraction). Interaction-skill recipes that are page-mechanic
 rather than site-specific (dropdowns, OOPIFs, waits) belong in
 `../interaction-skills/` instead, where they apply to any site.
+
+## Scaffolding a new domain
+
+`browser-cdp learn new <short-id> --domains a.example,b.example [--name "Human name"]`
+creates `<short-id>/{manifest.json, notes/overview.md, tools/<short-id>.mjs}` with a
+single `status` node-tool (finds the first open tab matching `domains`) so the folder
+starts from the registry's shape instead of a scratch script. It refuses an id that
+already exists, fails `[a-z0-9-]{2,40}`, or is missing `--domains`. `browser-cdp learn
+list` prints existing ids. Restart the daemon (`browser-harness-js --restart`) before a
+freshly scaffolded tool is callable.

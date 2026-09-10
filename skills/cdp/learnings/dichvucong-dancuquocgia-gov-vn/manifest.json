@@ -1,0 +1,74 @@
+{
+  "id": "dichvucong-dancuquocgia-gov-vn",
+  "name": "Bộ Công an residence portal (đăng ký / gia hạn tạm trú)",
+  "domains": ["dichvucong.dancuquocgia.gov.vn", "dichvucong.bocongan.gov.vn"],
+  "notes": ["notes/overview.md"],
+  "nodeTools": {
+    "status": {
+      "description": "Where the portal tab is: no-portal-tab | login-needed (returned as {stop}) | dossier-list (with dossier/procedure/status rows) | form-open (dossier code, fee, declarer, members, attachment rows) | payment | portal.",
+      "path": "tools/cutru.mjs",
+      "callable": "status",
+      "args": {},
+      "returns": {"type": "object", "description": "{state, url, ...} or {stop:\"login-needed\"}"}
+    },
+    "open": {
+      "description": "Open the procedure entry on the ministry portal (TAMTRU_01 đăng ký tạm trú, TAMTRU_02 gia hạn tạm trú). Logged out, it lands on the VNeID SSO page, which stays with the human.",
+      "path": "tools/cutru.mjs",
+      "callable": "open",
+      "args": { "procedure": {"type": "string", "required": false, "description": "TAMTRU_01 | TAMTRU_02 (default)"} },
+      "returns": {"type": "object", "description": "status() after navigation"}
+    },
+    "edit": {
+      "description": "Reopen a saved draft or filed dossier in the form view by its numeric id (from the list page's update_hoso_dvc(<id>,2)).",
+      "path": "tools/cutru.mjs",
+      "callable": "edit",
+      "args": { "id": {"type": "string", "required": true} },
+      "returns": {"type": "object", "description": "status() after navigation"}
+    },
+    "fill": {
+      "description": "Fill the residence form from a household object: province/ward, declarer auto-fill (chkIS_REPORTER), case code, address, term, phone, email, note, members (name/dob/sex/id/rel), filer roles, liability tick, fee check. No submit.",
+      "path": "tools/cutru.mjs",
+      "callable": "fill",
+      "args": {
+        "case": {"type": "string", "required": true, "description": "e.g. TAT-GIAHAN-01"},
+        "address": {"type": "string", "required": true},
+        "to": {"type": "string", "required": true, "description": "dd/mm/yyyy, at most 2 years out"},
+        "phone": {"type": "string", "required": true},
+        "email": {"type": "string", "required": true},
+        "members": {"type": "array", "required": false, "description": "[{name, dob, sex: 2|3, id, rel: 04 Vợ | 05 Chồng | 08 Con}]"},
+        "filer_roles": {"type": "array", "required": false, "description": "any of CHUHO, CHUSOHUU, NGUOIGIAMHO"},
+        "province": {"type": "string", "required": false}, "ward": {"type": "string", "required": false},
+        "from": {"type": "string", "required": false}, "note": {"type": "string", "required": false}
+      },
+      "returns": {"type": "object", "description": "{reporter, members, fee}"}
+    },
+    "attach": {
+      "description": "Attachment rows + uploads. Row 0 is the portal's fixed CT01 row; entries without row are created with name. Verified by row text, since the input reads back empty after the AJAX upload.",
+      "path": "tools/cutru.mjs",
+      "callable": "attach",
+      "args": { "attachments": {"type": "array", "required": true, "description": "[{row?: 0, name?: string, type: 1 bản gốc | 2 bản sao | 6 giấy tờ điện tử, files: [absolute paths]}]"} },
+      "returns": {"type": "array", "description": "[{input, row}]"}
+    },
+    "draft": {
+      "description": "Lưu nháp after dropping blank member rows; returns the G01 dossier code(s) visible on the page it lands on.",
+      "path": "tools/cutru.mjs",
+      "callable": "draft",
+      "args": {},
+      "returns": {"type": "object", "description": "{url, dossiers}"}
+    },
+    "printCt01": {
+      "description": "Click In CT01 with downloads allowed into dir; the portal always writes CT01.pdf.",
+      "path": "tools/cutru.mjs",
+      "callable": "printCt01",
+      "args": { "dir": {"type": "string", "required": true, "description": "absolute download directory"} },
+      "returns": {"type": "object", "description": "{saved_under, file}"}
+    },
+    "submit": {
+      "description": "Nộp hồ sơ by a real coordinate click (a synthetic click is popup-blocked and the portal reports a payment-gateway error). Polls for the Vietcombank payment URL, which the human then pays.",
+      "path": "tools/cutru.mjs",
+      "callable": "submit",
+      "args": {},
+      "returns": {"type": "object", "description": "{state: payment|failed|unknown, url?, message?}"}
+    }
+  }
+}

@@ -26,9 +26,13 @@ const mask = (s) =>
     .replace(/Bearer\s+[\w.~+/=-]{8,}/gi, (m) => "Bearer " + brief(m.split(/\s+/)[1]))
     .replace(/\b[A-Za-z0-9_-]{32,}\b/g, brief);
 
+// Match the exact origin, never a prefix: dashboard.alchemy.com.evil.test starts with the same
+// string, and the tab this picks is the page the captured header gets evaluated in.
 async function useDashboardTab(ctx) {
   const targets = await ctx.listPageTargets();
-  const tab = targets.find((t) => t.url.startsWith(DASH));
+  const tab = targets.find((t) => {
+    try { return new URL(t.url).origin === DASH; } catch { return false; }
+  });
   if (!tab) throw new Error("no dashboard.alchemy.com tab open; open one and sign in first");
   await ctx.session.use(tab.targetId);
   return tab;
@@ -60,7 +64,12 @@ async function query(ctx, proc, input, args) {
   const supplied = args && args.auth;
   const header = supplied || (await captureAuth(ctx));
   const { status, body } = await trpc(ctx, proc, input, header);
-  if (status === 200) return JSON.parse(body).result.data;
+  if (status === 200) {
+    // Never let a SyntaxError carry a body snippet: an apps.getApps body holds live API keys.
+    let parsed;
+    try { parsed = JSON.parse(body); } catch { throw new Error(`${proc} ${status}: unparseable body (${body.length} bytes)`); }
+    return parsed.result.data;
+  }
   // A 401 means the header went stale (the dashboard rotates it every few minutes) or the tab is
   // signed out. Raise instead of retrying: a retry would replay the same dead header, and a
   // silent re-capture would hide an expired login. Drop the cache so the NEXT call sniffs afresh.
@@ -77,7 +86,7 @@ export async function captureAuth(ctx, args) {
   let found = null;
   const off = ctx.session.onEvent((method, params) => {
     if (found || method !== "Network.requestWillBeSent") return;
-    if (!/app-api\.alchemy\.com\/trpc/.test(params.request.url)) return;
+    if (!params.request.url.startsWith(TRPC)) return;
     const headers = params.request.headers;
     const key = Object.keys(headers).find((h) => h.toLowerCase() === "authorization");
     if (key) found = headers[key];

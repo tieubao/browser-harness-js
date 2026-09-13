@@ -31,6 +31,8 @@ that prints these as tables is ops-toolkit
 - **The page fetch needs an `AbortController`.** A page-side fetch under `awaitPromise` with no
   timeout wedges the whole REPL; recover with `browser-harness-js --restart` then `harness-connect`.
   The timeout here is 45s because the first breakdown after a reload has taken over 20s.
+- **The header rides a CDP `Runtime.evaluate` message.** Never wire a call-logging observer on this
+  session: anything that records outbound CDP traffic records the token with it.
 - **`apps.getApps` carries live API keys.** Every app object holds an `authToken`. The `apps` tool
   returns `sid` to name only, so no credential leaves the page.
 - **Errors are masked, aggressively.** Every string leaving the module through an `Error` passes a
@@ -59,11 +61,11 @@ await learnings("alchemy-dashboard", "summarize", { series })
 
 | Check | Observed |
 |---|---|
-| `apps` | 3 apps: `dfoundation`, `mochi-dev`, `mochi-prod` |
-| `appId` totals | mochi-prod 29,729,992; dfoundation 600,462 |
-| `method` totals | `alchemy_getAssetTransfers` 20,326,320; `getSignaturesForAddress` 8,896,320; `eth_call` 794,534 |
-| `network` totals | `BASE_MAINNET` 21,165,752; `SOLANA_MAINNET` 8,980,220; `ETH_MAINNET` 182,802 |
-| Cross-check | all three dimensions sum to 30,330,454 |
+| `apps` | 3 apps: `app-a`, `app-b`, `app-c` |
+| `appId` totals | `app-a` carried almost all of the window's units, `app-b` about 2 percent, `app-c` none |
+| `method` totals | one method accounted for two thirds of the units, the next for most of the rest |
+| `network` totals | two chains accounted for the units, a third was noise |
+| Cross-check | all three dimensions sum to the same total |
 | Buckets | 12 daily rows, first 2026-09-01, last 2026-09-12 |
 | Keys | the `appId` keys are exactly the `sid` values `apps` returned |
 
@@ -77,8 +79,7 @@ Negative control, the captured header with its last character flipped:
 
 ## Provenance
 
-2026-09-13 mochi CU-burn investigation (console-labs
-`docs/investigations/2026-09-13-alchemy-cu-burn-mochi-payment.md`): the question was which app and
-which RPC method burned 29.7M compute units in twelve days. Driven by hand first as scratch REPL
+2026-09-13, a private compute-unit burn investigation: the question was which app and which RPC
+method burned the month's compute units in twelve days. Driven by hand first as scratch REPL
 snippets (a header sniffer, a one-call-per-run fetcher, a Performance API lister), then distilled
 here. Related: `[[browser-harness-connect-via-harness-connect]]`, `[[browser-harness-js-priority]]`.

@@ -1,0 +1,47 @@
+{
+  "id": "alchemy-dashboard",
+  "name": "Alchemy dashboard (tRPC usage breakdown)",
+  "domains": ["dashboard.alchemy.com", "app-api.alchemy.com"],
+  "notes": ["notes/overview.md"],
+  "nodeTools": {
+    "captureAuth": {
+      "description": "Capture the dashboard's short-lived Bearer Authorization header from a live tRPC request (reloads the signed-in tab and reads Network.requestWillBeSent). Returns the value to the caller in memory only: it is never written to disk or logged. The other tools call this themselves; call it directly only to force a refresh.",
+      "path": "tools/alchemy.mjs",
+      "callable": "captureAuth",
+      "args": {
+        "force": {"type": "boolean", "required": false, "description": "re-sniff even when a header is already cached"}
+      },
+      "returns": {"type": "string", "description": "the Authorization header value; never print it"}
+    },
+    "usageBreakdown": {
+      "description": "Daily http usage buckets for one dimension, via usage.getBillingUsageBreakdownTimeseries. The only per-app / per-method / per-network source: the free plan's @alchemy/cli refuses --group-by and --filters. Raises on a non-200 (401 = stale header or signed-out tab) instead of retrying.",
+      "path": "tools/alchemy.mjs",
+      "callable": "usageBreakdown",
+      "args": {
+        "groupBy": {"type": "string", "required": true, "description": "appId | method | network"},
+        "start": {"type": "string", "required": true, "description": "ISO UTC, e.g. 2026-09-01T00:00:00.000Z"},
+        "end": {"type": "string", "required": true, "description": "ISO UTC"},
+        "auth": {"type": "string", "required": false, "description": "override the captured header; used for the 401 negative control"}
+      },
+      "returns": {"type": "array", "description": "[{timestamp, <key>: units, ...}] one row per day"}
+    },
+    "apps": {
+      "description": "sid to app-name map, via apps.getApps. Resolves the opaque sid keys an appId breakdown returns. Names only: the raw response also carries each app's live API key, which this tool drops.",
+      "path": "tools/alchemy.mjs",
+      "callable": "apps",
+      "args": {
+        "auth": {"type": "string", "required": false, "description": "override the captured header"}
+      },
+      "returns": {"type": "object", "description": "{ sid: name }"}
+    },
+    "summarize": {
+      "description": "Fold a breakdown timeseries into per-key totals. Pure: no page, no network, no auth.",
+      "path": "tools/alchemy.mjs",
+      "callable": "summarize",
+      "args": {
+        "series": {"type": "array", "required": true, "description": "the rows usageBreakdown returned"}
+      },
+      "returns": {"type": "object", "description": "{ key: total units }"}
+    }
+  }
+}

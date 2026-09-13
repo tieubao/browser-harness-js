@@ -1,0 +1,21 @@
+{
+  "id": "localhost-dev-page",
+  "name": "Local dev page needing a synthetic user-gesture click",
+  "notes": ["notes/overview.md"],
+  "nodeTools": {
+    "clickAndVerify": {
+      "description": "Click a button on a local dev page over a raw CDP WebSocket (bypasses ctx.session, for a throwaway browser instance the harness's own Session did not discover) and return before/after state. Use for a page that needs a real user gesture (e.g. resuming an AudioContext) and cannot take synthetic input via macOS assistive access.",
+      "path": "tools/click-and-verify.mjs",
+      "callable": "clickAndVerify",
+      "args": {
+        "port": {"type": "integer", "required": false, "description": "Remote debugging port, default 9333."},
+        "urlIncludes": {"type": "string", "required": true, "description": "Substring to match the target page's url, e.g. \"5173\"."},
+        "selector": {"type": "string", "required": true, "description": "CSS selector of the element to click."},
+        "before": {"type": "string", "required": true, "description": "JS expression evaluated before the click, e.g. a JSON.stringify of the state to compare."},
+        "after": {"type": "string", "required": true, "description": "JS expression evaluated after the click + delay."},
+        "delayMs": {"type": "integer", "required": false, "description": "Wait between click and the after read, default 2000."}
+      },
+      "returns": {"type": "object", "description": "{before, after}, the raw values of the before/after expressions."}
+    }
+  }
+}

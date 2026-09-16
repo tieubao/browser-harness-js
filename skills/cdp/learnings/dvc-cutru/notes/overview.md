@@ -53,10 +53,10 @@ ward officer once bounced a filing for lacking the portal-template CT01.
 ## Limits (learned 2026-09-16, đăng ký tạm trú)
 
 - **The main Helium profile is rejected by the VNeID SSO WAF** ("Request Rejected", F5 support
-  id) while curl and an incognito context get the login page. Open the portal in a fresh
-  `Target.createBrowserContext` and let the human log in there; `pickTab` finds the tab in any
-  context. `printCt01()` scopes `Browser.setDownloadBehavior` to that context, otherwise the
-  CT01 downloads nowhere.
+  id) while curl and an incognito context get the login page. `open({incognito: true})` opens
+  the portal in a fresh `Target.createBrowserContext` and activates it for the human to log in;
+  `pickTab` finds the tab in any context. `printCt01()` scopes `Browser.setDownloadBehavior` to
+  that context, otherwise the CT01 downloads nowhere.
 - **The ministry entry for TAMTRU_01 (ma-thu-tuc-public=26344) is dead**: "Không tìm thấy quy
   trình xử lý online". `open({procedure:"TAMTRU_01"})` goes straight to the cư trú form, and
   `fill({procedure})` picks `cboBPROC_TYPE_CODE` (case `TAT-DKTT-THUONG` for a household).
@@ -70,8 +70,11 @@ ward officer once bounced a filing for lacking the portal-template CT01.
   after the click, and a `status()` read in between saw an empty member table. Re-open the draft
   with `edit({id})` and read it back before trusting it; on 2026-09-16 the first save lost the
   members and a second save from the edit view ("Cập nhật thành công") fixed it.
-- The Chưa gửi list (`xem-ho-so.html`) is not matched by `status()`, which only parses
-  `ho-so.html`; the draft id is in `view_hoso_dvc(<id>,2)` on that page.
+- **`status()` now matches the Chưa gửi / Mới đăng ký lists too**, not just the filed
+  `ho-so.html`: it walks `[onclick*="view_hoso_dvc"]` rows on either page, reading the id from
+  `view_hoso_dvc(<id>,<type>)` and deriving `status` from the `xem-ho-so.html?type=N` bucket
+  (1 Chưa gửi, 2 Mới đăng ký, 3 Bị trả lại, 4 Đã xử lý, 5 Đang xử lý) when the row itself has no
+  "Trạng thái:" line. Falls back to the old flat-text regex if no such rows are found.
 
 ## Provenance
 

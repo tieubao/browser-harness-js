@@ -69,6 +69,33 @@ async function requireForm(ctx) {
   return s;
 }
 
+// xem-ho-so.html?type=N carries no "Trạng thái:" text per row; the list page itself names the
+// bucket. Map kept here since both the DOM path and its fallback need it.
+const STATUS_BY_TYPE = { 1: "Chưa gửi", 2: "Mới đăng ký", 3: "Bị trả lại", 4: "Đã xử lý", 5: "Đang xử lý" };
+function statusFromUrl(url) {
+  const m = /[?&]type=(\d)/.exec(url || "");
+  return (m && STATUS_BY_TYPE[m[1]]) || "";
+}
+
+// Pure so it is testable without a DOM: rows is [{text, onclick}] pulled from
+// [onclick*="view_hoso_dvc"] elements (works on both ho-so.html and xem-ho-so.html), url is the
+// page url (used only to derive status on the xem-ho-so.html type=N lists, which have no
+// "Trạng thái:" line).
+export function parseDossierRows(rows, url) {
+  return (rows || []).map((r) => {
+    const text = (r.text || "").replace(/[ \t]+/g, " ");
+    const idM = /view_hoso_dvc\((\d+)/.exec(r.onclick || "");
+    const procM = /Thủ tục hành chính:\s*\n?([^\n]+)/.exec(text);
+    const statusM = /Trạng thái:\s*\n?([^\n]+)/.exec(text);
+    return {
+      dossier: (text.match(/G01\.[0-9.]+-[0-9]+-[0-9]+/) || [null])[0],
+      procedure: procM ? procM[1].trim() : "",
+      status: statusM ? statusM[1].trim() : statusFromUrl(url),
+      id: idM ? Number(idM[1]) : null,
+    };
+  });
+}
+
 export async function status(ctx) {
   const tab = await pickTab(ctx);
   if (!tab) return { state: "no-portal-tab", hint: 'learnings("dvc-cutru","open",{procedure:"TAMTRU_02"}), then the human logs in with VNeID' };
@@ -79,8 +106,16 @@ export async function status(ctx) {
   }
   if (/pay\.vietcombank/.test(tab.url)) return { state: "payment", url: tab.url };
   if (/ho-so\.html/.test(tab.url)) {
-    const rows = await evaluate(ctx, `(()=>{const t=document.body.innerText.replace(/[ \\t]+/g," "); return [...t.matchAll(/(G01\\.[0-9.]+-[0-9]+-[0-9]+)\\s*\\n?Thủ tục hành chính:\\s*\\n?([^\\n]+)[\\s\\S]*?Trạng thái:\\s*\\n?([^\\n]+)/g)].map(m=>({dossier:m[1], procedure:m[2].trim(), status:m[3].trim()}))})()`);
-    return { state: "dossier-list", url: tab.url, dossiers: rows };
+    // ho-so.html (đã nộp) and xem-ho-so.html?type=N (Chưa gửi / Mới đăng ký / ...) both render
+    // each row through onclick="get_info_hoso(0);view_hoso_dvc(<id>,<type>)"; walk those
+    // elements so one parser covers both pages and picks up the numeric dossier id.
+    const nodeRows = await evaluate(ctx, `(()=>[...document.querySelectorAll('[onclick*="view_hoso_dvc"]')].map(el=>({text: el.innerText, onclick: el.getAttribute("onclick")})))()`);
+    let dossiers = parseDossierRows(nodeRows, tab.url);
+    if (!dossiers.length) {
+      // Fallback for a page layout with no view_hoso_dvc markup (nothing prior regresses).
+      dossiers = await evaluate(ctx, `(()=>{const t=document.body.innerText.replace(/[ \\t]+/g," "); return [...t.matchAll(/(G01\\.[0-9.]+-[0-9]+-[0-9]+)\\s*\\n?Thủ tục hành chính:\\s*\\n?([^\\n]+)[\\s\\S]*?Trạng thái:\\s*\\n?([^\\n]+)/g)].map(m=>({dossier:m[1], procedure:m[2].trim(), status:m[3].trim(), id:null}))})()`);
+    }
+    return { state: "dossier-list", url: tab.url, dossiers };
   }
   return { state: "portal", url: tab.url };
 }
@@ -88,6 +123,16 @@ export async function status(ctx) {
 export async function open(ctx, args = {}) {
   const url = ENTRY[args.procedure || "TAMTRU_02"];
   if (!url) throw new Error(`unknown procedure ${args.procedure}; known: ${Object.keys(ENTRY).join(", ")}`);
+  if (args.incognito) {
+    // The VNeID SSO WAF answers "Request Rejected" to the main Helium profile; a fresh browser
+    // context gets the login page instead, and the human logs in inside that window.
+    const { browserContextId } = await ctx.session.Target.createBrowserContext({});
+    const { targetId } = await ctx.session.Target.createTarget({ url, browserContextId });
+    await ctx.session.use(targetId);
+    await ctx.session.Target.activateTarget({ targetId });
+    await wait(6000);
+    return status(ctx);
+  }
   const tab = await pickTab(ctx);
   if (tab) await ctx.session.Page.navigate({ url });
   else { const { targetId } = await ctx.session.Target.createTarget({ url }); await ctx.session.use(targetId); }

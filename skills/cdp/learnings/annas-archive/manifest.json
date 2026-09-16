@@ -1,0 +1,41 @@
+{
+  "id": "annas-archive",
+  "name": "Anna's Archive (title to MD5 via the search page)",
+  "domains": ["annas-archive.gl"],
+  "notes": ["notes/overview.md"],
+  "nodeTools": {
+    "search": {
+      "description": "Load the public search page in a real tab and return the result cards as {md5, ext, size, year, text}. Exists because the CLI's HTML search gets a 403 anti-bot challenge on every mirror; a browser tab clears it. Reuses an open annas-archive.gl tab so the challenge cookie carries across calls.",
+      "path": "tools/annas.mjs",
+      "callable": "search",
+      "args": {
+        "query": {"type": "string", "required": true, "description": "title and author words"},
+        "ext": {"type": "string", "required": false, "description": "epub (default) | pdf | mobi | azw3"},
+        "lang": {"type": "string", "required": false, "description": "AA lang filter, default en (soft ranking hint)"},
+        "limit": {"type": "integer", "required": false, "description": "rows to return, default 5"}
+      },
+      "returns": {"type": "object", "description": "{query, state: ready|empty|timeout, rows: [...]}"}
+    },
+    "probe": {
+      "description": "Diagnostic. Navigate to a search and sample the page once a second (href, readyState, card count, first card texts). Use when search() returns rows that do not match the query.",
+      "path": "tools/annas.mjs",
+      "callable": "probe",
+      "args": {
+        "query": {"type": "string", "required": true},
+        "seconds": {"type": "integer", "required": false, "description": "default 12"}
+      },
+      "returns": {"type": "array", "description": "one sample per second"}
+    },
+    "resolve": {
+      "description": "Map a list of titles to one MD5 each (best epub whose card text contains every significant title word, else first epub, else first row). Returns pick text and up to 3 alternatives per title so misses can be eyeballed before spending annas-fetch quota. The download itself stays in ops-toolkit tools/annas-fetch (member key via op run).",
+      "path": "tools/annas.mjs",
+      "callable": "resolve",
+      "args": {
+        "titles": {"type": "array", "required": true, "description": "strings, or {query, match?, ext?} objects"},
+        "ext": {"type": "string", "required": false, "description": "default extension, epub"},
+        "lang": {"type": "string", "required": false, "description": "default en"}
+      },
+      "returns": {"type": "array", "description": "[{query, state, md5, pick, alternatives}]"}
+    }
+  }
+}

@@ -18,8 +18,12 @@
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 const PORTAL = /dancuquocgia\.gov\.vn|bocongan\.gov\.vn|pay\.vietcombank\.com\.vn/;
 const FORM = /dang-ky-tam-tru\.html/;
+// The ministry entry for TAMTRU_01 (ma-thu-tuc-public=26344) answers "Không tìm thấy quy trình
+// xử lý online" since 2026-09-16, so that procedure opens the cư trú form directly and fill()
+// picks the procedure in cboBPROC_TYPE_CODE (the form serves every TAMTRU_* code).
+const DIRECT_FORM = "https://dichvucong.dancuquocgia.gov.vn/portal/p/home/dang-ky-tam-tru.html";
 const ENTRY = {
-  TAMTRU_01: "https://dichvucong.bocongan.gov.vn/bo-cong-an/tiep-nhan-online/chon-truong-hop-ho-so?ma-thu-tuc-public=26344",
+  TAMTRU_01: DIRECT_FORM,
   TAMTRU_02: "https://dichvucong.bocongan.gov.vn/bo-cong-an/tiep-nhan-online/chon-truong-hop-ho-so?ma-thu-tuc-public=26345",
 };
 
@@ -55,7 +59,7 @@ const HELPERS = `
   const tick = (id, on) => { const c = document.getElementById(id); if (!c) throw new Error("missing #" + id); if (c.checked !== on) c.click(); };
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const btn = (re) => [...document.querySelectorAll("button, a")].find((x) => re.test(x.innerText) && x.offsetParent !== null);
-  const dropBlankMembers = async () => { for (const r of [...document.querySelectorAll("#divListNormal tbody tr")]) { const n = r.querySelector("input[type=text]"); if (n && !n.value.trim()) { const d = r.querySelector("a.del_CUNGTD"); if (d) { d.click(); await sleep(500); } } } };
+  const dropBlankMembers = async () => { for (const r of [...document.querySelectorAll("#divListNormal tbody tr")]) { const n = r.querySelector("input[id^=txtFULLNAME_CUNGTD]") || r.querySelector("input[type=text]"); if (n && !n.value.trim()) { const d = r.querySelector("a.del_CUNGTD"); if (d) { d.click(); await sleep(500); } } } };
   window.confirm = () => true;
 `;
 
@@ -105,6 +109,7 @@ export async function fill(ctx, d) {
   const roles = { CHUHO: "chkCHUHO_FILER", CHUSOHUU: "chkCHUSOHUU_FILER", NGUOIGIAMHO: "chkNGUOIGIAMHO_FILER" };
   return evaluate(ctx, `(async () => { ${HELPERS}
     if (${JSON.stringify(!!d.province)}) { setS("cboRECEIVE_ADDR_CITY_CODE", ${JSON.stringify(d.province || "")}); await sleep(1500); setS("cboRECEIVE_ADDR_VILLAGE_CODE", ${JSON.stringify(d.ward || "")}); await sleep(1000); }
+    if (${JSON.stringify(!!d.procedure)}) { setS("cboBPROC_TYPE_CODE", ${JSON.stringify(d.procedure || "")}); await sleep(2500); }
     const rep = document.getElementById("chkIS_REPORTER"); if (rep && !rep.checked) { rep.click(); await sleep(2500); }
     setS("cboBPROC_CASE_CODE", ${JSON.stringify(d.case)}); await sleep(1500);
     setT("txtSUGGEST_ADDRESS", ${JSON.stringify(d.address)});
@@ -117,7 +122,7 @@ export async function fill(ctx, d) {
     await dropBlankMembers();
     const members = ${JSON.stringify(d.members || [])};
     for (let i = 0; i < members.length; i++) {
-      if (!document.getElementById("txtFULLNAME_CUNGTD" + i)) { document.querySelector("#divListNormal a.add_CUNGTD").click(); await sleep(1000); }
+      if (!document.getElementById("txtFULLNAME_CUNGTD" + i)) { (document.querySelector("#divListNormal a.add_CUNGTD") || document.querySelector(".addrow_CUNGTD")).click(); await sleep(1000); }
       const m = members[i];
       setT("txtFULLNAME_CUNGTD" + i, m.name); setT("txtDOB_CUNGTD" + i, m.dob); setS("cboGENDER_CUNGTD" + i, m.sex);
       setT("txtIDENTIFIER_NOCARD_NUMBER_CUNGTD" + i, m.id); setS("cboRELATIONSHIP_CHUHO_CUNGTD" + i, m.rel);
@@ -134,6 +139,10 @@ export async function attach(ctx, d) {
   await requireForm(ctx);
   const plan = await evaluate(ctx, `(async () => { ${HELPERS}
     const box = document.getElementById("dossier"); const out = [];
+    // TAMTRU_01 lists sub-cases (chỗ ở thuộc sở hữu của mình, thuê/mượn, ...) and only builds
+    // the document rows once one is loaded; TAMTRU_02 has no sub-cases and the rows are already there.
+    const sub = ${JSON.stringify(d.subcase == null ? null : d.subcase)};
+    if (sub != null && typeof load_table_tphs_new === "function" && !box.querySelector("#tphs_new_" + sub + " tbody tr")) { load_table_tphs_new(sub); await sleep(3000); }
     for (const a of ${JSON.stringify(d.attachments || [])}) {
       let i = a.row;
       if (i == null) { document.getElementById("btnDocument").click(); await sleep(900); i = box.querySelectorAll("tbody tr").length - 1; setT("lblFILE_TYPE_NAME" + i, a.name); }
@@ -168,7 +177,12 @@ export async function printCt01(ctx, args = {}) {
   await requireForm(ctx);
   const dir = args.dir;
   if (!dir) throw new Error("printCt01 needs {dir}: an absolute download directory");
-  await ctx.session.Browser.setDownloadBehavior({ behavior: "allow", downloadPath: dir, eventsEnabled: true });
+  // The download rule is per browser context: a portal tab opened in an incognito context
+  // (the main profile trips the SSO WAF, see notes) would otherwise download nowhere.
+  const tab = await pickTab(ctx);
+  const info = (await ctx.session.Target.getTargets()).targetInfos.find((t) => t.targetId === tab.targetId);
+  const scope = info && info.browserContextId ? { browserContextId: info.browserContextId } : {};
+  await ctx.session.Browser.setDownloadBehavior({ behavior: "allow", downloadPath: dir, eventsEnabled: true, ...scope });
   await evaluate(ctx, `(()=>{const b=[...document.querySelectorAll("button, a")].find(x=>/^\\s*In CT01\\s*$/.test(x.innerText)); if(!b) throw new Error("no In CT01"); b.click(); return 1})()`);
   await wait(6000);
   return { saved_under: dir, file: "CT01.pdf", note: "the portal always names it CT01.pdf; rename before the next print or it overwrites" };

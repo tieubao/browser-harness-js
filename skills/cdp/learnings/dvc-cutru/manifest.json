@@ -10,7 +10,7 @@
   ],
   "nodeTools": {
     "status": {
-      "description": "Where the portal tab is: no-portal-tab | login-needed (returned as {stop}) | dossier-list (with dossier/procedure/status rows) | form-open (dossier code, fee, declarer, members, attachment rows) | payment | portal.",
+      "description": "Where the portal tab is: no-portal-tab | login-needed (returned as {stop}) | dossier-list (dossier/procedure/status/id rows, covers both the ho-so.html filed list and the xem-ho-so.html Chưa gửi/Mới đăng ký/... lists; id is the numeric dossier id edit() needs) | form-open (dossier code, fee, declarer, members, attachment rows) | payment | portal.",
       "path": "tools/cutru.mjs",
       "callable": "status",
       "args": {},
@@ -28,6 +28,11 @@
           "type": "string",
           "required": false,
           "description": "TAMTRU_01 | TAMTRU_02 (default)"
+        },
+        "incognito": {
+          "type": "boolean",
+          "required": false,
+          "description": "default false. The main Helium profile is rejected by the VNeID SSO WAF; true opens a fresh browser context instead, where the human logs in."
         }
       },
       "returns": {

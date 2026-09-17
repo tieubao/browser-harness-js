@@ -99,10 +99,10 @@ These globals are pre-loaded — no imports needed:
 - `cdp(sessionId, method, params)` — call any CDP method on an **explicit** `sessionId` without touching the active-session pointer: `cdp(sid, 'Page.enable', {})`. The multi-tab primitive: the one-tab-per-call skills route every call this way so concurrent tabs never race `session.use`. Equivalent to `session._call(method, params, { sessionId })`.
 - `session.closeTab(targetId, sessionId?)` — close a tab and detach: `window.close()` on the session, then `Target.closeTarget`. Fire-and-forget in a `finally` (`.catch(() => {})`) so cleanup is guaranteed and never blocks the return. Closes are serialized.
 - `startRecording(name?, title?)` / `stopRecording()` / `recordingStatus()`, consent-based rrweb DOM recording (not screenshots). Snake-case `start_recording` / `stop_recording` aliases are also available. See `interaction-skills/make-video.md`.
-- `attachTab(match)` : find one page target by targetId hex prefix (6+ chars) or RegExp/substring against the URL, attach, return `{sessionId, targetId, url}`. Throws on zero or multiple matches.
-- `evalFile(sessionId, file, opts?)` : run a local JS file via `Runtime.evaluate` on an explicit session, bounded by a required timeout (default 30s). `opts.out` writes the result to a file and returns its byte count instead.
-- `waitForUrl(sessionId, test, opts?)` : poll `location.href` on an explicit session until `test` (RegExp or predicate) passes; default 5min bound, 5s interval.
-- `deepQuery(sessionId, selector, opts?)` : page-side walker crossing open shadow roots, returns visible `{text,x,y,w,h,disabled}` matches; `opts.text` filters by text/aria-label. Read-only.
+- `attachTab(match)` : find one page target by an uppercase hex targetId prefix (6-32 chars, only used when a target actually starts with it) or RegExp/substring against the URL, attach, return `{sessionId, targetId, url}`. Throws on zero or multiple matches.
+- `evalFile(sessionId, file, opts?)` : run a local JS file via `Runtime.evaluate` on an explicit session, evaluated as-is (never wrapped), so the file must be an expression or script, typically `(async()=>{ ... })()`, since a top-level `return` is a page-side SyntaxError. Bounded by a required timeout (default 30s). `opts.out` writes the result to a file (as `String(value)` when JSON cannot serialize it) and returns its byte count instead.
+- `waitForUrl(sessionId, test, opts?)` : poll `location.href` on an explicit session until `test` (RegExp or predicate) passes; each poll is itself bounded so one hung poll cannot defeat the overall deadline; default 5min bound, 5s interval.
+- `deepQuery(sessionId, selector, opts?)` : page-side walker crossing open shadow roots, returns visible `{text,x,y,w,h,disabled,inViewport}` matches (`inViewport` is informational, not filtered on); `opts.text` filters by text/aria-label, `opts.timeoutMs` bounds the evaluate (default 15s). Read-only.
 
 ### Recordings
 

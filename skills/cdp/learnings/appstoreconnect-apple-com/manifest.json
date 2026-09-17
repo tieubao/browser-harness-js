@@ -1,0 +1,66 @@
+{
+  "id": "appstoreconnect-apple-com",
+  "name": "App Store Connect (cookie-authenticated iris API)",
+  "domains": ["appstoreconnect.apple.com"],
+  "notes": ["notes/overview.md"],
+  "nodeTools": {
+    "status": {
+      "description": "Find or open a signed-in App Store Connect tab. Read-only: never mutates app data.",
+      "path": "tools/asc.mjs",
+      "callable": "status",
+      "args": {},
+      "returns": {"type": "object", "description": "{signedIn, url, tabId}"}
+    },
+    "inventory": {
+      "description": "GET /iris/v1/apps with versions, plus the active (filter[removed]=false) and removed (filter[removed]=true) name lists. Read-only.",
+      "path": "tools/asc.mjs",
+      "callable": "inventory",
+      "args": {},
+      "returns": {"type": "object", "description": "{apps:[{id,name,bundleId,sku,versions}], active:[name], removed:[name]} or {stop:\"not-signed-in\"}"}
+    },
+    "appState": {
+      "description": "One app's availability (territory count + availableInNewTerritories), review submissions, versions, in-app purchase count, beta groups, builds. Read-only.",
+      "path": "tools/asc.mjs",
+      "callable": "appState",
+      "args": {
+        "id": {"type": "string", "required": true, "description": "App Store Connect app id, e.g. \"1671424812\""}
+      },
+      "returns": {"type": "object", "description": "{availableCount, availableInNewTerritories, reviewSubmissions, versions, inAppPurchaseCount, betaGroups, builds} or {stop:\"not-signed-in\"}"}
+    },
+    "takeOffSale": {
+      "description": "WRITE. PATCH every available territoryAvailabilities/<id> to available:false, 10 at a time. Returns a status-code histogram, not per-territory detail.",
+      "path": "tools/asc.mjs",
+      "callable": "takeOffSale",
+      "args": {
+        "id": {"type": "string", "required": true}
+      },
+      "returns": {"type": "object", "description": "{territories, statusCounts: {\"200\": n, ...}}"}
+    },
+    "clearFutureTerritories": {
+      "description": "WRITE, UI-only step. The API refuses to change availableInNewTerritories directly, so this navigates the tab to the pricing page and drives Manage -> Manage Availability -> uncheck \"automatically available in all future...\" -> Next -> Confirm, then reads the flag back.",
+      "path": "tools/asc.mjs",
+      "callable": "clearFutureTerritories",
+      "args": {
+        "id": {"type": "string", "required": true}
+      },
+      "returns": {"type": "object", "description": "{manage, manageAvailability, uncheck, next, confirm, availableInNewTerritories}"}
+    },
+    "removeApp": {
+      "description": "WRITE, destructive but restorable from Removed Apps. Refuses unless the app's current name equals expectName exactly, then PATCHes removed:true and polls filter[removed]=true for up to 30s (the flag lags about 20s). On failure returns the server's errors[].code and detail verbatim.",
+      "path": "tools/asc.mjs",
+      "callable": "removeApp",
+      "args": {
+        "id": {"type": "string", "required": true},
+        "expectName": {"type": "string", "required": true, "description": "Must equal the app's current name exactly, or the call refuses without issuing the PATCH."}
+      },
+      "returns": {"type": "object", "description": "{refused:reason,...} on a guard failure; {removed:false,status,errors} on a rejected PATCH; {removed:true,confirmed} on success"}
+    },
+    "agreements": {
+      "description": "Read the Business page for agreement rows and tax-form rows. Read-only.",
+      "path": "tools/asc.mjs",
+      "callable": "agreements",
+      "args": {},
+      "returns": {"type": "object", "description": "{agreements, taxForms} (flattened page text)"}
+    }
+  }
+}

@@ -37,11 +37,32 @@ SDK_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
 REPL="$SDK_DIR/repl.ts"
 
 LOG="${CDP_REPL_LOG:-/tmp/browser-harness-js.log}"
+PIDFILE="${CDP_REPL_PID_FILE:-/tmp/browser-harness-js.pid}"
 
 # The on-disk SDK version (read fresh each call). The daemon serves its own
 # boot-cached copy in /health, so a mismatch reveals a stale running daemon.
 sdk_version() {
   sed -n 's/^[[:space:]]*"version":[[:space:]]*"\([^"]*\)".*/\1/p' "$SDK_DIR/package.json" 2>/dev/null | head -1
+}
+
+# The daemon's own pid, from /health (authoritative, matches the process
+# actually serving requests) falling back to the pidfile it writes at boot.
+daemon_pid() {
+  local pid
+  pid="$(curl -fsS --max-time 1 "$URL/health" 2>/dev/null | sed -n 's/.*"pid":\([0-9]*\).*/\1/p')"
+  [ -n "$pid" ] && { printf '%s\n' "$pid"; return 0; }
+  [ -f "$PIDFILE" ] && cat "$PIDFILE"
+}
+
+# Block until $1 (a pid) is gone, up to ~5s. Returns 1 if it's still alive.
+wait_for_pid_exit() {
+  local pid="$1"
+  [ -z "$pid" ] && return 0
+  for _ in $(seq 1 50); do
+    kill -0 "$pid" 2>/dev/null || return 0
+    sleep 0.1
+  done
+  return 1
 }
 
 # The REPL server runs on Node.js (no runtime auto-install — Node is expected
@@ -120,8 +141,28 @@ case "${1:-}" in
     fi
     ;;
   --restart)
-    is_up && curl -s -X POST "$URL/quit" >/dev/null 2>&1 || true
-    sleep 0.2
+    # /quit tells the old daemon to shut down, but freeing the port and the
+    # process actually exiting are two different events (a hung CDP/extension
+    # socket can hold the event loop open past server.close()). A fixed sleep
+    # then trusting is_up() as "restart worked" can true-positive on the OLD
+    # process still answering health checks, so the wrapper would declare
+    # success and hand back a "fresh" daemon while the old repl.ts (and its
+    # stale cached module imports) kept running underneath.
+    old_pid=""
+    if is_up; then
+      old_pid="$(daemon_pid)"
+      curl -s -X POST "$URL/quit" >/dev/null 2>&1 || true
+    fi
+    if [ -n "$old_pid" ] && ! wait_for_pid_exit "$old_pid"; then
+      kill -TERM "$old_pid" 2>/dev/null || true
+      wait_for_pid_exit "$old_pid" || kill -KILL "$old_pid" 2>/dev/null || true
+    fi
+    # Confirm the port is actually free before claiming a new one.
+    for _ in $(seq 1 30); do is_up || break; sleep 0.1; done
+    if is_up; then
+      echo "browser-harness-js: old daemon (pid ${old_pid:-unknown}) would not release $URL after 5s" >&2
+      exit 1
+    fi
     start_repl
     curl -sS "$URL/health"; echo
     ;;

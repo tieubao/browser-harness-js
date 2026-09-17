@@ -22,7 +22,7 @@ import { axView, axDiff, parseAxRefs, parseAxLocators } from './axview.ts';
 import { RecordingManager } from './recording.ts';
 import * as Generated from './generated.ts';
 import { createServer, type IncomingMessage } from 'node:http';
-import { readFileSync } from 'node:fs';
+import { readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { extraHelpers } from './helpers.ts';
 
 // Read once at boot and cache for the process lifetime, so /health reports the
@@ -107,6 +107,14 @@ async function axType(ref: number | string, refs: Map<number, number> | string |
 const PORT = Number(process.env.CDP_REPL_PORT ?? 9876);
 const startedAt = Date.now();
 
+// The wrapper's `--restart` needs to know THIS process's pid (to wait for it
+// to actually exit, not just for the port to answer /health again) and
+// `--status` needs to surface it so a stale daemon is visible instead of
+// silently serving stale cached imports. Written once at boot, best-effort
+// (a failed write only degrades --restart to its old fixed-sleep behavior).
+const PID_FILE = process.env.CDP_REPL_PID_FILE ?? '/tmp/browser-harness-js.pid';
+try { writeFileSync(PID_FILE, String(process.pid)); } catch { /* best-effort */ }
+
 function isExpression(code: string): boolean {
   const trimmed = code.trim();
   if (!trimmed) return false;
@@ -165,6 +173,7 @@ const server = createServer((req, res) => {
     res.end(JSON.stringify({
       ok: true,
       version: VERSION,
+      pid: process.pid,
       uptime: Math.floor((Date.now() - startedAt) / 1000),
       connected: session.isConnected(),
       transport: session.getTransport() ?? null,
@@ -204,7 +213,7 @@ const server = createServer((req, res) => {
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ ok: true }));
     // Delay shutdown so the response flushes over the wire first.
-    setTimeout(() => { server.close(); session.close(); process.exit(0); }, 50);
+    setTimeout(shutdown, 50);
     return;
   }
 
@@ -234,3 +243,24 @@ server.listen(PORT, '127.0.0.1', () => {
     message: `CDP REPL listening on http://127.0.0.1:${port}`,
   }));
 });
+
+// The previous /quit handler left the process alive if a hung CDP/extension
+// WebSocket kept the event loop busy or session.close() threw before
+// process.exit() ran: server.close() frees the port immediately (so a new
+// daemon can bind) while the OLD process survives as a zombie still serving
+// its stale extension connection and its own cached module imports --
+// exactly the "restart looked fresh but the old repl.ts kept running" bug.
+// closeAllConnections() force-drops keep-alive/upgraded sockets so nothing
+// can hold the event loop open, and the trailing setTimeout guarantees exit
+// even if session.close() throws or hangs.
+function shutdown(): void {
+  try { server.closeAllConnections(); } catch { /* older Node: no-op */ }
+  try { server.close(); } catch { /* already closed */ }
+  try { session.close(); } catch { /* best-effort */ }
+  try { unlinkSync(PID_FILE); } catch { /* best-effort */ }
+  setTimeout(() => process.exit(0), 50);
+}
+
+// `--restart` sends SIGTERM (after escalating past a hung /quit) as the
+// forceful path; handle it the same way so that path is also graceful.
+process.on('SIGTERM', shutdown);

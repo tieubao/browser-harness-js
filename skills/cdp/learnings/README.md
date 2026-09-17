@@ -67,6 +67,17 @@ questions — the source is concatenated inside an `(async function(args){ ... }
 wrapper). It runs in the browser page via `Runtime.evaluate`, returns whatever
 the named function returns.
 
+## Editing a learning module
+
+The REPL daemon is one long-lived Node process, and it caches every module it loads
+(node-tools via `import()`, and anything a node-tool itself imports) for the life of
+that process, not per request. Editing a file under `learnings/<domain>/` while the
+daemon is up changes nothing until the process holding the old copy is gone: run
+`browser-harness-js --restart` (now fixed to actually wait for the old `repl.ts` to
+exit before starting the new one, so it is reliable again) or kill the `repl.ts`
+process by hand, then reconnect with `session.connect({ wsUrl })`. Skipping this step
+is the single most common cause of "I edited the tool and nothing changed."
+
 ## Editing a node-tool
 
 The REPL loads node-tools with a plain `import()`, which Node caches for the life of the

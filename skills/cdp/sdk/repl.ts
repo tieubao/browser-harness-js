@@ -97,6 +97,10 @@ async function axType(ref: number | string, refs: Map<number, number> | string |
 (globalThis as any).help = extraHelpers.help;
 (globalThis as any).listLearnings = extraHelpers.listLearnings;
 (globalThis as any).learnings = extraHelpers.learnings;
+(globalThis as any).attachTab = extraHelpers.attachTab;
+(globalThis as any).evalFile = extraHelpers.evalFile;
+(globalThis as any).waitForUrl = extraHelpers.waitForUrl;
+(globalThis as any).deepQuery = extraHelpers.deepQuery;
 (globalThis as any).startRecording = (name?: string, title?: string) => recording.start(name, title);
 (globalThis as any).stopRecording = () => recording.stop();
 (globalThis as any).recordingStatus = () => recording.status();

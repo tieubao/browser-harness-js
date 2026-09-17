@@ -16,12 +16,16 @@
  *                                       snapshot rebuilds ([n] refs do not).
  *   - help                           : per-helper usage so the model doesn't reload docs.
  *   - listLearnings / learnings       : registry over skills/cdp/learnings/<domain>/
- *                                       manifest.json — codified per-site tools so
+ *                                       manifest.json, codified per-site tools so
  *                                       the agent stops re-deriving recipes each call.
+ *   - attachTab / evalFile / waitForUrl / deepQuery : REPL scaffold-cutters. All
+ *                                       four route by an explicit sessionId and
+ *                                       never touch session.use, safe alongside
+ *                                       other sessions on the same daemon.
  */
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, join } from 'node:path';
-import { readdir, readFile, stat } from 'node:fs/promises';
+import { readdir, readFile, stat, writeFile } from 'node:fs/promises';
 import type { Session } from './session.ts';
 
 const SKILL_DIR = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -195,7 +199,10 @@ async function pageInfo(opts: { timeoutMs?: number } = {}): Promise<Record<strin
   const timeoutMs = opts.timeoutMs ?? 2000;
   const EXPR = 'JSON.stringify({ url: location.href, title: document.title, w: window.innerWidth, h: window.innerHeight, sx: window.scrollX, sy: window.scrollY, pw: document.documentElement ? document.documentElement.clientWidth : 0, ph: document.documentElement ? document.documentElement.clientHeight : 0 })';
   const evalP = session.domains.Runtime.evaluate({ expression: EXPR, returnByValue: true });
-  const timeoutP = new Promise<never>((_, rej) => setTimeout(() => rej(new Error('pageInfo timeout after ' + timeoutMs + 'ms')), timeoutMs));
+  let timer!: ReturnType<typeof setTimeout>;
+  const timeoutP = new Promise<never>((_, rej) => {
+    timer = setTimeout(() => rej(new Error('pageInfo timeout after ' + timeoutMs + 'ms')), timeoutMs);
+  });
   try {
     const result = (await Promise.race([evalP, timeoutP])) as any;
     if (result && result.exceptionDetails) {
@@ -207,7 +214,183 @@ async function pageInfo(opts: { timeoutMs?: number } = {}): Promise<Record<strin
   } catch {
     if (_lastDialog) return { dialog: _lastDialog };
     return { unresponsive: true, hint: 'Page JS did not respond in time. Likely a blocking modal dialog, a long-running synchronous task, or the page navigated away mid-eval.' };
+  } finally {
+    // Same uncleared-timer bug class as boundedEvaluate below: without this,
+    // a SUCCESSFUL call still leaves the timeoutMs timer armed and the
+    // process alive until it fires.
+    clearTimeout(timer);
   }
+}
+
+// --- REPL scaffold-cutters --------------------------------------------------
+// Every one-off REPL snippet in a multi-tab session repeated the same three
+// lines: find the tab, run some JS on it, wait for a bound. These four route
+// by an explicit sessionId (never session.use, so they never race a parallel
+// snippet touching a different tab) and never leave a page-side hang able to
+// wedge the shared daemon (evalFile races a host-side timer around the CDP
+// call; a hung Runtime.evaluate then rejects the caller instead of blocking
+// the process indefinitely, the "10-minute fetch" failure this exists for).
+
+/** Runtime.evaluate on an explicit session, raced against a host-side timer so
+ *  a hung page cannot block past `ms`. Shared by evalFile, waitForUrl, and
+ *  deepQuery. The timer is cleared as soon as either side settles, so a
+ *  normal (non-timeout) call leaves nothing pending. The abandoned CDP
+ *  request itself cannot be cancelled (no CDP method cancels an in-flight
+ *  Runtime.evaluate); it is simply left to resolve or reject unread. */
+async function boundedEvaluate(sessionId: string, params: Record<string, unknown>, ms: number): Promise<any> {
+  const session = sessionOrThrow();
+  const evalP = session._call('Runtime.evaluate', params, { sessionId }) as Promise<any>;
+  let timer!: ReturnType<typeof setTimeout>;
+  const timeoutP = new Promise<never>((_, rej) => {
+    timer = setTimeout(() => rej(new Error('timed out after ' + ms + 'ms')), ms);
+  });
+  try {
+    return await Promise.race([evalP, timeoutP]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Find one page target by targetId prefix (uppercase hex, 6-32 chars, only
+ *  when at least one open target's id actually starts with it) or by URL
+ *  match (RegExp or substring), attach to it, and return its sessionId
+ *  without touching session.use or the active-session pointer. */
+async function attachTab(match: string | RegExp): Promise<{ sessionId: string; targetId: string; url: string }> {
+  const session = sessionOrThrow();
+  const { targetInfos } = await session.domains.Target.getTargets({});
+  const pages = (targetInfos as any[]).filter(t => t.type === 'page');
+  const idPrefix = typeof match === 'string' && /^[0-9A-F]{6,32}$/.test(match)
+    && pages.some(t => String(t.targetId).startsWith(match))
+    ? match
+    : undefined;
+  const hits = pages.filter(t => idPrefix !== undefined ? String(t.targetId).startsWith(idPrefix)
+    : match instanceof RegExp ? match.test(t.url) : t.url.includes(match as string));
+  if (hits.length === 0) {
+    throw new Error('attachTab: no page target matched ' + JSON.stringify(String(match)) + ' (' + pages.length + ' page target(s) open: ' + pages.map(t => t.url).join(', ') + ').');
+  }
+  if (hits.length > 1) {
+    throw new Error('attachTab: ' + hits.length + ' page targets matched ' + JSON.stringify(String(match)) + ', narrow it. Candidates: ' + hits.map(t => t.targetId + ' ' + t.url).join('; '));
+  }
+  const target = hits[0];
+  const { sessionId } = (await session._call('Target.attachToTarget', { targetId: target.targetId, flatten: true })) as { sessionId: string };
+  return { sessionId, targetId: target.targetId, url: target.url };
+}
+
+/** Run a local JS file on an explicit session via Runtime.evaluate, bounded by
+ *  a REQUIRED timeout (default 30s) raced against the CDP call itself, so a
+ *  hung page cannot block the caller (or the daemon) past the bound. The file
+ *  text is evaluated as-is (never wrapped): it must be a valid expression or
+ *  script, typically `(async()=>{ ... })()`, since a top-level `return` is a
+ *  page-side SyntaxError. With opts.out, writes the result to that file and
+ *  returns the byte count instead of the value; a result that JSON cannot
+ *  serialize (undefined, BigInt) is written as its String() text rather than
+ *  throwing. */
+async function evalFile(sessionId: string, file: string, opts: { timeoutMs?: number; userGesture?: boolean; out?: string } = {}): Promise<unknown> {
+  const timeoutMs = opts.timeoutMs ?? 30_000;
+  const expression = await readFile(file, 'utf8');
+  let result: any;
+  try {
+    result = await boundedEvaluate(sessionId, {
+      expression,
+      returnByValue: true,
+      awaitPromise: true,
+      userGesture: opts.userGesture ?? false,
+    }, timeoutMs);
+  } catch (e) {
+    throw new Error('evalFile: ' + (e instanceof Error ? e.message : String(e)) + ' running ' + file + ' on session ' + sessionId);
+  }
+  if (result && result.exceptionDetails) {
+    const e = result.exceptionDetails;
+    throw new Error('evalFile: ' + (e.text ?? (e.exception && e.exception.description) ?? 'Runtime.evaluate exception') + ' (' + file + ')');
+  }
+  const value = result && result.result ? result.result.value : undefined;
+  if (opts.out) {
+    let text: string;
+    if (typeof value === 'string') {
+      text = value;
+    } else {
+      let json: string | undefined;
+      try { json = JSON.stringify(value); } catch { json = undefined; }
+      text = json !== undefined ? json : String(value);
+    }
+    await writeFile(opts.out, text, 'utf8');
+    return Buffer.byteLength(text, 'utf8');
+  }
+  return value;
+}
+
+/** Poll location.href on an explicit session until `test` passes (RegExp or
+ *  predicate function). Each poll is itself bounded (min(intervalMs, time
+ *  remaining), floored at 1000ms) so one hung poll cannot defeat the overall
+ *  deadline; a timed-out or failing poll counts as a miss and the loop
+ *  continues. The "wait until the human finishes signing in" loop, default
+ *  5min overall bound, 5s interval. */
+async function waitForUrl(sessionId: string, test: RegExp | ((url: string) => boolean), opts: { timeoutMs?: number; intervalMs?: number } = {}): Promise<string> {
+  const timeoutMs = opts.timeoutMs ?? 300_000;
+  const intervalMs = opts.intervalMs ?? 5_000;
+  const matches = typeof test === 'function' ? test : (url: string) => test.test(url);
+  const deadline = Date.now() + timeoutMs;
+  let lastUrl: string | undefined;
+  for (;;) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) {
+      throw new Error('waitForUrl: timed out after ' + timeoutMs + 'ms on session ' + sessionId + (lastUrl ? ' (last seen: ' + lastUrl + ')' : ''));
+    }
+    const pollMs = Math.max(1_000, Math.min(intervalMs, remaining));
+    const pollStart = Date.now();
+    let url: string | undefined;
+    try {
+      const r = await boundedEvaluate(sessionId, { expression: 'location.href', returnByValue: true }, pollMs);
+      url = r && r.result ? r.result.value : undefined;
+    } catch {
+      // a hung or failing poll counts as a miss; the loop continues and the
+      // overall timeoutMs above still governs when we give up.
+    }
+    if (typeof url === 'string') {
+      lastUrl = url;
+      if (matches(url)) return url;
+    }
+    const sleepMs = intervalMs - (Date.now() - pollStart);
+    if (sleepMs > 0) await new Promise(res => setTimeout(res, sleepMs));
+  }
+}
+
+/** Page-side walker that crosses open shadow roots and returns visible
+ *  matches for `selector` as { text, x, y, w, h, disabled, inViewport }
+ *  (center coordinates; text trimmed to 120 chars, falling back to
+ *  aria-label; inViewport is the center point falling inside innerWidth x
+ *  innerHeight, not filtered on). opts.text (RegExp or substring) filters
+ *  the result client-side. opts.timeoutMs bounds the evaluate (default
+ *  15s). Read-only. */
+async function deepQuery(sessionId: string, selector: string, opts: { text?: RegExp | string; timeoutMs?: number } = {}): Promise<Array<{ text: string; x: number; y: number; w: number; h: number; disabled: boolean; inViewport: boolean }>> {
+  const timeoutMs = opts.timeoutMs ?? 15_000;
+  const expression = '(() => { const sel = ' + JSON.stringify(selector) + '; const out = []; '
+    + 'const visit = (root) => { root.querySelectorAll(sel).forEach(el => { '
+    + 'const r = el.getBoundingClientRect(); if (r.width <= 0 || r.height <= 0) return; '
+    + 'const st = getComputedStyle(el); if (st.visibility === "hidden" || st.display === "none") return; '
+    + 'const raw = (el.innerText || el.getAttribute("aria-label") || el.textContent || "").trim(); '
+    + 'const cx = r.left + r.width / 2; const cy = r.top + r.height / 2; '
+    + 'const inViewport = cx >= 0 && cx <= innerWidth && cy >= 0 && cy <= innerHeight; '
+    + 'out.push({ text: raw.slice(0, 120), x: cx, y: cy, w: r.width, h: r.height, disabled: el.disabled === true, inViewport }); }); '
+    + 'root.querySelectorAll("*").forEach(el => { if (el.shadowRoot) visit(el.shadowRoot); }); }; '
+    + 'visit(document); return JSON.stringify(out); })()';
+  let r: any;
+  try {
+    r = await boundedEvaluate(sessionId, { expression, returnByValue: true }, timeoutMs);
+  } catch (e) {
+    throw new Error('deepQuery: ' + (e instanceof Error ? e.message : String(e)));
+  }
+  if (r && r.exceptionDetails) {
+    const e = r.exceptionDetails;
+    throw new Error('deepQuery: ' + (e.text ?? (e.exception && e.exception.description) ?? 'Runtime.evaluate exception'));
+  }
+  const raw = r && r.result ? r.result.value : undefined;
+  const items: Array<{ text: string; x: number; y: number; w: number; h: number; disabled: boolean; inViewport: boolean }> = raw ? JSON.parse(raw) : [];
+  if (opts.text == null) return items;
+  const test = typeof opts.text === 'string'
+    ? (t: string) => t.includes(opts.text as string)
+    : (t: string) => (opts.text as RegExp).test(t);
+  return items.filter(it => test(it.text));
 }
 
 // --- learnings registry ---------------------------------------------------
@@ -293,6 +476,10 @@ const HELP: Record<string, string> = {
   ext: 'ext.* Chrome-extension commands (extension transport only): ext.group({tabIds}), ext.ungroup, ext.getTabGroups, ext.updateTabGroup, ext.moveTabGroup, ext.updateTab, ext.moveTabs, ext.discardTab, ext.reloadTab, ext.duplicateTab, ext.highlight, ext.getWindows, ext.createWindow, ext.updateWindow, ext.removeWindow. Also session.Browser.getWindowForTarget / getWindowBounds / setWindowBounds.',
   listLearnings: 'listLearnings() -> string[]. Domains under skills/cdp/learnings/.',
   learnings: 'learnings(domain, tool?, args?) -> any. learnings("site") -> {nodeTools, browserTools, notes}. learnings("site", "toolName", args) calls the registered node/browser tool; the tool function receives (ctx, args) where ctx carries session/cdp/axView/axClick/axType/listPageTargets/parseAxRefs/parseAxLocators/drainSignals/pageInfo/help.',
+  attachTab: 'attachTab(match) -> {sessionId, targetId, url}. match = an uppercase hex targetId prefix (6-32 chars, only when a target actually starts with it) or a RegExp/substring against the tab URL, otherwise falls back to URL matching. Throws on zero or multiple matches. Never calls session.use.',
+  evalFile: 'evalFile(sessionId, file, opts?) -> value | byteCount. Runs a local JS file via Runtime.evaluate on the explicit session, returnByValue+awaitPromise. The file is evaluated as-is (never wrapped): it must be an expression or script, typically (async()=>{ ... })(), since a top-level return is a page-side SyntaxError. opts: {timeoutMs=30000, userGesture=false, out}. Bounded by a REQUIRED timeout raced against the call, so a hung page cannot wedge the daemon. opts.out writes the result to a file (String(value) when JSON cannot serialize it, e.g. undefined) and returns its byte count instead of throwing.',
+  waitForUrl: 'waitForUrl(sessionId, test, opts?) -> string. Polls location.href on the explicit session until test (RegExp or (url)=>boolean) passes. Each poll is itself bounded (min(intervalMs, time remaining), floored at 1000ms) so one hung poll cannot defeat the overall deadline. opts: {timeoutMs=300000, intervalMs=5000}. Throws on overall timeout. The "wait for the human to finish signing in" loop.',
+  deepQuery: 'deepQuery(sessionId, selector, opts?) -> Array<{text,x,y,w,h,disabled,inViewport}>. Page-side walker crossing open shadow roots; visible matches only, center coords, text trimmed to 120 chars (falls back to aria-label), inViewport = center point inside innerWidth x innerHeight (not filtered on). opts: {text, timeoutMs=15000}. opts.text (RegExp or substring) filters by that text. Read-only.',
 };
 
 function help(name?: string): string {
@@ -312,5 +499,9 @@ export const extraHelpers = {
   help,
   listLearnings,
   learnings,
+  attachTab,
+  evalFile,
+  waitForUrl,
+  deepQuery,
   ctxForTool,
 };

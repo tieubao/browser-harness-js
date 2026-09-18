@@ -1,0 +1,25 @@
+{
+  "id": "memo-d-foundation",
+  "name": "Dwarves Memo (memo.d.foundation)",
+  "domains": ["memo.d.foundation", "df-memo-pr-staging.infras.workers.dev"],
+  "notes": ["notes/overview.md"],
+  "browserTools": {
+    "trace_css_rules": {
+      "description": "For the first element matching selector, walk every same-origin stylesheet (recursing into @media/@layer/@supports) and return the style rules that set property, plus the element's computed value and inline style.",
+      "path": "browser-tools/trace-css-rules.js",
+      "callable": "traceCssRules",
+      "args": {
+        "selector": {"type": "string", "required": true, "description": "CSS selector of the element to inspect."},
+        "property": {"type": "string", "required": true, "description": "CSS property name, camelCase or kebab-case, e.g. \"maxWidth\" or \"max-width\"."}
+      },
+      "returns": {"type": "object", "description": "{selector, property, computed, inline, rules: [{selector, value}]}"}
+    },
+    "layout_overflow": {
+      "description": "Report viewport width, document horizontal overflow, and any images under .memo-content or .prose that render wider than their parent (the reading-view breakout images are expected here).",
+      "path": "browser-tools/layout-overflow.js",
+      "callable": "layoutOverflow",
+      "args": {},
+      "returns": {"type": "object", "description": "{vw, docOverflow, wideImages: [{src, width, parentWidth, naturalWidth, maxWidth}]}"}
+    }
+  }
+}

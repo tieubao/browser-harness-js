@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env -S node --experimental-strip-types
 // browser-cdp: the ONE-SHOT sibling of browser-harness-js. Same browser, same CDP, no REPL daemon:
 // each command opens one page websocket through the /json HTTP endpoints, does its work, and
 // exits, printing to stdout. Use it for a five-command job (open a page, read it, click once)

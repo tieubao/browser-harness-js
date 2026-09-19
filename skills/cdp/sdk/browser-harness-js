@@ -80,7 +80,7 @@ is_up() {
 start_repl() {
   is_up && return 0
   ensure_node || return 1
-  CDP_REPL_PORT="$PORT" nohup node "$REPL" >"$LOG" 2>&1 &
+  CDP_REPL_PORT="$PORT" nohup node --experimental-strip-types "$REPL" >"$LOG" 2>&1 &
   for _ in $(seq 1 100); do
     sleep 0.1
     is_up && return 0
@@ -171,7 +171,7 @@ case "${1:-}" in
     ;;
   recordings)
     ensure_node || exit 1
-    exec node "$SDK_DIR/recording.ts" "${@:2}"
+    exec node --experimental-strip-types "$SDK_DIR/recording.ts" "${@:2}"
     ;;
   video)
     echo "browser-harness-js: the screenshot video compiler was removed; recording now uses rrweb." >&2

@@ -1,0 +1,19 @@
+{
+  "id": "facebook-com",
+  "name": "Facebook (Page composer)",
+  "domains": ["facebook.com", "www.facebook.com"],
+  "notes": ["notes/overview.md"],
+  "nodeTools": {
+    "createPagePost": {
+      "description": "Compose and publish a post on a Facebook Page (or profile) through the logged-in session: open the page, open the Create post dialog, type the text, attach media files, click Post, then reload the page and confirm the text is in the feed.",
+      "path": "tools/post.mjs",
+      "callable": "createPagePost",
+      "args": {
+        "pageUrl": {"type": "string", "required": true, "description": "Page or profile URL whose composer to use, e.g. https://www.facebook.com/dwarvesf/. The logged-in account must manage it."},
+        "text": {"type": "string", "required": true, "description": "Post body. Newlines are fine. Markdown backticks stay literal."},
+        "media": {"type": "array", "required": false, "description": "Absolute file paths to attach. Images, gif, and video are accepted by the composer's file input."}
+      },
+      "returns": {"type": "object", "description": "{posted: true, url} on success (url is null when the virtualized feed hides the permalink); {posted: false, reason} on refusal (logged out, composer did not open, no Post button, text missing after reload)."}
+    }
+  }
+}

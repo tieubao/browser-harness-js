@@ -1,0 +1,274 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# xpost, compose + post a tweet or reply on X (Twitter) via CDP.
+#
+#   xpost "text"                                          # compose + post a tweet
+#   xpost "text" --image /abs/path.png                    # attach one image
+#   xpost "text" --reply-to https://x.com/u/status/ID     # reply under a post
+#   xpost "text" --dry-run                                # everything but the Post click
+#   xpost --json "text"                                   # JSON result
+#
+# Posts whatever text it is given, through the logged-in X session in the
+# user's own browser. No X API key, no jq. One foreground tab per call.
+
+# Auto-fix: if browser-harness-js isn't on PATH, try to find and symlink it.
+if ! command -v browser-harness-js >/dev/null 2>&1; then
+  _bhjs="$(cd "$(dirname "$0")/.." && pwd)/../cdp/sdk/browser-harness-js"
+  if [ -f "$_bhjs" ]; then
+    _bindir="$HOME/.local/bin"
+    mkdir -p "$_bindir"
+    ln -sf "$_bhjs" "$_bindir/browser-harness-js"
+    export PATH="$_bindir:$PATH"
+  else
+    echo "xpost: browser-harness-js not found. Run: bash <skill-dir>/scripts/setup" >&2
+    exit 1
+  fi
+fi
+
+usage() {
+  cat >&2 <<'USAGE'
+Usage:
+  xpost [--json] [--dry-run] [--image <file>] [--reply-to <permalink>] <text>
+
+  <text>                  Post body, posted verbatim (it is not drafted or
+                          reviewed). Empty only allowed together with --image.
+  --image <file>          Attach one image (relative paths are made absolute).
+  --reply-to <url>        Reply under a post: an x.com/twitter.com permalink.
+                          Uses the inline reply composer on the permalink page.
+  --dry-run               Do everything EXCEPT the final Post click; prints
+                          DRY_RUN_OK plus the readiness state.
+  --json                  Emit the result as a JSON object.
+
+  XPOST_PORT / BH_PORT    Pin the CDP port (e.g. 9222) instead of auto-detect.
+
+Examples:
+  xpost "shipping the xpost skill today"
+  xpost "with a picture" --image ~/Desktop/chart.png
+  xpost "nice work" --reply-to https://x.com/injaneity/status/2065110712511500620
+  xpost --dry-run "does the composer hydrate?"
+USAGE
+  exit 1
+}
+
+[ $# -lt 1 ] && usage
+
+json_output=false
+dry_run=false
+image=""
+reply_to=""
+pos=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --json) json_output=true; shift ;;
+    --dry-run) dry_run=true; shift ;;
+    --image)
+      [ $# -ge 2 ] || { echo "xpost: --image requires a file path" >&2; exit 1; }
+      image="$2"; shift 2 ;;
+    --reply-to)
+      [ $# -ge 2 ] || { echo "xpost: --reply-to requires a permalink URL" >&2; exit 1; }
+      reply_to="$2"; shift 2 ;;
+    --) shift; while [ $# -gt 0 ]; do pos+=("$1"); shift; done ;;
+    -*) echo "xpost: unknown option $1" >&2; exit 1 ;;
+    *) pos+=("$1"); shift ;;
+  esac
+done
+
+[ ${#pos[@]} -lt 1 ] && usage
+[ ${#pos[@]} -gt 1 ] && { echo "xpost: unexpected argument '${pos[1]}'" >&2; exit 1; }
+text="${pos[0]}"
+
+if [ -n "$image" ]; then
+  [ -f "$image" ] || { echo "xpost: --image file not found: $image" >&2; exit 1; }
+  image="$(cd "$(dirname "$image")" && pwd)/$(basename "$image")"
+fi
+
+if [ -n "$reply_to" ]; then
+  case "$reply_to" in
+    *x.com/*|*twitter.com/*) ;;
+    *) echo "xpost: --reply-to must be an x.com or twitter.com permalink (got '$reply_to')" >&2; exit 1 ;;
+  esac
+fi
+
+[ -z "$text" ] && [ -z "$image" ] && { echo "xpost: nothing to post (empty text and no --image)" >&2; exit 1; }
+
+# Optional explicit CDP port, auto-detect has missed a running browser that
+# was listening on --remote-debugging-port=9222 (observed with Helium).
+port="${XPOST_PORT:-${BH_PORT:-}}"
+case "$port" in
+  "") ;;
+  *[!0-9]*) echo "xpost: XPOST_PORT/BH_PORT must be a port number (got '$port')" >&2; exit 1 ;;
+esac
+
+# The inputs are injected below by placeholder substitution so the heredoc can
+# stay quoted (backticks, $, and regex backslashes in the in-page JS need no
+# bash escaping). The substitution itself is done in node: it JSON.stringifies
+# the raw values into safe JS literals and uses function-replacements, which
+# are immune to the `&` / `$` / `\` semantics that bash `${var//pat/repl}` and
+# JS String.replace both apply to plain replacement strings, matters for post
+# text containing `&` or `$`.
+code=$(cat <<'XPOST_EOF'
+const TEXT = __XPOST_TEXT__
+const IMAGE = __XPOST_IMAGE__
+const REPLY_TO = __XPOST_REPLY_TO__
+const DRY_RUN = __XPOST_DRY_RUN__
+const JSON_OUT = __XPOST_JSON__
+const PORT = __XPOST_PORT__
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+const MODE = REPLY_TO ? "reply" : "post"
+const fail = (reason, extra) => JSON_OUT
+  ? Object.assign({ ok: false, mode: MODE, reason: reason }, extra || {})
+  : "NOT_POSTED " + reason + (extra && extra.url ? " (" + extra.url + ")" : "")
+
+if (!session.isConnected()) {
+  if (PORT) {
+    // An explicit port means "use THIS browser", do not auto-detect first.
+    try { await session.connect({ port: PORT }) }
+    catch (e) { throw new Error("Cannot connect to browser on 127.0.0.1:" + PORT + ": " + e.message) }
+  } else {
+    // Auto-detect has missed a running browser listening on
+    // --remote-debugging-port=9222 (observed with Helium), retry that port
+    // explicitly before giving up.
+    try { await session.connect() }
+    catch (e1) {
+      try { await session.connect({ port: 9222 }) }
+      catch (e2) { throw new Error("Cannot connect to browser (auto-detect and 127.0.0.1:9222 both failed): " + e2.message) }
+    }
+  }
+}
+
+// Foreground tab (background: false), proven for the composer; a background
+// tab's throttled timers can lag React hydration.
+const t = await session.Target.createTarget({ url: "about:blank", background: false })
+const { sessionId } = await session.Target.attachToTarget({ targetId: t.targetId, flatten: true })
+
+try {
+  await cdp(sessionId, "Page.enable", {})
+  // setLifecycleEventsEnabled is required, without it Chrome emits zero
+  // Page.lifecycleEvent and networkIdle would never fire.
+  await cdp(sessionId, "Page.setLifecycleEventsEnabled", { enabled: true })
+  // Arm BEFORE Page.navigate: lifecycle events fire once, and a fast load can
+  // fire networkIdle between navigate returning and the listener subscribing.
+  const ready = session.waitFor({ method: 'Page.lifecycleEvent', sessionId, predicate: (p) => p.name === 'networkIdle', timeoutMs: 30_000 })
+  await cdp(sessionId, "Page.navigate", { url: REPLY_TO || "https://x.com/compose/post" })
+  await ready
+  // React hydration, networkIdle fires before React mounts the composer.
+  await sleep(REPLY_TO ? 4500 : 4000)
+
+  if (REPLY_TO) {
+    // The focus tweet is the first [data-testid="tweet"] in DOM order on a
+    // permalink; replies and quoted tweets render below it.
+    const tw = await cdp(sessionId, "Runtime.evaluate", {
+      expression: '!!document.querySelector(\'[data-testid="tweet"]\')',
+      returnByValue: true
+    })
+    if (tw.result.value !== true) {
+      return fail("no focus tweet on the permalink, bad URL, deleted post, or logged out")
+    }
+  }
+
+  // Focus the composer, then type the whole body in one insertText call,
+  // it lands atomically, newlines included; plain Enter does not submit.
+  const focus = await cdp(sessionId, "Runtime.evaluate", {
+    expression: '(function(){var el=document.querySelector(\'[data-testid="tweetTextarea_0"]\');if(!el)return "missing";el.focus();el.click();return "ok"})()',
+    returnByValue: true
+  })
+  if (focus.result.value !== "ok") {
+    const loc = await cdp(sessionId, "Runtime.evaluate", { expression: "location.href", returnByValue: true })
+    return fail("no composer, logged out? X redirects the composer to a login wall", { url: loc.result.value })
+  }
+  await sleep(500)
+  if (TEXT) await cdp(sessionId, "Input.insertText", { text: TEXT })
+
+  if (IMAGE) {
+    // Set the file on the hidden input directly, works while display:none.
+    // Never click input[type=file]: that opens the OS picker.
+    await cdp(sessionId, "DOM.enable", {})
+    const doc = await cdp(sessionId, "DOM.getDocument", {})
+    const inp = await cdp(sessionId, "DOM.querySelector", { nodeId: doc.root.nodeId, selector: 'input[data-testid="fileInput"]' })
+    if (!inp.nodeId) return fail("image attach: no file input found")
+    await cdp(sessionId, "DOM.setFileInputFiles", { nodeId: inp.nodeId, files: [IMAGE] })
+  }
+
+  // Wait for the Post button to become enabled, and, with --image, for the
+  // preview to render (setFileInputFiles returns before processing finishes).
+  // Two Post buttons exist at once: tweetButtonInline (inline composer /
+  // timeline) and tweetButton (compose dialog). While a dialog is open the
+  // inline one stays aria-disabled; a visible + enabled one is the live
+  // target in either mode. Up to 30s, image processing can lag.
+  const READY_EXPR = '(function(){'
+    + 'var btns=[].slice.call(document.querySelectorAll(\'[data-testid="tweetButtonInline"],[data-testid="tweetButton"]\'));'
+    + 'var vis=btns.filter(function(b){var r=b.getBoundingClientRect();return r.width>0&&r.height>0});'
+    + 'var enabled=vis.some(function(b){return b.getAttribute("aria-disabled")!=="true"&&!b.disabled});'
+    + 'var attached=' + (IMAGE ? '!!document.querySelector(\'[data-testid="attachments"] img\')' : 'true') + ';'
+    + 'return JSON.stringify({enabled:enabled,attached:attached,visible:vis.length})'
+    + '})()'
+  let st = { enabled: false, attached: false, visible: 0 }
+  for (let i = 0; i < 30; i++) {
+    const pr = await cdp(sessionId, "Runtime.evaluate", { expression: READY_EXPR, returnByValue: true })
+    try { st = JSON.parse(pr.result.value) } catch (e) {}
+    if (st.enabled && st.attached) break
+    await sleep(1000)
+  }
+  const postReady = st.enabled && st.attached
+
+  if (DRY_RUN) {
+    const state = { ok: postReady, dry_run: true, mode: MODE, text: TEXT, image: IMAGE, reply_to: REPLY_TO, button_enabled: st.enabled, image_attached: IMAGE ? st.attached : null }
+    if (JSON_OUT) return state
+    return (postReady ? "DRY_RUN_OK" : "DRY_RUN_NOT_READY")
+      + " mode=" + MODE + " button_enabled=" + st.enabled
+      + (IMAGE ? " image_attached=" + st.attached : "")
+      + " chars=" + TEXT.length
+  }
+
+  if (!postReady) {
+    return fail("post button never enabled"
+      + (IMAGE && !st.attached ? ", image preview never appeared" : "")
+      + " (over the character cap, upload still processing, or not logged in)",
+      { button_enabled: st.enabled, image_attached: IMAGE ? st.attached : null })
+  }
+
+  const ck = await cdp(sessionId, "Runtime.evaluate", {
+    expression: '(function(){var btns=[].slice.call(document.querySelectorAll(\'[data-testid="tweetButtonInline"],[data-testid="tweetButton"]\'));var btn=btns.filter(function(b){var r=b.getBoundingClientRect();return r.width>0&&r.height>0&&b.getAttribute("aria-disabled")!=="true"&&!b.disabled});if(!btn.length)return "none";btn[0].click();return "clicked"})()',
+    returnByValue: true
+  })
+  if (ck.result.value !== "clicked") return fail("no enabled post button at click time")
+
+  // X does not redirect to the new post, it shows a toast ("Your post was
+  // sent." / the reply variant) and closes the composer. The status URL lives
+  // only on the toast's "View" link, which disappears fast; null when missed.
+  await sleep(6000)
+  const vr = await cdp(sessionId, "Runtime.evaluate", {
+    expression: '(function(){var t=document.body.innerText||"";var toast=/your post|post was sent|your reply|reply was sent/i.test(t);var link=(document.querySelector(\'[data-testid="toast"] a[href*="/status/"]\')||{}).href||null;return JSON.stringify({toast:toast,landed:location.href,post_url:link})})()',
+    returnByValue: true
+  })
+  const v = JSON.parse(vr.result.value)
+  if (v.toast) {
+    if (JSON_OUT) return { ok: true, mode: MODE, url: v.post_url, landed_on: v.landed }
+    return "POSTED" + (v.post_url ? " " + v.post_url : " (post url not captured, X does not redirect to it)")
+  }
+  return fail("post toast not detected, the post may not have been sent", { url: v.landed })
+} finally {
+  session.closeTab(t.targetId, sessionId).catch(() => {})
+}
+XPOST_EOF
+)
+
+# Inject the inputs: node reads the quoted-heredoc code from stdin and replaces
+# the placeholders. Raw values are JSON.stringified into safe JS literals;
+# function-replacements dodge & / $ pitfalls in the replacement text.
+final=$(node -e '
+let c=require("fs").readFileSync(0,"utf8");
+let json=process.argv[1], dry=process.argv[2], port=process.argv[3];
+let text=process.argv[4]||"", image=process.argv[5]||null, reply=process.argv[6]||null;
+c=c.replace(/__XPOST_JSON__/g,()=>json)
+    .replace(/__XPOST_DRY_RUN__/g,()=>dry)
+    .replace(/__XPOST_PORT__/g,()=>port||"null")
+    .replace(/__XPOST_TEXT__/g,()=>JSON.stringify(text))
+    .replace(/__XPOST_IMAGE__/g,()=>JSON.stringify(image))
+    .replace(/__XPOST_REPLY_TO__/g,()=>JSON.stringify(reply));
+process.stdout.write(c);
+' "$json_output" "$dry_run" "$port" "$text" "$image" "$reply_to" <<<"$code")
+
+printf '%s' "$final" | browser-harness-js

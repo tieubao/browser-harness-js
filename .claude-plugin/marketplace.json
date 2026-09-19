@@ -21,6 +21,7 @@
         "./skills/gsearch",
         "./skills/gnews",
         "./skills/xsearch",
+        "./skills/xpost",
         "./skills/rsearch",
         "./skills/findata",
         "./skills/ytdl",

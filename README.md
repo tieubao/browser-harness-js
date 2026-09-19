@@ -66,14 +66,15 @@ The jsonl can contain page content and stays local under `~/.browser-harness-js`
 
 ## Skills
 
-This repo contains nine skills installable via `npx skills add`:
+This repo contains ten skills installable via `npx skills add`:
 
 | Skill | Description |
 |-------|------------|
 | **cdp** | Drive any Chromium-based browser, including Helium, via CDP — 56 domains, 652 typed methods; Chrome extension relay preferred, remote debugging fallback; consent-based rrweb session recording |
 | **gsearch** | Search the web via Google through CDP — structured results in under 1 second; `follow <url>` opens a result link and reads its page text or JSON |
 | **gnews** | Search Google News through CDP (`tbm=nws`) — structured results (title, url, source, time, snippet) with the publisher's direct URL, no redirect wrapper |
-| **xsearch** | Search X (Twitter) via CDP — structured results (requires an active X login) |
+| **xsearch** | Search X (Twitter) via CDP, structured results (requires an active X login) |
+| **xpost** | Post tweets and replies to X (Twitter) via CDP, text, one image, `--reply-to` permalinks, `--dry-run` preview (requires an active X login) |
 | **rsearch** | Search Reddit posts via CDP — same-origin fetch of reddit's own `/search.json` with the browser's cookies (subreddit/sort/time filters, media URLs), no API key, login optional |
 | **findata** | Free, keyless financial data via CDP — SEC EDGAR statements + Yahoo Finance prices |
 | **ytdl** | Download YouTube videos browser-natively via CDP — records MediaSource output, no `yt-dlp` binary |
@@ -101,8 +102,10 @@ This repo contains nine skills installable via `npx skills add`:
 - `skills/gsearch/scripts/gsearch` — Google Search CLI
 - `skills/gnews/SKILL.md` — Google News skill instructions
 - `skills/gnews/scripts/gnews` — Google News CLI (a `browser-harness-js` heredoc, no runtime)
-- `skills/xsearch/SKILL.md` — X (Twitter) Search skill instructions
-- `skills/xsearch/scripts/xsearch` — X Search CLI
+- `skills/xsearch/SKILL.md`, X (Twitter) Search skill instructions
+- `skills/xsearch/scripts/xsearch`, X Search CLI
+- `skills/xpost/SKILL.md`, X (Twitter) posting skill instructions
+- `skills/xpost/scripts/xpost`, X post CLI (compose + reply + one image, a `browser-harness-js` heredoc, no runtime)
 - `skills/rsearch/SKILL.md` — Reddit search skill instructions
 - `skills/rsearch/scripts/rsearch` — Reddit search CLI (a `browser-harness-js` heredoc, no runtime; adapted from opencli's reddit adapter)
 - `skills/findata/SKILL.md` — financial-data skill instructions

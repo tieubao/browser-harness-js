@@ -1,0 +1,18 @@
+{
+  "id": "x-com",
+  "name": "X (Twitter)",
+  "domains": ["x.com", "twitter.com"],
+  "notes": ["notes/overview.md"],
+  "nodeTools": {
+    "createPost": {
+      "description": "Compose and publish a post on X through the logged-in session: open the composer, type the text, attach media files, click the enabled Post button, and return the published status URL when discoverable.",
+      "path": "tools/post.mjs",
+      "callable": "createPost",
+      "args": {
+        "text": {"type": "string", "required": true, "description": "Post body. @handles linkify on publish; newlines are fine (Enter does not submit)."},
+        "media": {"type": "array", "required": false, "description": "Absolute file paths to attach. One gif OR up to 4 images per post; gifs cannot be mixed with images."}
+      },
+      "returns": {"type": "object", "description": "{posted: true, url} on success; {posted: false, reason} on refusal (not logged in, no Post button)."}
+    }
+  }
+}

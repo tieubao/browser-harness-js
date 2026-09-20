@@ -66,7 +66,7 @@ The jsonl can contain page content and stays local under `~/.browser-harness-js`
 
 ## Skills
 
-This repo contains twelve skills installable via `npx skills add`:
+This repo contains thirteen skills installable via `npx skills add`:
 
 | Skill | Description |
 |-------|------------|
@@ -76,7 +76,8 @@ This repo contains twelve skills installable via `npx skills add`:
 | **xsearch** | Search X (Twitter) via CDP, structured results (requires an active X login) |
 | **xpost** | Post tweets and replies to X (Twitter) via CDP, text, one image, `--reply-to` permalinks, `--dry-run` preview (requires an active X login) |
 | **fbpost** | Post to the user's own Facebook timeline via CDP, text, one image, `--dry-run` preview (requires an active Facebook login; English and Vietnamese composer labels) |
-| **social-post** | Cross-post the same text to every platform via CDP, orchestrates `xpost`/`fbpost`/`lipost` with `--platforms`, `--image`, `--dry-run`, per-platform JSON results |
+| **social-post** | Cross-post the same text to every platform via CDP, orchestrates `xpost`/`fbpost`/`linkedin post` with `--platforms`, `--image`, `--dry-run`, per-platform JSON results |
+| **linkedin** | LinkedIn via CDP, post updates (`post`, `--image`, `--dry-run`), list notifications (`notifs`), comment under posts (`comment`), and read/reply to message threads (`inbox`, `reply`) (requires an active LinkedIn login; English UI) |
 | **rsearch** | Search Reddit posts via CDP — same-origin fetch of reddit's own `/search.json` with the browser's cookies (subreddit/sort/time filters, media URLs), no API key, login optional |
 | **findata** | Free, keyless financial data via CDP — SEC EDGAR statements + Yahoo Finance prices |
 | **ytdl** | Download YouTube videos browser-natively via CDP — records MediaSource output, no `yt-dlp` binary |
@@ -112,6 +113,8 @@ This repo contains twelve skills installable via `npx skills add`:
 - `skills/fbpost/scripts/fbpost`, Facebook post CLI (compose + one image, a `browser-harness-js` heredoc, no runtime)
 - `skills/social-post/SKILL.md`, cross-platform posting skill instructions (includes the neko desk voice summary)
 - `skills/social-post/scripts/social-post`, cross-post CLI (orchestrates the per-platform CLIs, no runtime)
+- `skills/linkedin/SKILL.md`, LinkedIn skill instructions
+- `skills/linkedin/scripts/linkedin`, LinkedIn CLI (`post` / `notifs` / `comment` / `inbox` / `reply` verbs, a `browser-harness-js` heredoc, no runtime)
 - `skills/rsearch/SKILL.md` — Reddit search skill instructions
 - `skills/rsearch/scripts/rsearch` — Reddit search CLI (a `browser-harness-js` heredoc, no runtime; adapted from opencli's reddit adapter)
 - `skills/findata/SKILL.md` — financial-data skill instructions
@@ -129,7 +132,7 @@ No helpers file. No `click()`, no `goto()`, no `upload_file()` — just the prot
 
 Beyond `npx skills add https://github.com/monotykamary/browser-harness-js`, this repo ships manifests so the same skills are discoverable in each agent ecosystem's plugin UI:
 
-- [`.claude-plugin/marketplace.json`](.claude-plugin/marketplace.json) — Claude Code plugin marketplace entry (registers `cdp` + the eleven recipe skills as one plugin).
+- [`.claude-plugin/marketplace.json`](.claude-plugin/marketplace.json) — Claude Code plugin marketplace entry (registers `cdp` + the twelve recipe skills as one plugin).
 - [`.codex-plugin/plugin.json`](.codex-plugin/plugin.json) — Codex plugin entry with capabilities, default prompts, and brand colors.
 - [`skills/cdp/agents/openai.yaml`](skills/cdp/agents/openai.yaml) — OpenAI-agent display metadata.
 

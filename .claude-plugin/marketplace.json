@@ -24,6 +24,7 @@
         "./skills/xpost",
         "./skills/fbpost",
         "./skills/social-post",
+        "./skills/linkedin",
         "./skills/rsearch",
         "./skills/findata",
         "./skills/ytdl",

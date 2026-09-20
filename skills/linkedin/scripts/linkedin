@@ -1,0 +1,605 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# linkedin, LinkedIn through the user's own browser via CDP.
+#
+#   linkedin post "text" [--image /abs/p.png] [--dry-run]   # share an update
+#   linkedin notifs [N]                                    # N recent notifications (default 10)
+#   linkedin comment <post-url> "text" [--dry-run]         # comment under a post
+#   linkedin inbox [N]                                     # N recent message threads (default 10)
+#   linkedin reply <thread|index> "text" [--dry-run]       # reply inside a thread
+#   linkedin --json <verb> ...                             # JSON output for every verb
+#
+# --dry-run does everything EXCEPT the final Post/Comment/Send click.
+# No API key, no jq. One tab per call. Selectors are role / aria-label /
+# stable class fragments only (LinkedIn obfuscates most class names).
+
+# Auto-fix: if browser-harness-js isn't on PATH, try to find and symlink it.
+if ! command -v browser-harness-js >/dev/null 2>&1; then
+  _bhjs="$(cd "$(dirname "$0")/.." && pwd)/../cdp/sdk/browser-harness-js"
+  if [ -f "$_bhjs" ]; then
+    _bindir="$HOME/.local/bin"
+    mkdir -p "$_bindir"
+    ln -sf "$_bhjs" "$_bindir/browser-harness-js"
+    export PATH="$_bindir:$PATH"
+  else
+    echo "linkedin: browser-harness-js not found. Run: bash <skill-dir>/scripts/setup" >&2
+    exit 1
+  fi
+fi
+
+usage() {
+  cat >&2 <<'USAGE'
+Usage:
+  linkedin [--json] <verb> [args]
+
+Verbs:
+  post <text> [--image <file>] [--dry-run]   Share an update on the feed.
+  notifs [N]                               List N recent notifications (default
+                                           10): type, actor, text, url, time.
+                                           Finds tagged/mentioned posts.
+  comment <post-url> <text> [--dry-run]    Comment under a post permalink.
+  inbox [N]                                List N recent message threads
+                                           (default 10): index, name, snippet,
+                                           unread, url.
+  reply <thread|index> <text> [--dry-run]  Reply inside a thread. <thread> is
+                                           a case-insensitive substring of the
+                                           name, or a 0-based inbox index.
+
+Flags:
+  --dry-run   Do everything EXCEPT the final Post/Comment/Send click.
+  --json      Emit the result as JSON.
+
+  LINKEDIN_PORT / BH_PORT   Pin the CDP port (e.g. 9222) instead of auto-detect.
+
+Examples:
+  linkedin post --dry-run "does the composer hydrate?"
+  linkedin notifs 20
+  linkedin comment "https://www.linkedin.com/feed/update/urn:li:activity:123/" "nice work"
+  linkedin inbox
+  linkedin reply "chuyen" "thanks!" --dry-run
+USAGE
+  exit 1
+}
+
+[ $# -lt 1 ] && usage
+
+# Global flag: --json may appear before or after the verb.
+json_output=false
+args=()
+for a in "$@"; do
+  if [ "$a" = "--json" ]; then json_output=true; else args+=("$a"); fi
+done
+set -- "${args[@]}"
+[ $# -lt 1 ] && usage
+
+verb="$1"; shift
+case "$verb" in post|notifs|comment|inbox|reply) ;; *) usage ;; esac
+
+dry_run=false
+image=""
+pos=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --dry-run) dry_run=true; shift ;;
+    --image)
+      [ $# -ge 2 ] || { echo "linkedin: --image requires a file path" >&2; exit 1; }
+      image="$2"; shift 2 ;;
+    --) shift; while [ $# -gt 0 ]; do pos+=("$1"); shift; done ;;
+    -*) echo "linkedin: unknown option $1" >&2; exit 1 ;;
+    *) pos+=("$1"); shift ;;
+  esac
+done
+
+text=""
+post_url=""
+target=""
+count=10
+case "$verb" in
+  post)
+    [ ${#pos[@]} -lt 1 ] && [ -z "$image" ] && usage
+    [ ${#pos[@]} -gt 1 ] && { echo "linkedin post: unexpected argument '${pos[1]}'" >&2; exit 1; }
+    text="${pos[0]:-}" ;;
+  notifs|inbox)
+    [ ${#pos[@]} -gt 1 ] && { echo "linkedin $verb: unexpected argument '${pos[1]}'" >&2; exit 1; }
+    count="${pos[0]:-10}"
+    case "$count" in *[!0-9]*) echo "linkedin $verb: count must be a number (got '$count')" >&2; exit 1 ;; esac ;;
+  comment)
+    [ ${#pos[@]} -lt 2 ] && { echo "linkedin comment: requires <post-url> and <text>" >&2; exit 1; }
+    [ ${#pos[@]} -gt 2 ] && { echo "linkedin comment: unexpected argument '${pos[2]}'" >&2; exit 1; }
+    post_url="${pos[0]}"; text="${pos[1]}" ;;
+  reply)
+    [ ${#pos[@]} -lt 2 ] && { echo "linkedin reply: requires <thread|index> and <text>" >&2; exit 1; }
+    [ ${#pos[@]} -gt 2 ] && { echo "linkedin reply: unexpected argument '${pos[2]}'" >&2; exit 1; }
+    target="${pos[0]}"; text="${pos[1]}" ;;
+esac
+
+# --image and --dry-run only make sense on write verbs.
+case "$verb" in
+  post) ;;
+  comment|reply)
+    [ -n "$image" ] && { echo "linkedin $verb: --image not supported" >&2; exit 1; } ;;
+  notifs|inbox)
+    $dry_run && { echo "linkedin $verb: --dry-run not supported (read-only verb)" >&2; exit 1; }
+    [ -n "$image" ] && { echo "linkedin $verb: --image not supported" >&2; exit 1; } ;;
+esac
+
+if [ -n "$image" ]; then
+  [ -f "$image" ] || { echo "linkedin: --image file not found: $image" >&2; exit 1; }
+  image="$(cd "$(dirname "$image")" && pwd)/$(basename "$image")"
+fi
+
+case "$verb" in post|comment|reply)
+  [ -z "$text" ] && [ -z "$image" ] && { echo "linkedin $verb: nothing to send (empty text)" >&2; exit 1; }
+esac
+
+case "$post_url" in ""|*linkedin.com*) ;; *) echo "linkedin comment: <post-url> must be a linkedin.com URL" >&2; exit 1 ;; esac
+
+# Optional explicit CDP port, auto-detect has missed a running browser that
+# was listening on --remote-debugging-port=9222.
+port="${LINKEDIN_PORT:-${BH_PORT:-}}"
+case "$port" in
+  "") ;;
+  *[!0-9]*) echo "linkedin: LINKEDIN_PORT/BH_PORT must be a port number (got '$port')" >&2; exit 1 ;;
+esac
+
+# The inputs are injected below by placeholder substitution so the heredoc can
+# stay quoted (backticks, $, and regex backslashes in the in-page JS need no
+# bash escaping). The substitution itself is done in node: it JSON.stringifies
+# the raw values into safe JS literals and uses function-replacements, which
+# are immune to the `&` / `$` / `\` semantics that bash `${var//pat/repl}` and
+# JS String.replace both apply to plain replacement strings, matters for text
+# containing `&` or `$`.
+code=$(cat <<'LINKEDIN_EOF'
+const VERB = __LI_VERB__
+const TEXT = __LI_TEXT__
+const POST_URL = __LI_URL__
+const IMAGE = __LI_IMAGE__
+const TARGET = __LI_TARGET__
+const COUNT = __LI_COUNT__
+const DRY_RUN = __LI_DRY_RUN__
+const JSON_OUT = __LI_JSON__
+const PORT = __LI_PORT__
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+const WRITE_VERB = { post: "POSTED", comment: "COMMENTED", reply: "SENT" }
+const fail = (reason, extra) => JSON_OUT
+  ? Object.assign({ ok: false, verb: VERB, reason: reason }, extra || {})
+  : (VERB in WRITE_VERB ? (DRY_RUN ? "NOT_READY " : "NOT_" + WRITE_VERB[VERB] + " ") : "ERROR ") + reason
+
+if (!session.isConnected()) {
+  if (PORT) {
+    // An explicit port means "use THIS browser", do not auto-detect first.
+    try { await session.connect({ port: PORT }) }
+    catch (e) { throw new Error("Cannot connect to browser on 127.0.0.1:" + PORT + ": " + e.message) }
+  } else {
+    // Auto-detect has missed a running browser listening on
+    // --remote-debugging-port=9222, retry that port explicitly.
+    try { await session.connect() }
+    catch (e1) {
+      try { await session.connect({ port: 9222 }) }
+      catch (e2) { throw new Error("Cannot connect to browser (auto-detect and 127.0.0.1:9222 both failed): " + e2.message) }
+    }
+  }
+}
+
+// Write verbs need a foreground tab (the composer is flaky in a throttled
+// background tab); read verbs stay in the background. One tab per call keeps
+// parallel calls safe.
+const bg = VERB === "notifs" || VERB === "inbox"
+const t = await session.Target.createTarget({ url: "about:blank", background: bg })
+const { sessionId } = await session.Target.attachToTarget({ targetId: t.targetId, flatten: true })
+const ev = async (expr) => (await cdp(sessionId, "Runtime.evaluate", { expression: expr, returnByValue: true })).result.value
+
+// Navigate and wait for a lifecycle event. Arm the wait BEFORE Page.navigate
+// (a fast load can fire it between navigate returning and the listener
+// subscribing). /messaging/ never reaches networkIdle (persistent socket),
+// so it must wait on "load" instead; the catch keeps a missed event non-fatal.
+const nav = async (url, eventName) => {
+  const ready = session.waitFor({ method: 'Page.lifecycleEvent', sessionId, predicate: (p) => p.name === eventName, timeoutMs: 30_000 }).catch(() => null)
+  await cdp(sessionId, "Page.navigate", { url: url })
+  await ready
+}
+const LOGGED_OUT = '!!document.querySelector("input[name=session_key]")||/\\/login|\\/authwall|\\/checkpoint/.test(location.href)'
+const mousePress = async (x, y) => {
+  await cdp(sessionId, "Input.dispatchMouseEvent", { type: "mouseMoved", x: x, y: y })
+  await cdp(sessionId, "Input.dispatchMouseEvent", { type: "mousePressed", x: x, y: y, button: "left", clickCount: 1 })
+  await cdp(sessionId, "Input.dispatchMouseEvent", { type: "mouseReleased", x: x, y: y, button: "left", clickCount: 1 })
+}
+
+try {
+  await cdp(sessionId, "Page.enable", {})
+  // setLifecycleEventsEnabled is required, without it Chrome emits zero
+  // Page.lifecycleEvent and networkIdle/load would never fire.
+  await cdp(sessionId, "Page.setLifecycleEventsEnabled", { enabled: true })
+
+  // ---------------- post ----------------
+  if (VERB === "post") {
+    await nav("https://www.linkedin.com/feed/", "networkIdle")
+    await sleep(4500) // React hydration; networkIdle fires before the composer mounts.
+
+    if (await ev(LOGGED_OUT) === true) return fail("logged out, the feed shows a login form or authwall")
+
+    // The composer trigger is a div[role=button] whose text reads
+    // "Start a post". Clicking expands an inline TipTap editor
+    // (.ProseMirror[contenteditable=true]), NOT a [role=dialog] and NOT the
+    // .ql-editor that comment boxes use. A synthesized mouse press on the
+    // trigger rect is reliable; a bare DOM .click() is the fallback.
+    const FIND_TRIG = 'var b=[].slice.call(document.querySelectorAll("button,[role=button]")).find(function(x){return /start a post/i.test((x.getAttribute("aria-label")||"")+" "+(x.textContent||""));});'
+    // Prefer the TipTap composer (.ProseMirror), feed comment boxes are Quill
+    // .ql-editor and can share the page in DOM order.
+    const ED = "var ed=document.querySelector('.ProseMirror[contenteditable=true]');if(ed){var rr=ed.getBoundingClientRect();if(!(rr.width>0&&rr.height>0))ed=null}if(!ed)ed=[].slice.call(document.querySelectorAll('.ql-editor[contenteditable=true],[role=textbox][contenteditable=true]')).find(function(e){var r=e.getBoundingClientRect();return r.width>0&&r.height>0});"
+    const waitEd = async (rounds) => {
+      for (let i = 0; i < (rounds || 8); i++) {
+        if (await ev('(function(){' + ED + 'return !!ed})()') === true) return true
+        await sleep(500)
+      }
+      return false
+    }
+    // The trigger click is flaky: a trusted press can land on the right element
+    // and still not expand the composer (observed ~2-4 attempts needed). Loop
+    // press -> poll -> DOM click -> poll, up to 4 rounds.
+    let opened = false
+    for (let i = 0; i < 4 && !opened; i++) {
+      const trig = await ev('(function(){' + FIND_TRIG + 'if(!b)return null;b.scrollIntoView({block:"center"});var r=b.getBoundingClientRect();return JSON.stringify({x:r.x+r.width/2,y:r.y+r.height/2});})()')
+      if (trig) {
+        const c = JSON.parse(trig)
+        await mousePress(c.x, c.y)
+        if (await waitEd()) { opened = true; break }
+      }
+      await ev('(function(){' + FIND_TRIG + 'if(b)b.click();return !!b})()')
+      opened = await waitEd()
+    }
+    if (!opened) return fail("composer did not open", { url: await ev('location.href') })
+
+    // The editable is auto-focused after the click; still press inside its
+    // rect so insertText lands even when focus is elsewhere.
+    const rect = await ev('(function(){' + ED + 'if(!ed)return null;ed.focus();var r=ed.getBoundingClientRect();return JSON.stringify({x:r.x,y:r.y});})()')
+    if (!rect) return fail("composer editable disappeared")
+    const rc = JSON.parse(rect)
+    await mousePress(rc.x + 40, rc.y + 15)
+    await sleep(500)
+    if (TEXT) await cdp(sessionId, "Input.insertText", { text: TEXT })
+    await sleep(800)
+
+    let blobBase = 0
+    if (IMAGE) {
+      // The composer's "Media" button (aria-label="Media") wires a hidden
+      // input[type=file]; the input can take seconds to mount, so poll for it.
+      // Set files directly via CDP. Never click the input itself, that opens
+      // the OS picker.
+      blobBase = await ev('document.querySelectorAll("img[src^=blob]").length') || 0
+      await ev('(function(){' + ED + 'if(!ed)return "gone";'
+        + 'var box=ed;for(var i=0;i<10&&box;i++){if(box.querySelector&&box.querySelector("button"))break;box=box.parentElement}'
+        + 'var root=box||document;'
+        + 'var b=[].slice.call(root.querySelectorAll("button")).find(function(x){return /media|photo|image|video/i.test((x.getAttribute("aria-label")||"").trim())});'
+        + 'if(b)b.click();return b?"clicked":"none";})()')
+      await cdp(sessionId, "DOM.enable", {})
+      const doc = await cdp(sessionId, "DOM.getDocument", {})
+      let nids = []
+      for (let i = 0; i < 24; i++) {
+        const nodes = await cdp(sessionId, "DOM.querySelectorAll", { nodeId: doc.root.nodeId, selector: 'input[type="file"]' })
+        nids = nodes.nodeIds || []
+        if (nids.length) break
+        await sleep(500)
+      }
+      if (!nids.length) return fail("image attach: no file input after Media click")
+      await cdp(sessionId, "DOM.setFileInputFiles", { nodeId: nids[0], files: [IMAGE] })
+    }
+
+    // Readiness, polled up to 30s (image upload can lag):
+    //   textLanded: the editable holds the text (whitespace-insensitive)
+    //   attached:   a new blob: preview img anywhere in the document
+    //   post:       a visible, enabled button labeled exactly "Post" inside
+    //               the composer container (other posts on the feed have no
+    //               "Post" buttons until a comment box opens, but scope to the
+    //               composer ancestor anyway)
+    const READY = '(function(){' + ED + 'if(!ed)return JSON.stringify({ed:false});'
+      + 'var box=ed;for(var i=0;i<10&&box;i++){if(box.querySelector&&[].slice.call(box.querySelectorAll("button")).some(function(x){return /^post$/i.test((x.textContent||"").trim())||/^post$/i.test((x.getAttribute("aria-label")||"").trim())}))break;box=box.parentElement}'
+      + 'var root=box||document;'
+      + 'var norm=function(s){return (s||"").replace(/\\s+/g,"")};'
+      + 'var want=norm(' + JSON.stringify(TEXT || "") + ');'
+      + 'var edText=ed.textContent||"";'
+      + 'var textLanded=want?norm(edText)===want:true;'
+      + 'var pub=[].slice.call(root.querySelectorAll("button")).find(function(x){var r=x.getBoundingClientRect();if(!(r.width>0&&r.height>0))return false;return /^post$/i.test((x.textContent||"").trim())||/^post$/i.test((x.getAttribute("aria-label")||"").trim())});'
+      // The preview renders as a blob: img OUTSIDE the Post-button ancestor
+      // (the media editor mounts its own overlay), so count blob: imgs on the
+      // whole document against the pre-attach baseline. NB: img[src^=blob:]
+      // is not a valid selector here, match "blob" without the colon.
+      + 'var attached=' + (IMAGE ? 'document.querySelectorAll("img[src^=blob]").length>' + blobBase : 'true') + ';'
+      + 'return JSON.stringify({ed:true,textLanded:textLanded,edLen:edText.length,attached:attached,pub:pub?{en:!pub.disabled&&pub.getAttribute("aria-disabled")!=="true",lbl:(pub.textContent||"").trim().slice(0,20)}:null});'
+      + '})()'
+    let st = { ed: false, textLanded: false, attached: false, pub: null }
+    for (let i = 0; i < 30; i++) {
+      try { st = JSON.parse(await ev(READY)) } catch (e) {}
+      if (st.ed && st.textLanded && st.attached && st.pub && st.pub.en) break
+      await sleep(1000)
+    }
+    if (!st.ed) return fail("composer editable gone")
+    if (!st.textLanded) return fail("text did not land in the composer", { ed_len: st.edLen })
+    if (IMAGE && !st.attached) return fail("image preview never appeared in the composer")
+
+    if (DRY_RUN) {
+      const state = { ok: st.textLanded && st.attached && !!(st.pub && st.pub.en), dry_run: true, verb: "post", text: TEXT, image: IMAGE, button_enabled: !!(st.pub && st.pub.en), image_attached: IMAGE ? st.attached : null }
+      if (JSON_OUT) return state
+      if (!state.ok) return "NOT_READY text_landed=" + st.textLanded + " button_enabled=" + state.button_enabled + (IMAGE ? " image_attached=" + st.attached : "")
+      return "DRY_RUN_OK verb=post button_enabled=" + state.button_enabled + (IMAGE ? " image_attached=" + st.attached : "") + " chars=" + TEXT.length
+    }
+    if (!st.pub || !st.pub.en) return fail("Post button missing or disabled")
+
+    const ck = await ev('(function(){' + ED + 'if(!ed)return "gone";'
+      + 'var box=ed;for(var i=0;i<10&&box;i++){if(box.querySelector&&box.querySelector("button"))break;box=box.parentElement}'
+      + 'var root=box||document;'
+      + 'var b=[].slice.call(root.querySelectorAll("button")).find(function(x){var r=x.getBoundingClientRect();if(!(r.width>0&&r.height>0))return false;if(x.disabled||x.getAttribute("aria-disabled")==="true")return false;return /^post$/i.test((x.textContent||"").trim())||/^post$/i.test((x.getAttribute("aria-label")||"").trim())});'
+      + 'if(b)b.click();return b?"clicked":"none";})()')
+    if (ck !== "clicked") return fail("no enabled Post button at click time")
+
+    // Success: the composer collapses (editable emptied/gone) and LinkedIn may
+    // toast "Post successful". No permalink is exposed for the new post.
+    let posted = false
+    for (let i = 0; i < 12; i++) {
+      await sleep(1000)
+      const gone = await ev('(function(){' + ED + 'var empty=!ed||((ed.textContent||"").replace(/\\s+/g,"")).length===0;return JSON.stringify({empty:empty,toast:/post successful|was shared|shared successfully/i.test(document.body.innerText||"")});})()')
+      try { const g = JSON.parse(gone); if (g.empty || g.toast) { posted = true; break } } catch (e) {}
+    }
+    if (!posted) return fail("composer still holds the text after the Post click")
+    if (JSON_OUT) return { ok: true, verb: "post", url: null, landed_on: await ev('location.href') }
+    return "POSTED"
+  }
+
+  // ---------------- notifs ----------------
+  if (VERB === "notifs") {
+    await nav("https://www.linkedin.com/notifications/", "networkIdle")
+    await sleep(5000)
+    if (await ev(LOGGED_OUT) === true) return fail("logged out")
+
+    // Cards lazy-render; each card carries an overlay anchor
+    // a[href*=highlightedUpdateUrn] whose OWN text is empty, the readable
+    // card is its parent. The time ("1h") is a span one level further up.
+    // Scroll until COUNT anchors exist or the list stops growing.
+    // Selector note: CSS unquoted attribute values cannot contain "/" and
+    // escaped slashes get eaten by the JS string layers, so the patterns use
+    // slash-free fragments (activity/ugcPost/posts all appear in the post and
+    // highlightedUpdateUrn links). Cards dedupe by href AND by card element:
+    // one card can carry several matching anchors.
+    const COLLECT = '(function(){'
+      + 'var seen={};var seenCards=[];var out=[];'
+      + '[].slice.call(document.querySelectorAll("a[href*=highlightedUpdateUrn],a[href*=activity],a[href*=ugcPost],a[href*=posts]")).forEach(function(a){'
+      + '  var href=a.href||"";'
+      + '  if(!/highlightedUpdateUrn|feed\\/update|\\/posts\\/|ugcPost|urn:li:activity/.test(href))return;'
+      + '  if(seen[href])return;'
+      + '  var card=a;for(var i=0;i<5&&card;i++){var t=(card.innerText||"").trim();if(t.length>20)break;card=card.parentElement}'
+      + '  if(!card||seenCards.indexOf(card)>=0)return;'
+      + '  seen[href]=1;seenCards.push(card);'
+      + '  var scope=card.parentElement||card;'
+      + '  var time=null;'
+      + '  [].slice.call(scope.querySelectorAll("span,p,time")).forEach(function(s){if(time)return;var v=(s.textContent||"").trim();if(/^(just now|\\d+\\s?[mhdw](o|ay|eek|onth)?s?)$/i.test(v))time=v});'
+      + '  var lines=(card.innerText||"").split("\\n").map(function(s){return s.trim()}).filter(Boolean);'
+      + '  var text=lines.join(" ").replace(/\\s+/g," ").trim();'
+      + '  var type="other",actor=null;'
+      + '  if(/^suggested for you/i.test(text)){type="suggested"}'
+      + '  else{var m=text.match(/^(.{1,90}?)\\s+(posted|reposted|commented on|mentioned you|tagged you|liked|reacted|shared|celebrated|congratulated|replied|invited|endorsed|followed|viewed|birthday|anniversary)/i);'
+      + '    if(m){actor=m[1].trim();type=m[2].toLowerCase().replace(/\\s+/g,"-")}}'
+      + '  out.push({type:type,actor:actor,text:text.slice(0,300),url:href.split("#")[0],time:time});'
+      + '});'
+      + 'return JSON.stringify(out);})()'
+    let items = []
+    for (let s = 0; s < 7; s++) {
+      try { items = JSON.parse(await ev(COLLECT)) } catch (e) {}
+      if (items.length >= COUNT) break
+      await ev('window.scrollTo(0, document.body.scrollHeight)')
+      await sleep(1800)
+    }
+    items = items.slice(0, COUNT)
+    if (JSON_OUT) return items
+    if (!items.length) return "no notifications found"
+    return items.map((r, i) => i + ". [" + r.type + "] " + (r.actor || "?") + (r.time ? " · " + r.time : "") + "\n   " + r.text.slice(0, 160) + "\n   " + r.url).join("\n\n")
+  }
+
+  // ---------------- comment ----------------
+  if (VERB === "comment") {
+    await nav(POST_URL, "networkIdle")
+    await sleep(5000)
+    if (await ev(LOGGED_OUT) === true) return fail("logged out")
+
+    // The comment box on a post permalink is a Quill .ql-editor
+    // [contenteditable=true] with data-placeholder "Add a comment…", usually
+    // already mounted. On feed embeds it may need the action-bar "Comment"
+    // button first; that button only focuses the box, it never submits.
+    const ED = "var ed=[].slice.call(document.querySelectorAll('.ql-editor[contenteditable=true],[contenteditable=true][data-placeholder],[role=textbox][contenteditable=true]')).find(function(e){var r=e.getBoundingClientRect();var ph=(e.getAttribute('data-placeholder')||'')+' '+(e.getAttribute('aria-label')||'');return r.width>0&&r.height>0&&/comment|editor/i.test(ph)})||[].slice.call(document.querySelectorAll('.ql-editor[contenteditable=true]')).find(function(e){var r=e.getBoundingClientRect();return r.width>0&&r.height>0});"
+    if (await ev('(function(){' + ED + 'return !!ed})()') !== true) {
+      await ev('(function(){var b=[].slice.call(document.querySelectorAll("button,[role=button]")).find(function(x){return /^comment$/i.test((x.getAttribute("aria-label")||"").trim())});if(b)b.click();return !!b})()')
+      for (let i = 0; i < 16; i++) {
+        await sleep(500)
+        if (await ev('(function(){' + ED + 'return !!ed})()') === true) break
+      }
+    }
+    const rect = await ev('(function(){' + ED + 'if(!ed)return null;ed.scrollIntoView({block:"center"});ed.focus();var r=ed.getBoundingClientRect();return JSON.stringify({x:r.x,y:r.y});})()')
+    if (!rect) return fail("no comment box found on the page")
+    const rc = JSON.parse(rect)
+    await mousePress(rc.x + 40, rc.y + 15)
+    await sleep(400)
+    if (TEXT) await cdp(sessionId, "Input.insertText", { text: TEXT })
+    await sleep(800)
+
+    // The submit is a button labeled "Comment"/"Post" inside the comment-box
+    // container (.comments-comment-box__submit-button*). The action-bar
+    // "Comment" button (aria-label="Comment") sits outside the editor's
+    // ancestors, scoping to the container keeps them apart.
+    const READY = '(function(){' + ED + 'if(!ed)return JSON.stringify({ed:false});'
+      + 'var box=ed;for(var i=0;i<10&&box;i++){if(box.querySelector&&[].slice.call(box.querySelectorAll("button")).some(function(x){return /submit|post|comment/i.test((x.className||"")+" "+(x.getAttribute("aria-label")||"")+" "+(x.textContent||"").trim())}))break;box=box.parentElement}'
+      + 'var root=box||ed.parentElement||document;'
+      + 'var norm=function(s){return (s||"").replace(/\\s+/g,"")};'
+      + 'var textLanded=norm(ed.textContent||"")===norm(' + JSON.stringify(TEXT || "") + ');'
+      + 'var btn=[].slice.call(root.querySelectorAll("button[class*=comments-comment-box__submit],button")).find(function(x){var r=x.getBoundingClientRect();if(!(r.width>0&&r.height>0))return false;return /comments-comment-box__submit/.test(x.className||"")||/^(post|comment)$/i.test((x.textContent||"").trim());});'
+      + 'return JSON.stringify({ed:true,textLanded:textLanded,edLen:(ed.textContent||"").length,btn:btn?{en:!btn.disabled&&btn.getAttribute("aria-disabled")!=="true",lbl:(btn.textContent||"").trim().slice(0,20)}:null});'
+      + '})()'
+    let st = { ed: false, textLanded: false, btn: null }
+    for (let i = 0; i < 15; i++) {
+      try { st = JSON.parse(await ev(READY)) } catch (e) {}
+      if (st.ed && st.textLanded && st.btn && st.btn.en) break
+      await sleep(1000)
+    }
+    if (!st.ed) return fail("comment box gone")
+    if (!st.textLanded) return fail("text did not land in the comment box", { ed_len: st.edLen })
+
+    if (DRY_RUN) {
+      const state = { ok: st.textLanded && !!(st.btn && st.btn.en), dry_run: true, verb: "comment", url: POST_URL, text: TEXT, button_enabled: !!(st.btn && st.btn.en) }
+      if (JSON_OUT) return state
+      if (!state.ok) return "NOT_READY text_landed=" + st.textLanded + " button_enabled=" + state.button_enabled
+      return "DRY_RUN_OK verb=comment button_enabled=" + state.button_enabled + " chars=" + TEXT.length
+    }
+    if (!st.btn || !st.btn.en) return fail("comment submit button missing or disabled")
+
+    const ck = await ev('(function(){' + ED + 'if(!ed)return "gone";'
+      + 'var box=ed;for(var i=0;i<10&&box;i++){if(box.querySelector&&box.querySelector("button"))break;box=box.parentElement}'
+      + 'var root=box||document;'
+      + 'var b=[].slice.call(root.querySelectorAll("button")).find(function(x){var r=x.getBoundingClientRect();if(!(r.width>0&&r.height>0))return false;if(x.disabled||x.getAttribute("aria-disabled")==="true")return false;return /comments-comment-box__submit/.test(x.className||"")||/^(post|comment)$/i.test((x.textContent||"").trim());});'
+      + 'if(b)b.click();return b?"clicked":"none";})()')
+    if (ck !== "clicked") return fail("no enabled submit button at click time")
+
+    // Success: the box empties and the comment text appears in the comments
+    // list (the first comment node is the user's own).
+    let ok = false
+    for (let i = 0; i < 12; i++) {
+      await sleep(1000)
+      const s = await ev('(function(){' + ED + 'var empty=!ed||((ed.textContent||"").replace(/\\s+/g,"")).length===0;var inList=(document.body.innerText||"").indexOf(' + JSON.stringify((TEXT || "").slice(0, 40)) + ')>=0;return JSON.stringify({empty:empty,inList:inList});})()')
+      try { const g = JSON.parse(s); if (g.empty && g.inList) { ok = true; break } } catch (e) {}
+    }
+    if (!ok) return fail("comment box still holds the text after submit")
+    if (JSON_OUT) return { ok: true, verb: "comment", url: POST_URL }
+    return "COMMENTED"
+  }
+
+  // ---------------- inbox ----------------
+  if (VERB === "inbox") {
+    await nav("https://www.linkedin.com/messaging/", "load") // never reaches networkIdle
+    await sleep(6000)
+    if (await ev(LOGGED_OUT) === true) return fail("logged out")
+
+    // Rows are li[class*=msg-conversation-listitem]. They are NOT anchors:
+    // the thread URL only resolves after clicking the row's
+    // .msg-conversation-listitem__link div, so url is null here and `reply`
+    // resolves it by clicking.
+    const items = JSON.parse(await ev('(function(){'
+      + 'return JSON.stringify([].slice.call(document.querySelectorAll("li[class*=msg-conversation-listitem]")).map(function(li,i){'
+      + '  var nm=li.querySelector("[class*=participant]")||li.querySelector("[class*=title]")||li.querySelector("h3");'
+      + '  var sn=li.querySelector("[class*=snippet],[class*=preview]");'
+      + '  var tm=li.querySelector("[class*=time]");'
+      + '  var un=!!li.querySelector("[class*=unread],[class*=badge],[class*=notification-badge]");'
+      + '  var clean=function(s){return (s||"").replace(/\\s+/g," ").trim()};'
+      + '  var firstLine=function(s){return ((s||"").split("\\n").map(function(x){return x.trim()}).filter(Boolean)[0])||""};'
+      + '  var name=clean(firstLine(nm?nm.textContent:"")||firstLine(li.innerText));'
+      + '  name=name.replace(/\\s+(just now|\\d{1,2}:\\d{2}\\s*(am|pm)?|(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\\s+\\d{1,2}|\\d+[mhdw])$/i,"");'
+      + '  return {index:i,name:name,snippet:clean(sn?sn.textContent:null),time:clean(tm?tm.textContent:null)||null,unread:un,url:null};'
+      + '}));})()'))
+    const out = items.slice(0, COUNT)
+    if (JSON_OUT) return out
+    if (!out.length) return "no message threads found"
+    return out.map((r) => r.index + ". " + r.name + (r.time ? " · " + r.time : "") + (r.unread ? " [unread]" : "") + "\n   " + (r.snippet || "")).join("\n\n")
+  }
+
+  // ---------------- reply ----------------
+  if (VERB === "reply") {
+    await nav("https://www.linkedin.com/messaging/", "load") // never reaches networkIdle
+    await sleep(6000)
+    if (await ev(LOGGED_OUT) === true) return fail("logged out")
+
+    // Thread rows are not anchors and clicking the row body does nothing:
+    // the working target is the inner .msg-conversation-listitem__link div
+    // (tabindex=0). /messaging/ auto-opens the most recent thread, which can
+    // be a sponsored one with no reply box.
+    const pick = await ev('(function(){'
+      + 'var lis=[].slice.call(document.querySelectorAll("li[class*=msg-conversation-listitem]"));'
+      + 'var tgt=' + JSON.stringify(TARGET) + ';'
+      + 'var li=null;'
+      + 'if(/^\\d+$/.test(tgt)){li=lis[parseInt(tgt,10)]||null}'
+      + 'else{var low=tgt.toLowerCase();li=lis.find(function(x){return (x.innerText||"").toLowerCase().indexOf(low)>=0})||null}'
+      + 'if(!li)return JSON.stringify({found:false,rows:lis.length});'
+      + 'var link=li.querySelector("[class*=msg-conversation-listitem__link]")||li;'
+      + 'link.scrollIntoView({block:"center"});link.click();'
+      + 'return JSON.stringify({found:true,name:(li.innerText||"").split("\\n").map(function(s){return s.trim()}).filter(Boolean)[0]||null});'
+      + '})()')
+    const p = JSON.parse(pick || "{}")
+    if (!p.found) return fail("no thread matching '" + TARGET + "' (" + (p.rows || 0) + " rows in inbox)")
+
+    const ED = "var ed=document.querySelector('.msg-form__contenteditable[contenteditable=true]')||[].slice.call(document.querySelectorAll('[contenteditable=true]')).find(function(e){return /write a message/i.test(e.getAttribute('aria-label')||'')});"
+    let hasForm = false
+    for (let i = 0; i < 24; i++) {
+      if (await ev('(function(){' + ED + 'return !!ed})()') === true) { hasForm = true; break }
+      await sleep(500)
+    }
+    if (!hasForm) return fail("thread opened but has no reply box (sponsored or restricted thread)", { thread: p.name })
+
+    const rect = await ev('(function(){' + ED + 'if(!ed)return null;ed.focus();var r=ed.getBoundingClientRect();return JSON.stringify({x:r.x,y:r.y});})()')
+    const rc = JSON.parse(rect)
+    await mousePress(rc.x + 40, rc.y + 15)
+    await sleep(400)
+    if (TEXT) await cdp(sessionId, "Input.insertText", { text: TEXT })
+    await sleep(800)
+
+    const READY = '(function(){' + ED + 'if(!ed)return JSON.stringify({ed:false});'
+      + 'var norm=function(s){return (s||"").replace(/\\s+/g,"")};'
+      + 'var textLanded=norm(ed.textContent||"")===norm(' + JSON.stringify(TEXT || "") + ');'
+      + 'var btn=document.querySelector("button[class*=msg-form__send-button]")||[].slice.call(document.querySelectorAll("button")).find(function(x){var r=x.getBoundingClientRect();if(!(r.width>0&&r.height>0))return false;return /^send$/i.test((x.textContent||"").trim())||/^send$/i.test((x.getAttribute("aria-label")||"").trim())});'
+      + 'return JSON.stringify({ed:true,textLanded:textLanded,edLen:(ed.textContent||"").length,btn:btn?{en:!btn.disabled&&btn.getAttribute("aria-disabled")!=="true"}:null});'
+      + '})()'
+    let st = { ed: false, textLanded: false, btn: null }
+    for (let i = 0; i < 15; i++) {
+      try { st = JSON.parse(await ev(READY)) } catch (e) {}
+      if (st.ed && st.textLanded && st.btn && st.btn.en) break
+      await sleep(1000)
+    }
+    if (!st.ed) return fail("reply box gone")
+    if (!st.textLanded) return fail("text did not land in the reply box", { ed_len: st.edLen })
+
+    const threadUrl = await ev('location.href')
+    if (DRY_RUN) {
+      const state = { ok: st.textLanded && !!(st.btn && st.btn.en), dry_run: true, verb: "reply", thread: p.name, thread_url: threadUrl, text: TEXT, button_enabled: !!(st.btn && st.btn.en) }
+      if (JSON_OUT) return state
+      if (!state.ok) return "NOT_READY text_landed=" + st.textLanded + " button_enabled=" + state.button_enabled
+      return "DRY_RUN_OK verb=reply thread=\"" + (p.name || "") + "\" button_enabled=" + state.button_enabled + " chars=" + TEXT.length
+    }
+    if (!st.btn || !st.btn.en) return fail("Send button missing or disabled")
+
+    const ck = await ev('(function(){var b=document.querySelector("button[class*=msg-form__send-button]")||[].slice.call(document.querySelectorAll("button")).find(function(x){var r=x.getBoundingClientRect();if(!(r.width>0&&r.height>0))return false;if(x.disabled||x.getAttribute("aria-disabled")==="true")return false;return /^send$/i.test((x.textContent||"").trim())||/^send$/i.test((x.getAttribute("aria-label")||"").trim())});if(b)b.click();return b?"clicked":"none";})()')
+    if (ck !== "clicked") return fail("no enabled Send button at click time")
+
+    // Success: the box empties and the message lands in the thread.
+    let ok = false
+    for (let i = 0; i < 12; i++) {
+      await sleep(1000)
+      const s = await ev('(function(){' + ED + 'var empty=!ed||((ed.textContent||"").replace(/\\s+/g,"")).length===0;return JSON.stringify({empty:empty});})()')
+      try { if (JSON.parse(s).empty) { ok = true; break } } catch (e) {}
+    }
+    if (!ok) return fail("reply box still holds the text after Send")
+    if (JSON_OUT) return { ok: true, verb: "reply", thread: p.name, thread_url: threadUrl }
+    return "SENT thread=\"" + (p.name || "") + "\""
+  }
+} finally {
+  session.closeTab(t.targetId, sessionId).catch(() => {})
+}
+LINKEDIN_EOF
+)
+
+# Inject the inputs: node reads the quoted-heredoc code from stdin and replaces
+# the placeholders. Raw values are JSON.stringified into safe JS literals;
+# function-replacements dodge & / $ pitfalls in the replacement text.
+final=$(node -e '
+let c=require("fs").readFileSync(0,"utf8");
+let verb=process.argv[1], json=process.argv[2], dry=process.argv[3], port=process.argv[4];
+let text=process.argv[5]||"", url=process.argv[6]||null, image=process.argv[7]||null;
+let target=process.argv[8]||"", count=process.argv[9]||"10";
+c=c.replace(/__LI_VERB__/g,()=>JSON.stringify(verb))
+    .replace(/__LI_JSON__/g,()=>json)
+    .replace(/__LI_DRY_RUN__/g,()=>dry)
+    .replace(/__LI_PORT__/g,()=>port||"null")
+    .replace(/__LI_TEXT__/g,()=>JSON.stringify(text))
+    .replace(/__LI_URL__/g,()=>JSON.stringify(url))
+    .replace(/__LI_IMAGE__/g,()=>JSON.stringify(image))
+    .replace(/__LI_TARGET__/g,()=>JSON.stringify(target))
+    .replace(/__LI_COUNT__/g,()=>String(Math.max(1,parseInt(count,10)||10)));
+process.stdout.write(c);
+' "$verb" "$json_output" "$dry_run" "$port" "$text" "$post_url" "$image" "$target" "$count" <<<"$code")
+
+printf '%s' "$final" | browser-harness-js

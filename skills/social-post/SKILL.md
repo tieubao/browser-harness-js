@@ -5,18 +5,18 @@ description: >-
   LinkedIn) through the per-platform CLIs. Use when the user asks to post to
   all my socials, cross-post this, share everywhere, "đăng lên X và facebook",
   or "post this on my socials". Requires the platform CLIs (xpost, fbpost,
-  lipost) on PATH, each backed by browser-harness-js and a logged-in session.
+  linkedin) on PATH, each backed by browser-harness-js and a logged-in session.
 setup: bash <skill-dir>/scripts/setup
 compatibility: >-
   Requires node on PATH plus the per-platform posting CLIs it orchestrates
-  (xpost for X, fbpost for Facebook, lipost for LinkedIn). Each platform CLI
+  (xpost for X, fbpost for Facebook, linkedin for LinkedIn). Each platform CLI
   needs browser-harness-js and a logged-in session in the user's browser.
   Missing CLIs are reported per platform, not fatal.
 ---
 
 # Social Post
 
-Cross-post the same text to every available social platform. Thin orchestrator: it invokes each platform CLI (`x` -> `xpost`, `fb` -> `fbpost`, `linkedin` -> `lipost`) with `--json` and merges the results. A missing CLI reports `{ ok:false, reason:"<cli> not installed" }` for that platform and the rest still run. The call fails only when EVERY requested platform failed.
+Cross-post the same text to every available social platform. Thin orchestrator: it invokes each platform CLI (`x` -> `xpost`, `fb` -> `fbpost`, `linkedin` -> `linkedin post`) with `--json` and merges the results. A missing CLI reports `{ ok:false, reason:"<cli> not installed" }` for that platform and the rest still run. The call fails only when EVERY requested platform failed.
 
 ## Usage
 
@@ -28,7 +28,7 @@ social-post "text" --dry-run             # pass-through dry-run to each CLI
 social-post --json "text"                # { results: { x: {...}, fb: {...}, ... } }
 ```
 
-- Pretty mode prints one line per platform: `x: POSTED <url>` / `fb: DRY_RUN_OK` / `linkedin: FAILED lipost not installed`.
+- Pretty mode prints one line per platform: `x: POSTED <url>` / `fb: DRY_RUN_OK` / `linkedin: FAILED linkedin not installed`.
 - `--json` prints `{ "results": { "x": {...}, "fb": {...}, "linkedin": {...} } }`, each value being that platform CLI's own JSON result.
 - `--dry-run` never publishes anywhere; each platform does everything except its final publish click.
 
@@ -48,6 +48,6 @@ Canonical voice doc (read if available): `foundation-ops/desks/neko-anon/SOUL.md
 
 ## Traps
 
-- **`lipost` does not exist yet.** LinkedIn always reports `{ ok:false, reason:"lipost not installed" }` until that CLI ships; that is expected, not a bug. Use `--platforms x,fb` to skip it cleanly.
+- **`linkedin` is a multi-verb CLI.** The linkedin platform maps to `linkedin post`, not a standalone `lipost`. An older build may still look for `lipost` and always report it missing; update social-post if you see that.
 - **Per-platform sessions.** A platform only works if its CLI is installed AND the browser is logged in there. Check each `reason` in the results object.
 - **Verbatim posting.** No drafting, no review, no per-platform rewriting inside the tool. Write the final text (or per-platform variants via separate `--platforms` calls) yourself.

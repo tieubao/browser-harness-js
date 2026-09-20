@@ -1,0 +1,162 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# social-post, cross-post the same text to every available platform.
+#
+#   social-post "text"                       # post to every platform
+#   social-post "text" --platforms x,fb      # subset
+#   social-post "text" --image /abs/p.png    # image to platforms that take it
+#   social-post "text" --dry-run             # pass-through dry-run
+#   social-post --json "text"                # one JSON object of results
+#
+# Thin orchestrator over the per-platform CLIs (x -> xpost, fb -> fbpost,
+# linkedin -> lipost). Each is invoked with --json; a missing CLI reports
+# { ok:false, reason:"<cli> not installed" } and never sinks the call.
+# Exit is non-zero only when EVERY requested platform failed.
+
+usage() {
+  cat >&2 <<'USAGE'
+Usage:
+  social-post [--json] [--dry-run] [--platforms <list>] [--image <file>] <text>
+
+  <text>                  Post body, posted verbatim on every platform.
+  --platforms <a,b,..>    Comma-separated subset of: x, fb, linkedin.
+                          Default: all of them.
+  --image <file>          Attach one image on platforms that support it
+                          (relative paths are made absolute).
+  --dry-run               Pass-through dry-run: each platform does everything
+                          except the final publish click.
+  --json                  Emit one object: { results: { x: {...}, fb: {...} } }.
+
+Exit status: 0 if at least one requested platform succeeded, 1 otherwise.
+
+Examples:
+  social-post "shipping the social-post skill today"
+  social-post "with a picture" --image ~/Desktop/chart.png --platforms x,fb
+  social-post --dry-run "composer check on all platforms"
+USAGE
+  exit 1
+}
+
+[ $# -lt 1 ] && usage
+
+json_output=false
+dry_run=false
+image=""
+platforms=""
+pos=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --json) json_output=true; shift ;;
+    --dry-run) dry_run=true; shift ;;
+    --platforms)
+      [ $# -ge 2 ] || { echo "social-post: --platforms requires a list" >&2; exit 1; }
+      platforms="$2"; shift 2 ;;
+    --image)
+      [ $# -ge 2 ] || { echo "social-post: --image requires a file path" >&2; exit 1; }
+      image="$2"; shift 2 ;;
+    --) shift; while [ $# -gt 0 ]; do pos+=("$1"); shift; done ;;
+    -*) echo "social-post: unknown option $1" >&2; exit 1 ;;
+    *) pos+=("$1"); shift ;;
+  esac
+done
+
+[ ${#pos[@]} -lt 1 ] && usage
+[ ${#pos[@]} -gt 1 ] && { echo "social-post: unexpected argument '${pos[1]}'" >&2; exit 1; }
+text="${pos[0]}"
+
+if [ -n "$image" ]; then
+  [ -f "$image" ] || { echo "social-post: --image file not found: $image" >&2; exit 1; }
+  image="$(cd "$(dirname "$image")" && pwd)/$(basename "$image")"
+fi
+
+# Platform -> CLI map. Resolution order: PATH, then the sibling skill's script
+# (../<cli>/scripts/<cli>) so repo-local runs work before setup.
+skill_dir="$(cd "$(dirname "$0")/.." && pwd)"
+resolve_cli() {
+  local cli="$1"
+  if command -v "$cli" >/dev/null 2>&1; then command -v "$cli"; return 0; fi
+  local sib="$skill_dir/../$cli/scripts/$cli"
+  if [ -f "$sib" ]; then printf '%s' "$sib"; return 0; fi
+  return 1
+}
+
+platform_cli() {
+  case "$1" in
+    x) printf 'xpost' ;;
+    fb) printf 'fbpost' ;;
+    linkedin) printf 'lipost' ;;
+    *) return 1 ;;
+  esac
+}
+
+if [ -n "$platforms" ]; then
+  IFS=',' read -r -a wanted <<< "$platforms"
+  for p in "${wanted[@]}"; do
+    p="$(printf '%s' "$p" | tr -d '[:space:]')"
+    [ -n "$p" ] || continue
+    platform_cli "$p" >/dev/null 2>&1 || { echo "social-post: unknown platform '$p' (known: x, fb, linkedin)" >&2; exit 1; }
+  done
+else
+  wanted=(x fb linkedin)
+fi
+
+[ -z "$text" ] && [ -z "$image" ] && { echo "social-post: nothing to post (empty text and no --image)" >&2; exit 1; }
+
+# Run each platform CLI with --json and collect one JSON object per platform.
+# A missing CLI or a non-JSON response becomes { ok:false, reason } here.
+results_file="$(mktemp -t social-post.XXXXXX)"
+trap 'rm -f "$results_file"' EXIT
+printf '{' > "$results_file"
+first=true
+any_ok=false
+
+for p in "${wanted[@]}"; do
+  p="$(printf '%s' "$p" | tr -d '[:space:]')"
+  [ -n "$p" ] || continue
+  cli_name="$(platform_cli "$p")"
+  args=(--json)
+  $dry_run && args+=(--dry-run)
+  [ -n "$image" ] && args+=(--image "$image")
+  args+=("$text")
+
+  if bin="$(resolve_cli "$cli_name")"; then
+    out=$("$bin" "${args[@]}" 2>&1) || true
+    # Validate as JSON; anything else becomes a failure object with raw output.
+    obj="$(printf '%s' "$out" | node -e '
+      const fs=require("fs");
+      const raw=fs.readFileSync(0,"utf8").trim();
+      try { const o=JSON.parse(raw); process.stdout.write(JSON.stringify(o)); }
+      catch(e){ process.stdout.write(JSON.stringify({ok:false,reason:"non-JSON output",raw:raw.slice(0,500)})); }
+    ')"
+  else
+    obj="{\"ok\":false,\"reason\":\"$cli_name not installed\"}"
+  fi
+
+  $first || printf ',' >> "$results_file"
+  first=false
+  printf '%s' "\"$p\":$obj" >> "$results_file"
+
+  if printf '%s' "$obj" | grep -q '"ok":true'; then any_ok=true; fi
+  if ! $json_output; then
+    line="$(printf '%s' "$obj" | node -e '
+      const fs=require("fs");const o=JSON.parse(fs.readFileSync(0,"utf8"));
+      if(o.ok===true&&o.dry_run)process.stdout.write("DRY_RUN_OK");
+      else if(o.ok===true)process.stdout.write("POSTED"+(o.url?" "+o.url:""));
+      else process.stdout.write("FAILED "+(o.reason||"unknown"));
+    ')"
+    printf '%s: %s\n' "$p" "$line"
+  fi
+done
+
+printf '}' >> "$results_file"
+
+if $json_output; then
+  node -e '
+    const fs=require("fs");
+    const r=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));
+    process.stdout.write(JSON.stringify({results:r})+"\n");
+  ' "$results_file"
+fi
+
+$any_ok || exit 1

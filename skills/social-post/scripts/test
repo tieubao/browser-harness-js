@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+# Smoke test for the social-post skill.
+# NEVER posts: the only live calls are `social-post --dry-run`, which passes
+# the dry-run through to each platform CLI (each stops before its publish
+# click). Requires a Chromium-based browser running with remote debugging AND
+# logged-in sessions for the requested platforms. Exits 77 if the browser is
+# unreachable, 0 if all checks pass, 1 otherwise.
+set -uo pipefail
+
+script_dir="$(cd "$(dirname "$0")" && pwd)"
+cli="$script_dir/social-post"
+
+if [ ! -f "$cli" ]; then
+  echo "Error: $cli not found" >&2
+  exit 1
+fi
+
+if ! command -v node >/dev/null 2>&1; then
+  echo "skip: node not on PATH" >&2
+  exit 77
+fi
+
+if ! command -v browser-harness-js >/dev/null 2>&1; then
+  echo "skip: browser-harness-js not on PATH (run scripts/setup first)" >&2
+  exit 77
+fi
+
+# Run the project's own social-post script, not whatever happens to be on PATH.
+run() { "$cli" "$@" 2>&1 || true; }
+
+# Skip cleanly if the browser isn't reachable. This also serves as the first
+# live dry-run, so a successful probe is not wasted work.
+probe=$(run --dry-run --platforms x "social-post smoke")
+case "$probe" in
+  *Cannot*connect*|*ECONNREFUSED*|*connect:*|*"No running browser"*|*"No detected browser"*)
+    echo "skip: browser not reachable ($(printf '%s' "$probe" | head -1 | sed 's/^[[:space:]]*//'))" >&2
+    exit 77 ;;
+esac
+
+pass=0
+fail=0
+ok()  { echo "  PASS  $1"; pass=$((pass + 1)); }
+bad() { echo "  FAIL  $1"; printf '%s\n' "$2" | sed 's/^[[:space:]]*/        /' | head -6; fail=$((fail + 1)); }
+expect() { # desc  needle  actual   -> pass if actual contains needle
+  if printf '%s' "$3" | grep -qF "$2"; then ok "$1"; else bad "$1" "$3"; fi
+}
+
+echo "social-post smoke test (--dry-run only, never posts)"
+
+# Live dry-run through the x platform (needs a logged-in X session).
+expect "dry-run: x reports DRY_RUN_OK" "x: DRY_RUN_OK" "$probe"
+
+# JSON aggregation: one object with a per-platform results map.
+json=$(run --json --dry-run --platforms x "social-post smoke")
+expect "json: has results map" '"results"' "$json"
+expect "json: x dry_run flag" '"dry_run":true' "$json"
+
+# A missing platform CLI is reported per-platform, not fatal (linkedin ships
+# no CLI yet). It must not sink the call when another platform succeeds.
+mix=$(run --json --dry-run --platforms x,linkedin "social-post smoke")
+expect "missing cli: linkedin reported" '"lipost not installed"' "$mix"
+
+echo "-- guards --"
+# No args -> usage, non-zero exit.
+g1=$("$cli" 2>&1); rc1=$?
+if [ "$rc1" -ne 0 ] && printf '%s' "$g1" | grep -qF "Usage"; then ok "guard: no args -> usage"; else bad "guard: no args -> usage" "rc=$rc1 out=$g1"; fi
+# Unknown option -> error, non-zero exit.
+g2=$("$cli" "x" --bogus 2>&1); rc2=$?
+if [ "$rc2" -ne 0 ] && printf '%s' "$g2" | grep -qF "unknown option"; then ok "guard: unknown option rejected"; else bad "guard: unknown option rejected" "rc=$rc2 out=$g2"; fi
+# Unknown platform -> error, non-zero exit.
+g3=$("$cli" "x" --platforms x,myspace 2>&1); rc3=$?
+if [ "$rc3" -ne 0 ] && printf '%s' "$g3" | grep -qF "unknown platform"; then ok "guard: unknown platform rejected"; else bad "guard: unknown platform rejected" "rc=$rc3 out=$g3"; fi
+# Missing image file -> error before any platform call.
+g4=$("$cli" "x" --image /nonexistent/social-post.png 2>&1); rc4=$?
+if [ "$rc4" -ne 0 ] && printf '%s' "$g4" | grep -qF "not found"; then ok "guard: missing image file rejected"; else bad "guard: missing image file rejected" "rc=$rc4 out=$g4"; fi
+# Extra positional -> error, non-zero exit.
+g5=$("$cli" "x" "y" 2>&1); rc5=$?
+if [ "$rc5" -ne 0 ] && printf '%s' "$g5" | grep -qF "unexpected argument"; then ok "guard: extra positional rejected"; else bad "guard: extra positional rejected" "rc=$rc5 out=$g5"; fi
+
+echo
+echo "$pass passed, $fail failed"
+[ "$fail" -eq 0 ]

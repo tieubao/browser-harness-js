@@ -1,0 +1,377 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# fbpost, compose + post to the user's own Facebook timeline via CDP.
+#
+#   fbpost "text"                       # compose + post to the timeline
+#   fbpost "text" --image /abs/p.png    # attach one image
+#   fbpost "text" --dry-run             # everything but the Post click
+#   fbpost --json "text"                # JSON result
+#
+# Posts whatever text it is given, through the logged-in Facebook session in
+# the user's own browser. No Graph API key, no jq. One foreground tab per call.
+# Selectors use role / aria-label / visible text only (Facebook obfuscates
+# class names) and match English AND Vietnamese labels, detected at runtime.
+
+# Auto-fix: if browser-harness-js isn't on PATH, try to find and symlink it.
+if ! command -v browser-harness-js >/dev/null 2>&1; then
+  _bhjs="$(cd "$(dirname "$0")/.." && pwd)/../cdp/sdk/browser-harness-js"
+  if [ -f "$_bhjs" ]; then
+    _bindir="$HOME/.local/bin"
+    mkdir -p "$_bindir"
+    ln -sf "$_bhjs" "$_bindir/browser-harness-js"
+    export PATH="$_bindir:$PATH"
+  else
+    echo "fbpost: browser-harness-js not found. Run: bash <skill-dir>/scripts/setup" >&2
+    exit 1
+  fi
+fi
+
+usage() {
+  cat >&2 <<'USAGE'
+Usage:
+  fbpost [--json] [--dry-run] [--image <file>] <text>
+
+  <text>                  Post body, posted verbatim (it is not drafted or
+                          reviewed). Empty only allowed together with --image.
+  --image <file>          Attach one image (relative paths are made absolute).
+  --dry-run               Do everything EXCEPT the final Post click; prints
+                          DRY_RUN_OK plus the readiness state.
+  --json                  Emit the result as a JSON object.
+
+  FBPOST_PORT / BH_PORT   Pin the CDP port (e.g. 9222) instead of auto-detect.
+
+Examples:
+  fbpost "shipping the fbpost skill today"
+  fbpost "with a picture" --image ~/Desktop/chart.png
+  fbpost --dry-run "does the composer hydrate?"
+USAGE
+  exit 1
+}
+
+[ $# -lt 1 ] && usage
+
+json_output=false
+dry_run=false
+image=""
+pos=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --json) json_output=true; shift ;;
+    --dry-run) dry_run=true; shift ;;
+    --image)
+      [ $# -ge 2 ] || { echo "fbpost: --image requires a file path" >&2; exit 1; }
+      image="$2"; shift 2 ;;
+    --) shift; while [ $# -gt 0 ]; do pos+=("$1"); shift; done ;;
+    -*) echo "fbpost: unknown option $1" >&2; exit 1 ;;
+    *) pos+=("$1"); shift ;;
+  esac
+done
+
+[ ${#pos[@]} -lt 1 ] && usage
+[ ${#pos[@]} -gt 1 ] && { echo "fbpost: unexpected argument '${pos[1]}'" >&2; exit 1; }
+text="${pos[0]}"
+
+if [ -n "$image" ]; then
+  [ -f "$image" ] || { echo "fbpost: --image file not found: $image" >&2; exit 1; }
+  image="$(cd "$(dirname "$image")" && pwd)/$(basename "$image")"
+fi
+
+[ -z "$text" ] && [ -z "$image" ] && { echo "fbpost: nothing to post (empty text and no --image)" >&2; exit 1; }
+
+# Optional explicit CDP port, auto-detect has missed a running browser that
+# was listening on --remote-debugging-port=9222 (observed with Helium).
+port="${FBPOST_PORT:-${BH_PORT:-}}"
+case "$port" in
+  "") ;;
+  *[!0-9]*) echo "fbpost: FBPOST_PORT/BH_PORT must be a port number (got '$port')" >&2; exit 1 ;;
+esac
+
+# The inputs are injected below by placeholder substitution so the heredoc can
+# stay quoted (backticks, $, and regex backslashes in the in-page JS need no
+# bash escaping). The substitution itself is done in node: it JSON.stringifies
+# the raw values into safe JS literals and uses function-replacements, which
+# are immune to the `&` / `$` / `\` semantics that bash `${var//pat/repl}` and
+# JS String.replace both apply to plain replacement strings, matters for post
+# text containing `&` or `$`.
+code=$(cat <<'FBPOST_EOF'
+const TEXT = __FBPOST_TEXT__
+const IMAGE = __FBPOST_IMAGE__
+const DRY_RUN = __FBPOST_DRY_RUN__
+const JSON_OUT = __FBPOST_JSON__
+const PORT = __FBPOST_PORT__
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+const MODE = "post"
+const fail = (reason, extra) => JSON_OUT
+  ? Object.assign({ ok: false, mode: MODE, reason: reason }, extra || {})
+  : (DRY_RUN ? "NOT_READY " : "NOT_POSTED ") + reason
+
+if (!session.isConnected()) {
+  if (PORT) {
+    // An explicit port means "use THIS browser", do not auto-detect first.
+    try { await session.connect({ port: PORT }) }
+    catch (e) { throw new Error("Cannot connect to browser on 127.0.0.1:" + PORT + ": " + e.message) }
+  } else {
+    // Auto-detect has missed a running browser listening on
+    // --remote-debugging-port=9222 (observed with Helium), retry that port
+    // explicitly before giving up.
+    try { await session.connect() }
+    catch (e1) {
+      try { await session.connect({ port: 9222 }) }
+      catch (e2) { throw new Error("Cannot connect to browser (auto-detect and 127.0.0.1:9222 both failed): " + e2.message) }
+    }
+  }
+}
+
+// Foreground tab, the composer dialog is flaky to open in a throttled
+// background tab. One tab per call keeps parallel calls safe.
+const t = await session.Target.createTarget({ url: "about:blank", background: false })
+const { sessionId } = await session.Target.attachToTarget({ targetId: t.targetId, flatten: true })
+const ev = async (expr) => (await cdp(sessionId, "Runtime.evaluate", { expression: expr, returnByValue: true })).result.value
+
+// Facebook's DOM is obfuscated (generated classes): every selector below is
+// role / aria-label / visible text only. The UI language is detected at
+// runtime; each matcher covers English and Vietnamese:
+//   trigger: "What's on your mind, <name>?" / "Bạn đang nghĩ gì, <name>?"
+//   publish: "Post" / "Đăng"   advance: "Next" / "Tiếp"   media: "Photo/video" / "Ảnh/video"
+const TRIGGER_RE = "what's on your mind|bạn đang nghĩ|ban dang nghi"
+const PUBLISH_RE = "^(post|đăng|dang|share|chia sẻ|chia se|publish)$"
+const ADVANCE_RE = "^(next|tiếp|tiep|tiếp theo|tiep theo)$"
+const MEDIA_RE   = "photo|ảnh|anh|video"
+// The live composer dialog is the [role=dialog] that contains an editable.
+// A second, empty aria-label="Create post" shell coexists; select by the child.
+const FIND_DLG = '[].slice.call(document.querySelectorAll(\'[role="dialog"]\')).find(function(x){return x.querySelector(\'[contenteditable],[role="textbox"],textarea\')})'
+
+try {
+  await cdp(sessionId, "Page.enable", {})
+  // setLifecycleEventsEnabled is required, without it Chrome emits zero
+  // Page.lifecycleEvent and networkIdle would never fire.
+  await cdp(sessionId, "Page.setLifecycleEventsEnabled", { enabled: true })
+  // Arm BEFORE Page.navigate: lifecycle events fire once, and a fast load can
+  // fire networkIdle between navigate returning and the listener subscribing.
+  const ready = session.waitFor({ method: 'Page.lifecycleEvent', sessionId, predicate: (p) => p.name === 'networkIdle', timeoutMs: 30_000 })
+  await cdp(sessionId, "Page.navigate", { url: "https://www.facebook.com/" })
+  await ready
+  // React hydration, networkIdle fires before React mounts the composer.
+  await sleep(4500)
+
+  // Logged out, the feed renders a login form instead of the composer.
+  const loggedOut = await ev('!!document.querySelector(\'input[name="email"]\')')
+  if (loggedOut === true) return fail("logged out, the feed shows a login form")
+
+  // The composer trigger is a [role=button] whose text (or aria-label) reads
+  // "What's on your mind, <name>?" / "Bạn đang nghĩ gì, <name>?". A bare DOM
+  // .click() opens the dialog only intermittently; a synthesized mouse press
+  // on the rect is reliable, so try mouse first, DOM click as fallback.
+  const trig = await ev('(function(){'
+    + 'var re=new RegExp(' + JSON.stringify(TRIGGER_RE) + ',"i");'
+    + 'var b=[].slice.call(document.querySelectorAll(\'[role="button"]\')).find(function(x){'
+    + 'var tx=(x.textContent||"").trim();var al=x.getAttribute("aria-label")||"";'
+    + 'return re.test(tx)||re.test(al);});'
+    + 'if(!b)return null;'
+    + 'b.scrollIntoView({block:"center"});'
+    + 'var r=b.getBoundingClientRect();'
+    + 'return JSON.stringify({x:r.x+r.width/2,y:r.y+r.height/2});'
+    + '})()')
+  if (!trig) {
+    const loc = await ev('location.href')
+    return fail("no composer trigger, logged out?", { url: loc })
+  }
+  const c = JSON.parse(trig)
+
+  const waitEditable = async () => {
+    for (let i = 0; i < 24; i++) {
+      const ok = await ev('(function(){return !!(' + FIND_DLG + ')})()')
+      if (ok === true) return true
+      await sleep(500)
+    }
+    return false
+  }
+
+  await cdp(sessionId, "Input.dispatchMouseEvent", { type: "mouseMoved", x: c.x, y: c.y })
+  await cdp(sessionId, "Input.dispatchMouseEvent", { type: "mousePressed", x: c.x, y: c.y, button: "left", clickCount: 1 })
+  await cdp(sessionId, "Input.dispatchMouseEvent", { type: "mouseReleased", x: c.x, y: c.y, button: "left", clickCount: 1 })
+
+  if (!(await waitEditable())) {
+    // Fallback: DOM click on the trigger, then wait again.
+    await ev('(function(){'
+      + 'var re=new RegExp(' + JSON.stringify(TRIGGER_RE) + ',"i");'
+      + 'var b=[].slice.call(document.querySelectorAll(\'[role="button"]\')).find(function(x){'
+      + 'return re.test((x.textContent||"").trim())||re.test(x.getAttribute("aria-label")||"");});'
+      + 'if(b)b.click();return b?"clicked":"gone";'
+      + '})()')
+    if (!(await waitEditable())) return fail("composer dialog did not open")
+  }
+
+  // The editable mounts ~1s after the dialog shell and is auto-focused; still
+  // click into its rect so insertText lands even when focus is elsewhere.
+  const rect = await ev('(function(){'
+    + 'var d=' + FIND_DLG + ';if(!d)return null;'
+    + 'var tb=d.querySelector(\'[contenteditable],[role="textbox"],textarea\');'
+    + 'tb.focus();var r=tb.getBoundingClientRect();'
+    + 'return JSON.stringify({x:r.x,y:r.y});'
+    + '})()')
+  if (!rect) return fail("composer did not open")
+  const rc = JSON.parse(rect)
+  await cdp(sessionId, "Input.dispatchMouseEvent", { type: "mousePressed", x: rc.x + 40, y: rc.y + 15, button: "left", clickCount: 1 })
+  await cdp(sessionId, "Input.dispatchMouseEvent", { type: "mouseReleased", x: rc.x + 40, y: rc.y + 15, button: "left", clickCount: 1 })
+  await sleep(500)
+  if (TEXT) await cdp(sessionId, "Input.insertText", { text: TEXT })
+  await sleep(800)
+
+  if (IMAGE) {
+    // The dialog's Photo/video ("Ảnh/video") control reveals the file input;
+    // click it first so the input is wired, then set files directly via CDP.
+    // Never click input[type=file]: that opens the OS picker.
+    await ev('(function(){'
+      + 'var d=' + FIND_DLG + ';if(!d)return "gone";'
+      + 'var re=new RegExp(' + JSON.stringify(MEDIA_RE) + ',"i");'
+      + 'var b=[].slice.call(d.querySelectorAll(\'[role="button"]\')).find(function(x){'
+      + 'return re.test((x.getAttribute("aria-label")||"").toLowerCase());});'
+      + 'if(b)b.click();return b?"clicked":"none";'
+      + '})()')
+    await sleep(1500)
+    await cdp(sessionId, "DOM.enable", {})
+    const doc = await cdp(sessionId, "DOM.getDocument", {})
+    const nodes = await cdp(sessionId, "DOM.querySelectorAll", { nodeId: doc.root.nodeId, selector: '[role="dialog"] input[type="file"]' })
+    const nids = nodes.nodeIds || []
+    if (!nids.length) return fail("image attach: no file input in the composer")
+    await cdp(sessionId, "DOM.setFileInputFiles", { nodeId: nids[0], files: [IMAGE] })
+  }
+
+  // Readiness, polled up to 30s (image upload can lag):
+  //   text_landed: the editable holds the text (whitespace-insensitive)
+  //   attached:    a blob:/data: preview img or video inside the dialog
+  //   advance:     a visible, enabled publish ("Post"/"Đăng") or advance
+  //                ("Next"/"Tiếp") button
+  const READY_EXPR = '(function(){'
+    + 'var d=' + FIND_DLG + ';if(!d)return JSON.stringify({dlg:false});'
+    + 'var ed=d.querySelector(\'[contenteditable],[role="textbox"],textarea\');'
+    + 'var norm=function(s){return (s||"").replace(/\\s+/g,"")};'
+    + 'var want=' + JSON.stringify(TEXT ? "x" : "") + '?' + 'norm(' + JSON.stringify(TEXT || "") + '):null;'
+    + 'var edText=ed?ed.textContent||"":"";'
+    + 'var textLanded=want===null?edText.length>0||true:norm(edText)===want;'
+    + 'var pubRe=new RegExp(' + JSON.stringify(PUBLISH_RE) + ',"i");'
+    + 'var advRe=new RegExp(' + JSON.stringify(ADVANCE_RE) + ',"i");'
+    + 'var btns=[].slice.call(d.querySelectorAll(\'[role="button"]\')).filter(function(b){var r=b.getBoundingClientRect();return r.width>0&&r.height>0});'
+    + 'var lbl=function(b){return [(b.getAttribute("aria-label")||"").trim(),(b.textContent||"").trim()]};'
+    + 'var en=function(b){return b.getAttribute("aria-disabled")!=="true"&&!b.disabled};'
+    + 'var pub=btns.find(function(b){var l=lbl(b);return (pubRe.test(l[0])||pubRe.test(l[1]))});'
+    + 'var adv=btns.find(function(b){var l=lbl(b);return (advRe.test(l[0])||advRe.test(l[1]))});'
+    + 'var attached=' + (IMAGE ? '!!d.querySelector(\'img[src^="blob:"],img[src^="data:"],video\')' : 'true') + ';'
+    + 'return JSON.stringify({dlg:true,textLanded:textLanded,edLen:edText.length,attached:attached,'
+    + 'pub:pub?{en:en(pub),lbl:lbl(pub)}:null,adv:adv?{en:en(adv),lbl:lbl(adv)}:null});'
+    + '})()'
+
+  let st = { dlg: false, textLanded: false, attached: false, pub: null, adv: null }
+  for (let i = 0; i < 30; i++) {
+    const pr = await ev(READY_EXPR)
+    try { st = JSON.parse(pr) } catch (e) {}
+    if (st.dlg && st.textLanded && st.attached && ((st.pub && st.pub.en) || (st.adv && st.adv.en))) break
+    await sleep(1000)
+  }
+  if (!st.dlg) return fail("composer dialog closed unexpectedly")
+  if (!st.textLanded) return fail("text did not land in the composer", { ed_len: st.edLen })
+  if (IMAGE && !st.attached) return fail("image preview never appeared in the composer")
+
+  // Two-step composer: an enabled "Next"/"Tiếp" advances to a preview pane that
+  // carries the real "Post"/"Đăng" button. Single-step variants expose "Post"
+  // directly. Advancing never publishes; only the publish button does.
+  let publish = st.pub && st.pub.en ? st.pub : null
+  if (!publish && st.adv && st.adv.en) {
+    await ev('(function(){'
+      + 'var d=' + FIND_DLG + ';if(!d)return "gone";'
+      + 'var advRe=new RegExp(' + JSON.stringify(ADVANCE_RE) + ',"i");'
+      + 'var b=[].slice.call(d.querySelectorAll(\'[role="button"]\')).find(function(x){'
+      + 'var r=x.getBoundingClientRect();if(!(r.width>0&&r.height>0))return false;'
+      + 'if(x.getAttribute("aria-disabled")==="true"||x.disabled)return false;'
+      + 'var al=(x.getAttribute("aria-label")||"").trim();var tx=(x.textContent||"").trim();'
+      + 'return advRe.test(al)||advRe.test(tx);});'
+      + 'if(!b)return "none";b.click();return "clicked";'
+      + '})()')
+    // Poll for the publish button on the preview pane.
+    for (let i = 0; i < 15; i++) {
+      await sleep(1000)
+      const pr = await ev('(function(){'
+        + 'var ds=[].slice.call(document.querySelectorAll(\'[role="dialog"]\'));'
+        + 'var pubRe=new RegExp(' + JSON.stringify(PUBLISH_RE) + ',"i");'
+        + 'for(var k=0;k<ds.length;k++){'
+        + 'var b=[].slice.call(ds[k].querySelectorAll(\'[role="button"]\')).find(function(x){'
+        + 'var r=x.getBoundingClientRect();if(!(r.width>0&&r.height>0))return false;'
+        + 'var al=(x.getAttribute("aria-label")||"").trim();var tx=(x.textContent||"").trim();'
+        + 'return pubRe.test(al)||pubRe.test(tx);});'
+        + 'if(b)return JSON.stringify({found:true,en:b.getAttribute("aria-disabled")!=="true"&&!b.disabled,lbl:[(b.getAttribute("aria-label")||"").trim(),(b.textContent||"").trim()]});}'
+        + 'return JSON.stringify({found:false});'
+        + '})()')
+      try { const p = JSON.parse(pr); if (p.found) { publish = p; break } } catch (e) {}
+    }
+  }
+
+  const buttonEnabled = !!(publish && publish.en)
+
+  if (DRY_RUN) {
+    const state = { ok: st.textLanded && st.attached && buttonEnabled, dry_run: true, mode: MODE, text: TEXT, image: IMAGE, button_enabled: buttonEnabled, image_attached: IMAGE ? st.attached : null }
+    if (JSON_OUT) return state
+    if (!state.ok) return "NOT_READY text_landed=" + st.textLanded + " button_enabled=" + buttonEnabled + (IMAGE ? " image_attached=" + st.attached : "")
+    return "DRY_RUN_OK mode=" + MODE + " button_enabled=" + buttonEnabled
+      + (IMAGE ? " image_attached=" + st.attached : "")
+      + " chars=" + TEXT.length
+  }
+
+  if (!publish) return fail("no enabled Post button (publish control never appeared)")
+  if (!publish.en) return fail("Post button present but disabled")
+
+  const ck = await ev('(function(){'
+    + 'var ds=[].slice.call(document.querySelectorAll(\'[role="dialog"]\'));'
+    + 'var pubRe=new RegExp(' + JSON.stringify(PUBLISH_RE) + ',"i");'
+    + 'for(var k=0;k<ds.length;k++){'
+    + 'var b=[].slice.call(ds[k].querySelectorAll(\'[role="button"]\')).find(function(x){'
+    + 'var r=x.getBoundingClientRect();if(!(r.width>0&&r.height>0))return false;'
+    + 'if(x.getAttribute("aria-disabled")==="true"||x.disabled)return false;'
+    + 'var al=(x.getAttribute("aria-label")||"").trim();var tx=(x.textContent||"").trim();'
+    + 'return pubRe.test(al)||pubRe.test(tx);});'
+    + 'if(b){b.click();return "clicked"}}'
+    + 'return "none";'
+    + '})()')
+  if (ck !== "clicked") return fail("no enabled Post button at click time")
+
+  // On success the composer closes and the post lands at the top of the feed.
+  // Facebook does not redirect or toast for timeline posts; closure is the
+  // signal, then the feed text is a best-effort confirmation (virtualized feed
+  // can hide it, so absence is reported but not fatal once closed).
+  await sleep(8000)
+  const post = await ev('(function(){'
+    + 'var open=!![].slice.call(document.querySelectorAll(\'[role="dialog"]\')).find(function(x){return x.querySelector(\'[contenteditable],[role="textbox"],textarea\')});'
+    + 'var norm=function(s){return (s||"").replace(/\\s+/g,"")};'
+    + 'var want=' + JSON.stringify(TEXT || "") + ';'
+    + 'var inFeed=want?norm(document.body.textContent||"").indexOf(norm(want).slice(0,40))>=0:null;'
+    + 'return JSON.stringify({open:open,inFeed:inFeed,url:location.href});'
+    + '})()')
+  let v = { open: true, inFeed: null, url: null }
+  try { v = JSON.parse(post) } catch (e) {}
+  if (v.open) return fail("composer still open after the Post click", { url: v.url })
+  if (JSON_OUT) return { ok: true, mode: MODE, url: null, landed_on: v.url, seen_in_feed: v.inFeed }
+  return "POSTED" + (v.inFeed === false ? " (post text not yet visible in the virtualized feed)" : "")
+} finally {
+  session.closeTab(t.targetId, sessionId).catch(() => {})
+}
+FBPOST_EOF
+)
+
+# Inject the inputs: node reads the quoted-heredoc code from stdin and replaces
+# the placeholders. Raw values are JSON.stringified into safe JS literals;
+# function-replacements dodge & / $ pitfalls in the replacement text.
+final=$(node -e '
+let c=require("fs").readFileSync(0,"utf8");
+let json=process.argv[1], dry=process.argv[2], port=process.argv[3];
+let text=process.argv[4]||"", image=process.argv[5]||null;
+c=c.replace(/__FBPOST_JSON__/g,()=>json)
+    .replace(/__FBPOST_DRY_RUN__/g,()=>dry)
+    .replace(/__FBPOST_PORT__/g,()=>port||"null")
+    .replace(/__FBPOST_TEXT__/g,()=>JSON.stringify(text))
+    .replace(/__FBPOST_IMAGE__/g,()=>JSON.stringify(image));
+process.stdout.write(c);
+' "$json_output" "$dry_run" "$port" "$text" "$image" <<<"$code")
+
+printf '%s' "$final" | browser-harness-js

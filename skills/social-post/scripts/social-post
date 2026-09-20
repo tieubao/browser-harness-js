@@ -10,7 +10,7 @@ set -euo pipefail
 #   social-post --json "text"                # one JSON object of results
 #
 # Thin orchestrator over the per-platform CLIs (x -> xpost, fb -> fbpost,
-# linkedin -> lipost). Each is invoked with --json; a missing CLI reports
+# linkedin -> linkedin post). Each is invoked with --json; a missing CLI reports
 # { ok:false, reason:"<cli> not installed" } and never sinks the call.
 # Exit is non-zero only when EVERY requested platform failed.
 
@@ -70,8 +70,10 @@ if [ -n "$image" ]; then
   image="$(cd "$(dirname "$image")" && pwd)/$(basename "$image")"
 fi
 
-# Platform -> CLI map. Resolution order: PATH, then the sibling skill's script
-# (../<cli>/scripts/<cli>) so repo-local runs work before setup.
+# Platform -> CLI map. Values may carry a leading subcommand ("linkedin post"
+# runs the `post` verb of the `linkedin` CLI). Resolution order: PATH, then the
+# sibling skill's script (../<cli>/scripts/<cli>) so repo-local runs work
+# before setup.
 skill_dir="$(cd "$(dirname "$0")/.." && pwd)"
 resolve_cli() {
   local cli="$1"
@@ -85,7 +87,7 @@ platform_cli() {
   case "$1" in
     x) printf 'xpost' ;;
     fb) printf 'fbpost' ;;
-    linkedin) printf 'lipost' ;;
+    linkedin) printf 'linkedin post' ;;
     *) return 1 ;;
   esac
 }
@@ -115,12 +117,16 @@ for p in "${wanted[@]}"; do
   p="$(printf '%s' "$p" | tr -d '[:space:]')"
   [ -n "$p" ] || continue
   cli_name="$(platform_cli "$p")"
+  cli_bin="${cli_name%% *}"
+  cli_sub=""
+  case "$cli_name" in *" "*) cli_sub="${cli_name#* }" ;; esac
   args=(--json)
+  [ -n "$cli_sub" ] && args+=("$cli_sub")
   $dry_run && args+=(--dry-run)
   [ -n "$image" ] && args+=(--image "$image")
   args+=("$text")
 
-  if bin="$(resolve_cli "$cli_name")"; then
+  if bin="$(resolve_cli "$cli_bin")"; then
     out=$("$bin" "${args[@]}" 2>&1) || true
     # Validate as JSON; anything else becomes a failure object with raw output.
     obj="$(printf '%s' "$out" | node -e '
@@ -130,7 +136,7 @@ for p in "${wanted[@]}"; do
       catch(e){ process.stdout.write(JSON.stringify({ok:false,reason:"non-JSON output",raw:raw.slice(0,500)})); }
     ')"
   else
-    obj="{\"ok\":false,\"reason\":\"$cli_name not installed\"}"
+    obj="{\"ok\":false,\"reason\":\"$cli_bin not installed\"}"
   fi
 
   $first || printf ',' >> "$results_file"

@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+# Smoke test for the linkedin skill.
+# NEVER publishes: the only write-side calls are `--dry-run`, which fills the
+# composer/box and stops before the Post/Comment/Send click. notifs/inbox are
+# read-only. Requires a Chromium browser with remote debugging AND a logged-in
+# LinkedIn session (see the cdp skill). Exits 77 if the browser is
+# unreachable, 0 if all checks pass, 1 otherwise.
+set -uo pipefail
+
+script_dir="$(cd "$(dirname "$0")" && pwd)"
+cli="$script_dir/linkedin"
+
+if [ ! -f "$cli" ]; then
+  echo "Error: $cli not found" >&2
+  exit 1
+fi
+
+if ! command -v browser-harness-js >/dev/null 2>&1; then
+  echo "skip: browser-harness-js not on PATH (run scripts/setup first)" >&2
+  exit 77
+fi
+
+# Run the project's own linkedin script, not whatever happens to be on PATH.
+run() { "$cli" "$@" 2>&1 || true; }
+
+pass=0
+fail=0
+ok()  { echo "  PASS  $1"; pass=$((pass + 1)); }
+bad() { echo "  FAIL  $1"; printf '%s\n' "$2" | sed 's/^[[:space:]]*/        /' | head -6; fail=$((fail + 1)); }
+expect() { # desc  needle  actual   -> pass if actual contains needle
+  if printf '%s' "$3" | grep -qF "$2"; then ok "$1"; else bad "$1" "$3"; fi
+}
+refuse() { # desc  needle  actual   -> pass if actual does NOT contain needle
+  if printf '%s' "$3" | grep -qF "$2"; then bad "$1" "$3"; else ok "$1"; fi
+}
+
+# Skip cleanly if the browser isn't reachable. This also serves as the first
+# live dry-run, so a successful probe is not wasted work.
+probe=$(run post --dry-run "linkedin smoke")
+case "$probe" in
+  *Cannot*connect*|*ECONNREFUSED*|*connect:*|*"No running browser"*|*"No detected browser"*)
+    echo "skip: browser not reachable ($(printf '%s' "$probe" | head -1 | sed 's/^[[:space:]]*//'))" >&2
+    exit 77 ;;
+esac
+
+echo "linkedin smoke test (--dry-run for write verbs, never publishes)"
+
+# Live dry-run against the real composer (needs a logged-in LinkedIn session).
+expect "post: reports DRY_RUN_OK" "DRY_RUN_OK" "$probe"
+refuse "post: no unparsed placeholder" "__LI_" "$probe"
+
+# JSON mode + special chars (&, $, quotes, backtick) through the
+# function-replacement placeholder injection, nothing gets eaten.
+json=$(run --json post --dry-run 'a & $b "q" `tick`')
+expect "json: parses dry_run flag" '"dry_run":true' "$json"
+refuse "json: no unparsed placeholder" "__LI_" "$json"
+
+# Read verbs are safe to run for real.
+notifs=$(run notifs 3)
+refuse "notifs: no error output" "ERROR " "$notifs"
+
+inbox=$(run inbox 3)
+refuse "inbox: no error output" "ERROR " "$inbox"
+
+echo "-- guards --"
+# No args -> usage, non-zero exit.
+g1=$("$cli" 2>&1); rc1=$?
+if [ "$rc1" -ne 0 ] && printf '%s' "$g1" | grep -qF "Usage"; then ok "guard: no args -> usage"; else bad "guard: no args -> usage" "rc=$rc1 out=$g1"; fi
+# Unknown verb -> usage, non-zero exit.
+g2=$("$cli" bogus 2>&1); rc2=$?
+if [ "$rc2" -ne 0 ] && printf '%s' "$g2" | grep -qF "Usage"; then ok "guard: unknown verb rejected"; else bad "guard: unknown verb rejected" "rc=$rc2 out=$g2"; fi
+# Unknown option -> error, non-zero exit.
+g3=$("$cli" post "x" --bogus 2>&1); rc3=$?
+if [ "$rc3" -ne 0 ] && printf '%s' "$g3" | grep -qF "unknown option"; then ok "guard: unknown option rejected"; else bad "guard: unknown option rejected" "rc=$rc3 out=$g3"; fi
+# Missing image file -> error before any browser call.
+g4=$("$cli" post "x" --image /nonexistent/linkedin.png 2>&1); rc4=$?
+if [ "$rc4" -ne 0 ] && printf '%s' "$g4" | grep -qF "not found"; then ok "guard: missing image file rejected"; else bad "guard: missing image file rejected" "rc=$rc4 out=$g4"; fi
+# comment without args -> error, non-zero exit.
+g5=$("$cli" comment 2>&1); rc5=$?
+if [ "$rc5" -ne 0 ] && printf '%s' "$g5" | grep -qF "requires"; then ok "guard: comment needs url+text"; else bad "guard: comment needs url+text" "rc=$rc5 out=$g5"; fi
+# non-linkedin url -> error before any browser call.
+g6=$("$cli" comment "https://example.com/x" "hi" 2>&1); rc6=$?
+if [ "$rc6" -ne 0 ] && printf '%s' "$g6" | grep -qF "linkedin.com"; then ok "guard: non-linkedin url rejected"; else bad "guard: non-linkedin url rejected" "rc=$rc6 out=$g6"; fi
+# notifs with non-numeric count -> error, non-zero exit.
+g7=$("$cli" notifs abc 2>&1); rc7=$?
+if [ "$rc7" -ne 0 ] && printf '%s' "$g7" | grep -qF "must be a number"; then ok "guard: bad count rejected"; else bad "guard: bad count rejected" "rc=$rc7 out=$g7"; fi
+
+echo
+echo "$pass passed, $fail failed"
+[ "$fail" -eq 0 ]

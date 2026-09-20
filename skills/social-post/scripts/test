@@ -44,6 +44,9 @@ bad() { echo "  FAIL  $1"; printf '%s\n' "$2" | sed 's/^[[:space:]]*/        /' 
 expect() { # desc  needle  actual   -> pass if actual contains needle
   if printf '%s' "$3" | grep -qF "$2"; then ok "$1"; else bad "$1" "$3"; fi
 }
+refuse() { # desc  needle  actual   -> pass if actual does NOT contain needle
+  if printf '%s' "$3" | grep -qF "$2"; then bad "$1" "$3"; else ok "$1"; fi
+}
 
 echo "social-post smoke test (--dry-run only, never posts)"
 
@@ -55,10 +58,13 @@ json=$(run --json --dry-run --platforms x "social-post smoke")
 expect "json: has results map" '"results"' "$json"
 expect "json: x dry_run flag" '"dry_run":true' "$json"
 
-# A missing platform CLI is reported per-platform, not fatal (linkedin ships
-# no CLI yet). It must not sink the call when another platform succeeds.
+# The linkedin platform maps to the `linkedin` CLI's `post` verb. In the repo
+# it always resolves via the sibling script, so it returns a real result
+# (dry_run:true when logged in, or a reason when not). The old `lipost` name
+# must be gone entirely.
 mix=$(run --json --dry-run --platforms x,linkedin "social-post smoke")
-expect "missing cli: linkedin reported" '"lipost not installed"' "$mix"
+expect "linkedin: per-platform result present" '"linkedin"' "$mix"
+refuse "linkedin: old lipost name gone" "lipost" "$mix"
 
 echo "-- guards --"
 # No args -> usage, non-zero exit.

@@ -1,0 +1,99 @@
+{
+  "id": "studio-youtube-com",
+  "name": "YouTube Studio (Dwarves Foundation)",
+  "domains": [
+    "studio.youtube.com"
+  ],
+  "notes": [
+    "notes/overview.md"
+  ],
+  "nodeTools": {
+    "status": {
+      "description": "Where the tab is: no-tab (no open tab matches domains) | tab.",
+      "path": "tools/studio-youtube-com.mjs",
+      "callable": "status",
+      "args": {},
+      "returns": {
+        "type": "object",
+        "description": "{state:\"tab\", url} or {state:\"no-tab\", hint}"
+      }
+    },
+    "upload": {
+      "description": "Upload one file to the channel, fill title/description, set audience/playlist/visibility, poll processing, save. Returns {id} or {stop:<reason>}.",
+      "path": "tools/studio-youtube-com.mjs",
+      "callable": "upload",
+      "args": {
+        "file": { "type": "string", "required": true, "description": "absolute path to the video file" },
+        "title": { "type": "string", "required": true },
+        "description": { "type": "string", "required": false },
+        "playlist": { "type": "string", "required": false, "description": "playlist name to add the video to" },
+        "visibility": { "type": "string", "required": false, "description": "UNLISTED | PRIVATE | PUBLIC, default UNLISTED" },
+        "madeForKids": { "type": "boolean", "required": false, "description": "default false" },
+        "channelId": { "type": "string", "required": false, "description": "default UC_SyzGLf6wiqctQFsRI_frw" },
+        "authuser": { "type": "number", "required": false, "description": "default 1" },
+        "timeoutMs": { "type": "number", "required": false, "description": "processing poll timeout, default 900000 (15 min)" },
+        "allowSaveOnStall": { "type": "boolean", "required": false, "description": "save anyway if processing reports it is taking longer than expected, default false" },
+        "confirmPublishAnyway": { "type": "boolean", "required": false, "description": "click Publish anyway on the still-checking-content dialog, default false" }
+      },
+      "returns": {
+        "type": "object",
+        "description": "{id} on success, or {stop:<reason>, ...detail} on any unverified step"
+      }
+    },
+    "setLanguage": {
+      "description": "Set video language and title/description language on an existing video, then verify against /translations.",
+      "path": "tools/studio-youtube-com.mjs",
+      "callable": "setLanguage",
+      "args": {
+        "id": { "type": "string", "required": true },
+        "language": { "type": "string", "required": false, "description": "default Vietnamese" },
+        "authuser": { "type": "number", "required": false, "description": "default 1" }
+      },
+      "returns": {
+        "type": "object",
+        "description": "{applied, verified} or {stop:<reason>}"
+      }
+    },
+    "list": {
+      "description": "List videos from the channel content page.",
+      "path": "tools/studio-youtube-com.mjs",
+      "callable": "list",
+      "args": {
+        "limit": { "type": "number", "required": false, "description": "default 20" },
+        "channelId": { "type": "string", "required": false, "description": "default UC_SyzGLf6wiqctQFsRI_frw" },
+        "authuser": { "type": "number", "required": false, "description": "default 1" }
+      },
+      "returns": {
+        "type": "object",
+        "description": "{rows: [{id, title, visibility}]}"
+      }
+    },
+    "remove": {
+      "description": "Destructive. Delete one video. Refuses unless the delete dialog text contains expectDuration and {confirm:true} is passed.",
+      "path": "tools/studio-youtube-com.mjs",
+      "callable": "remove",
+      "args": {
+        "id": { "type": "string", "required": true },
+        "expectDuration": { "type": "string", "required": true, "description": "e.g. 16:53, must appear in the delete dialog text" },
+        "confirm": { "type": "boolean", "required": true, "description": "must be true, refuses otherwise" },
+        "authuser": { "type": "number", "required": false, "description": "default 1" }
+      },
+      "returns": {
+        "type": "object",
+        "description": "{deleted:true, id} or {stop:<reason>}"
+      }
+    },
+    "probe": {
+      "description": "No browser needed, plain fetch. Checks oembed and watch-page playability for a video id.",
+      "path": "tools/studio-youtube-com.mjs",
+      "callable": "probe",
+      "args": {
+        "id": { "type": "string", "required": true }
+      },
+      "returns": {
+        "type": "object",
+        "description": "{id, oembed:{ok,status,title}, playable:{ok,status}}"
+      }
+    }
+  }
+}

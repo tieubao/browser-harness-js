@@ -1,0 +1,47 @@
+{
+  "id": "drive-google-com",
+  "name": "Google Drive (signed-in download)",
+  "domains": [
+    "drive.google.com",
+    "drive.usercontent.google.com"
+  ],
+  "notes": [
+    "notes/overview.md"
+  ],
+  "nodeTools": {
+    "status": {
+      "description": "Where the tab is: no-tab (no open tab matches domains) | tab.",
+      "path": "tools/drive-google-com.mjs",
+      "callable": "status",
+      "args": {},
+      "returns": {
+        "type": "object",
+        "description": "{state:\"tab\", url} or {state:\"no-tab\", hint}"
+      }
+    },
+    "download": {
+      "description": "Start a signed-in download of one Drive file id as the given Google account slot (authuser), submitting the virus-scan interstitial for large files; the file lands in the browser's download dir. Returns {state:\"started\"} or {stop:\"403\"|\"sign-in\"}.",
+      "path": "tools/drive-google-com.mjs",
+      "callable": "download",
+      "args": {
+        "fileId": {
+          "type": "string",
+          "required": true
+        },
+        "authuser": {
+          "type": "number",
+          "required": false,
+          "description": "account slot from the folder URL /u/<n>/, default 0"
+        },
+        "waitMs": {
+          "type": "number",
+          "required": false
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "{state, interstitial, note} or {stop, hint}"
+      }
+    }
+  }
+}

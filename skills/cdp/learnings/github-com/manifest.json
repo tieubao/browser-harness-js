@@ -1,6 +1,6 @@
 {
   "id": "github-com",
-  "name": "GitHub (classic PAT form)",
+  "name": "GitHub (settings forms)",
   "domains": ["github.com"],
   "notes": ["notes/overview.md"],
   "nodeTools": {
@@ -14,6 +14,17 @@
         "expirationLabel": {"type": "string", "required": false, "description": "visible label to click, default \"No expiration\""}
       },
       "returns": {"type": "object", "description": "{token} on success; {stop, ...} on sudo / missing scopes / no button / token not found"}
+    },
+    "setOrgAvatar": {
+      "description": "Set an org's avatar via the org profile settings page (no REST/GraphQL endpoint exists for this). Sets the hidden #avatar-upload-input via DOM.setFileInputFiles, then clicks the 'Set new profile picture' button in the crop dialog. dryRun:true stops after locating the input, without uploading.",
+      "path": "tools/set-org-avatar.mjs",
+      "callable": "setOrgAvatar",
+      "args": {
+        "org": {"type": "string", "required": true},
+        "file": {"type": "string", "required": false, "description": "absolute path to the image (500x500 PNG verified); required unless dryRun"},
+        "dryRun": {"type": "boolean", "required": false, "description": "stop after finding #avatar-upload-input; do not upload"}
+      },
+      "returns": {"type": "object", "description": "{done:true} on success; {done:false, reason} on no admin access, no input found, or upload/click failure"}
     }
   }
 }

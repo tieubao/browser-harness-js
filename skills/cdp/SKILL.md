@@ -316,7 +316,37 @@ When attaching to the user's already-running browser:
 
 ## Working with targets (tabs)
 
-- **CDP target order ≠ visible tab-strip order.** When the user says "the first tab I can see", use a screenshot or page title to identify it — `Target.activateTarget` only switches to a known targetId.
+- **CDP target order ≠ visible tab-strip order.** When the user says "the first tab I can see", use a screenshot or page title to identify it, `Target.activateTarget` only switches to a known targetId.
+
+### List or close tabs without the REPL
+
+When the browser exposes its debug port (Helium on 9222), the CDP HTTP endpoints answer directly, no `session.connect()`, no REPL round-trip:
+
+```bash
+# list open pages: id, title, url
+curl -s http://127.0.0.1:9222/json/list | jq -r '.[] | select(.type=="page") | "\(.id)\t\(.title)\t\(.url)"'
+
+# close one tab by id
+curl -s http://127.0.0.1:9222/json/close/<id>   # prints "Target is closing"
+
+# open a new tab
+curl -s "http://127.0.0.1:9222/json/new?https://example.com"
+```
+
+To close every tab whose URL matches a pattern, dry-run first (print id + url, close nothing):
+
+```bash
+curl -s http://127.0.0.1:9222/json/list | jq -r '.[] | select(.type=="page" and (.url | test("example\\.com"))) | "\(.id)\t\(.url)"'
+```
+
+Then close for real:
+
+```bash
+curl -s http://127.0.0.1:9222/json/list | jq -r '.[] | select(.type=="page" and (.url | test("example\\.com"))) | .id' \
+  | while read -r id; do curl -s "http://127.0.0.1:9222/json/close/$id"; done
+```
+
+Close only after the page's content is already captured elsewhere, closing is one-way. This path bypasses the shared REPL's active-tab pointer entirely, so it never disturbs another session's `session.use`.
 
 ## Looking up a method
 

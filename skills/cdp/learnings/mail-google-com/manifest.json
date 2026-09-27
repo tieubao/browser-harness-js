@@ -1,0 +1,52 @@
+{
+  "id": "mail-google-com",
+  "name": "Gmail (send-as alias compose)",
+  "domains": ["mail.google.com"],
+  "notes": ["notes/overview.md"],
+  "nodeTools": {
+    "findAccountSlot": {
+      "description": "Which signed-in account slot (authuser index) owns an email address. Navigates /mail/u/<n>/ for n=0..maxSlots-1 and matches document.title against the address.",
+      "path": "tools/mail-google-com.mjs",
+      "callable": "findAccountSlot",
+      "args": {
+        "email": {"type": "string", "required": true},
+        "maxSlots": {"type": "number", "required": false, "description": "default 4"}
+      },
+      "returns": {"type": "object", "description": "{slot, title} on match; {stop:\"not-found\", hint} otherwise"}
+    },
+    "prepareDraftAs": {
+      "description": "Open a prefilled compose (view=cm) in the given account slot and switch the sender to a send-as alias (e.g. a Google Group address). Never sends. The From selector is hidden on this view: real Input.dispatchMouseEvent clicks (not element.click()) on the To row, then the revealed From line, then the alias option are required to change it. Returns a readback of To/Subject/From for the caller to verify before calling sendPreparedDraft.",
+      "path": "tools/mail-google-com.mjs",
+      "callable": "prepareDraftAs",
+      "args": {
+        "authuser": {"type": "number", "required": false, "description": "account slot from findAccountSlot, default 0"},
+        "to": {"type": "string", "required": true},
+        "subject": {"type": "string", "required": true},
+        "body": {"type": "string", "required": true},
+        "alias": {"type": "string", "required": true, "description": "substring identifying the send-as option, e.g. the alias address or \"Team Dwarves\""}
+      },
+      "returns": {"type": "object", "description": "{targetId, to, subject, from:[...values]} on success; {stop:reason} at the step that failed"}
+    },
+    "sendPreparedDraft": {
+      "description": "WRITE, irreversible. Click Send on a draft opened by prepareDraftAs. Refuses unless confirm:true: this is the point past which the message is outward and cannot be recalled, so the caller must have already read back prepareDraftAs's {to, subject, from} and gotten the human's explicit go-ahead.",
+      "path": "tools/mail-google-com.mjs",
+      "callable": "sendPreparedDraft",
+      "args": {
+        "targetId": {"type": "string", "required": true, "description": "from prepareDraftAs"},
+        "confirm": {"type": "boolean", "required": true, "description": "must be true; a human has approved From/To/Subject"}
+      },
+      "returns": {"type": "object", "description": "{sent: true} once the compose view closes after the click; {stop:reason} otherwise"}
+    },
+    "verifySent": {
+      "description": "Confirm a message reached Sent by searching in:sent to:<recipient> newer_than:<days>d and counting result rows.",
+      "path": "tools/mail-google-com.mjs",
+      "callable": "verifySent",
+      "args": {
+        "authuser": {"type": "number", "required": false, "description": "default 0"},
+        "recipient": {"type": "string", "required": true},
+        "days": {"type": "number", "required": false, "description": "default 1"}
+      },
+      "returns": {"type": "object", "description": "{found: boolean, count}"}
+    }
+  }
+}

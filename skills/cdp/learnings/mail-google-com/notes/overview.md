@@ -56,3 +56,7 @@ await learnings("mail-google-com", "verifySent", { recipient: "someone@example.c
 
 2026-09-27, live session sending as a Google Group send-as alias. Driven by hand through
 `browser-harness-js` with an explicit `wsUrl`, then distilled here.
+
+Tool status: `findAccountSlot` ran live (hit on slot 1, clean `not-found` on a miss).
+`prepareDraftAs`, `sendPreparedDraft` and `verifySent` encode the recipe proven by hand
+but have not yet run end to end as tools; the first real use is their proof.

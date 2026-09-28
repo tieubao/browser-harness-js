@@ -69,6 +69,19 @@ end tell
 
 No AppleScript. Use `xdotool`, `wmctrl`, or desktop-environment scripting. The split is the same — CDP for attach/activate-by-id, window manager for visible ordering.
 
+## One background target per browser context
+
+A second `background: true` target in the same `Target.createBrowserContext` can render fully occluded, and its `requestAnimationFrame` all but stalls. Measured on Helium: a replay page sat at tick 0 for minutes behind a live sibling, then ran in seconds once it was the only target. Timer-driven pages look fine; rAF-driven pages (canvas, games, replays) hang.
+
+Keep one background target per context at a time. Close the previous one before opening the next:
+
+```js
+await session.Target.closeTarget({ targetId: previousTargetId })
+const { targetId } = await session.Target.createTarget({ url, browserContextId, background: true })
+```
+
+This was only verified with close-then-open. Giving each target its own context was not tested.
+
 ## Traps
 
 - `listPageTargets()` already drops `chrome://` and `devtools://`. If you call `Target.getTargets` raw, you must filter yourself, or you'll attach to a 1px omnibox popup.

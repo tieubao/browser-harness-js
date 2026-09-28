@@ -53,6 +53,8 @@ await session.connect({ profileDir: '/Users/<you>/Library/Application Support/Go
 await session.connect({ wsUrl: 'ws://127.0.0.1:9222/devtools/browser/<uuid>' })
 ```
 
+When the daemon is already bound (for example through the extension relay), an explicit `session.connect({ port: 9222 })` that does not match the live connection throws `already connected ... Refusing to silently continue on the wrong target`. Keep using the bound session, or use a new `Session()` for the other browser or port.
+
 ### Timeouts and the Allow popup
 
 Per-candidate WS-open timeout defaults to **5s**. A live browser either opens or closes the connection within ~100ms, so 5s is always enough — unless the user has to click **Allow** on Chrome's remote-debugging popup. In that case, pass `timeoutMs: 30000` to give them time:

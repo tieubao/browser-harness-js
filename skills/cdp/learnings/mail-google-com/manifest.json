@@ -47,6 +47,54 @@
         "days": {"type": "number", "required": false, "description": "default 1"}
       },
       "returns": {"type": "object", "description": "{found: boolean, count}"}
+    },
+    "searchRows": {
+      "description": "Open a Gmail search in a background tab and read the result-list rows as text. Uses textContent, not innerText: a background tab returns empty innerText for every row after the first.",
+      "path": "tools/mail-google-com.mjs",
+      "callable": "searchRows",
+      "args": {
+        "authuser": {"type": "number", "required": false, "description": "default 0"},
+        "query": {"type": "string", "required": true, "description": "Gmail search operators, e.g. \"from:x is:unread\""},
+        "limit": {"type": "number", "required": false, "description": "max rows to return, default 25"}
+      },
+      "returns": {"type": "object", "description": "{rows: string[]} each row whitespace-collapsed and truncated to 200 chars"}
+    },
+    "readThread": {
+      "description": "Open a Gmail search, click the first result row, expand the whole thread, and return its messages, attachment names, and outbound links. Same search+background-tab mechanics as searchRows.",
+      "path": "tools/mail-google-com.mjs",
+      "callable": "readThread",
+      "args": {
+        "authuser": {"type": "number", "required": false, "description": "default 0"},
+        "query": {"type": "string", "required": true, "description": "Gmail search operators that should resolve to one thread"},
+        "maxChars": {"type": "number", "required": false, "description": "per-message truncation, default 1600"}
+      },
+      "returns": {"type": "object", "description": "{attachments: string[], links: string[] (non-mail.google.com hrefs), messages: string[]} on a hit; {stop:\"no-results\", hint} when the search returns nothing"}
+    },
+    "composeDraft": {
+      "description": "Open a prefilled compose (view=cm) with To/Cc/Bcc/Subject/Body and optional attachments. Never sends -- Gmail auto-saves the open compose as a draft. Returns a readback to verify before any further action.",
+      "path": "tools/mail-google-com.mjs",
+      "callable": "composeDraft",
+      "args": {
+        "authuser": {"type": "number", "required": false, "description": "default 0"},
+        "to": {"type": "string", "required": false},
+        "cc": {"type": "string", "required": false},
+        "bcc": {"type": "string", "required": false},
+        "subject": {"type": "string", "required": false},
+        "body": {"type": "string", "required": false},
+        "attachments": {"type": "array", "required": false, "description": "absolute host file paths"}
+      },
+      "returns": {"type": "object", "description": "{targetId, from, recipients: [data-hovercard-id values], subject, attachments: [filenames seen], body: first 200 chars}; {targetId, stop:\"no-file-input\"} if attachments were given but the file input was not found"}
+    },
+    "replaceDraftBody": {
+      "description": "Replace the body of an already-open compose (targetId from composeDraft). Gmail's body enforces Trusted Types, so plain lines are written as real DOM text/<br> nodes (replaceChildren) and an HTML fragment goes through CDP DOM.setOuterHTML on a placeholder div, which bypasses Trusted Types because it is not a page-script innerHTML assignment.",
+      "path": "tools/mail-google-com.mjs",
+      "callable": "replaceDraftBody",
+      "args": {
+        "targetId": {"type": "string", "required": true, "description": "from composeDraft"},
+        "lines": {"type": "array", "required": false, "description": "plain-text lines, joined with <br>; exactly one of lines or html"},
+        "html": {"type": "string", "required": false, "description": "an HTML fragment (e.g. a signature); exactly one of lines or html"}
+      },
+      "returns": {"type": "object", "description": "{length: number} body innerText length after the replace; {stop:reason} if the body editable or placeholder was not found"}
     }
   }
 }

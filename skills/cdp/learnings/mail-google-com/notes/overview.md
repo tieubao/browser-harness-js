@@ -15,6 +15,20 @@ await learnings("mail-google-com", "prepareDraftAs", {
 // read back the {to, subject, from} above, get the human's go-ahead, then:
 await learnings("mail-google-com", "sendPreparedDraft", { targetId, confirm: true })
 await learnings("mail-google-com", "verifySent", { recipient: "someone@example.com" })
+
+// Add a forwarding address (never answers the follow-on challenge itself):
+await learnings("mail-google-com", "addForwardingAddress", { authuser: 0, address: "someone@example.com" })
+// -> {status: "challenge", popupTargetId} (a Verify-it's-you accounts.google.com popup) or
+//    {status: "sent"} (Google emailed a confirmation link instead). Answer the challenge/email
+//    yourself, then:
+await learnings("mail-google-com", "confirmForwarding", { verifyUrl: "https://mail-settings.google.com/mail/vf-..." })
+
+// Forward matching mail via a filter, dry-run first:
+await learnings("mail-google-com", "createForwardFilter", {
+  authuser: 0, query: "from:(alerts@bank.com) subject:(Statement)",
+  forwardTo: "finance@example.com", dryRun: true,
+})
+// once the asserted state looks right, re-run with dryRun: false (or omitted) to actually create it.
 ```
 
 ## Limits (learned 2026-09-27)
@@ -52,6 +66,41 @@ await learnings("mail-google-com", "verifySent", { recipient: "someone@example.c
   that confirmation should come from the human having reviewed From, To, and Subject in that one
   read, not from the agent's own judgment.
 
+## Forwarding + filter limits (learned 2026-09-28)
+
+- **The forwarding settings page (`#settings/fwdandpop`) can take 20-40s to render in a background
+  tab.** Poll for `input[name=sx_em]` (the two forwarding radios: `value="0"` Disable, `value="1"`
+  Forward a copy) instead of a fixed sleep.
+- **Never type into the inline "Forward a copy of incoming mail to" textbox.** It looks like a
+  plain field next to the radios, but confirmed live: focusing it and typing an address
+  auto-checks the `value="1"` radio as a side effect (forwarding ALL mail, not just filtered mail),
+  and saving an unverified address entered there fails with "Invalid forwarding address". Always
+  go through the real "Add a forwarding address" button/dialog instead, and leave "Disable
+  forwarding" selected on this page.
+- **Adding a forwarding address ends in one of two places**, and `addForwardingAddress` returns
+  before either resolves: a separate `accounts.google.com` "Verify it's you" popup target
+  (`{status:"challenge", popupTargetId}`), or Google emailing a `mail-settings.google.com/mail/vf-...`
+  confirmation link directly (`{status:"sent"}`). `confirmForwarding` opens that vf- link and
+  clicks Confirm; neither verb answers the challenge itself.
+- **Checkboxes in the Create-filter dialog are rendered off-screen.** Confirmed live: the "Forward
+  it to:" checkbox's own bounding rect has `x` around -9675 (same off-screen-render trick as
+  elsewhere in Gmail's UI). Real-click the associated `<label>` text instead; native `label[for]`
+  click semantics toggle the input.
+- **The forward-to listbox's own DOM node keeps its last-selected option as a same-width
+  placeholder; the real options that appear on open are separate, wider (>200px CSS px) elements
+  elsewhere in the DOM.** Filter `[role=option]` by width before matching text, same trick as the
+  alias picker in `prepareDraftAs`.
+- **Assert before touching Create filter.** Confirmed live: after ticking "Forward it to:" and
+  picking an address, exactly one `input[type=checkbox]` in the dialog is checked and the listbox
+  text equals the chosen address; `createForwardFilter` asserts this and refuses to proceed (even
+  past `dryRun`) if it doesn't hold.
+- **Create filter and its Continue confirmation need real `Input.dispatchMouseEvent` clicks, not
+  `element.click()`.** A DOM click carries no user gesture, and Gmail's "verify it's you"
+  confirmation for a forwarding filter is silently blocked without one.
+- **`dryRun: true` stops right before the Create filter click** and returns the same asserted
+  `{checkedOnes, listboxText}` state a real run would have proceeded past, so a caller can read it
+  back before ever mutating anything.
+
 ## Provenance
 
 2026-09-27, live session sending as a Google Group send-as alias. Driven by hand through
@@ -60,3 +109,12 @@ await learnings("mail-google-com", "verifySent", { recipient: "someone@example.c
 Tool status: `findAccountSlot` ran live (hit on slot 1, clean `not-found` on a miss).
 `prepareDraftAs`, `sendPreparedDraft` and `verifySent` encode the recipe proven by hand
 but have not yet run end to end as tools; the first real use is their proof.
+
+2026-09-28, live session on Han's running Helium (`ws://127.0.0.1:9222`, explicit `wsUrl`) adding
+forwarding + filter verbs. `createForwardFilter` ran live end to end with `dryRun: true` against
+authuser 0, query `from:(mailalert@acb.com.vn) subject:(e-Statement)`, `forwardTo:
+finance@fromwu.com` (an address already verified on the account) and returned the asserted state
+with exactly the "Forward it to:" checkbox ticked and the listbox reading `finance@fromwu.com `.
+`addForwardingAddress` and `confirmForwarding` encode the recipe (the inline-textbox landmine and
+the off-screen forwarding checkbox were both confirmed live by hand during discovery) but have not
+yet run end to end as tools -- the first real use is their proof.

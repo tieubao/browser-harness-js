@@ -16,19 +16,15 @@ await learnings("mail-google-com", "prepareDraftAs", {
 await learnings("mail-google-com", "sendPreparedDraft", { targetId, confirm: true })
 await learnings("mail-google-com", "verifySent", { recipient: "someone@example.com" })
 
-// Add a forwarding address (never answers the follow-on challenge itself):
-await learnings("mail-google-com", "addForwardingAddress", { authuser: 0, address: "someone@example.com" })
-// -> {status: "challenge", popupTargetId} (a Verify-it's-you accounts.google.com popup) or
-//    {status: "sent"} (Google emailed a confirmation link instead). Answer the challenge/email
-//    yourself, then:
-await learnings("mail-google-com", "confirmForwarding", { verifyUrl: "https://mail-settings.google.com/mail/vf-..." })
-
-// Forward matching mail via a filter, dry-run first:
-await learnings("mail-google-com", "createForwardFilter", {
-  authuser: 0, query: "from:(alerts@bank.com) subject:(Statement)",
-  forwardTo: "finance@example.com", dryRun: true,
+await learnings("mail-google-com", "searchRows", { query: "from:someone is:unread", limit: 10 })
+await learnings("mail-google-com", "readThread", { query: "subject:\"Invoice #123\"" })
+const draft = await learnings("mail-google-com", "composeDraft", {
+  to: "someone@example.com", subject: "Subject", body: "Body text",
+  attachments: ["/absolute/path/to/file.pdf"],
 })
-// once the asserted state looks right, re-run with dryRun: false (or omitted) to actually create it.
+// read back draft.{from, recipients, subject, attachments, body} before any further action
+await learnings("mail-google-com", "replaceDraftBody", { targetId: draft.targetId, lines: ["Line one", "Line two"] })
+await learnings("mail-google-com", "replaceDraftBody", { targetId: draft.targetId, html: "<div>-- <br>Signature</div>" })
 ```
 
 ## Limits (learned 2026-09-27)
@@ -66,6 +62,63 @@ await learnings("mail-google-com", "createForwardFilter", {
   that confirmation should come from the human having reviewed From, To, and Subject in that one
   read, not from the agent's own judgment.
 
+## Limits (learned 2026-09-28)
+
+- **Background-tab rows need textContent, not innerText.** A search or thread list opened in a
+  background target (`Target.createTarget({ background: true })`) returns empty `innerText` for
+  every row after the first, because Chrome skips layout work for background tabs. `textContent`
+  does not depend on layout, so `searchRows` and `readThread` read rows and messages with it.
+- **Trusted Types blocks innerHTML, so use DOM nodes or `DOM.setOuterHTML`.** Gmail's compose body
+  enforces a Trusted Types policy; a page-script `element.innerHTML = ...` assignment throws.
+  Plain text goes in as real nodes (`replaceChildren` with text nodes and `<br>` elements). An
+  HTML fragment needs the CDP escape hatch: swap a placeholder div in first, then
+  `DOM.setOuterHTML` it -- that write goes through the DOM domain, not a page-script property
+  assignment, so Trusted Types never sees it.
+- **Attachments go through `DOM.setFileInputFiles` on `input[type=file][name=Filedata]`.** Never
+  click the attach button or a file input -- that opens the OS picker, which CDP cannot dismiss.
+  Locate the input with `DOM.getDocument({ depth: -1, pierce: true })` + `DOM.querySelector`, then
+  set the absolute host paths directly.
+- **The prefilled compose URL takes cc and bcc too**, not just to/su/body:
+  `?view=cm&fs=1&to=&cc=&bcc=&su=&body=`, built with `URLSearchParams` then `+` swapped for `%20`
+  (Gmail's own query parser is picky about literal `+` in a body).
+- **A compose left open auto-saves as a draft.** Nothing here ever sends; an aborted or failed
+  call at any point leaves recoverable state in Drafts, not a stray outbound message.
+- **The REPL only prints a single expression.** A snippet with statements separated by `;` or
+  newlines runs but prints nothing back to the caller -- wrap any multi-step read/compose work in
+  one node-tool call (as above) instead of a multi-statement inline snippet.
+
+## Provenance
+
+2026-09-27, live session sending as a Google Group send-as alias. Driven by hand through
+`browser-harness-js` with an explicit `wsUrl`, then distilled here.
+
+Tool status: `findAccountSlot` ran live (hit on slot 1, clean `not-found` on a miss).
+`prepareDraftAs`, `sendPreparedDraft` and `verifySent` encode the recipe proven by hand
+but have not yet run end to end as tools; the first real use is their proof.
+
+2026-09-28, a session that hand-rolled search/read/compose/body-replace against Gmail roughly
+fourteen times distilled `searchRows`, `readThread`, `composeDraft`, and `replaceDraftBody` here
+from that session's working recipe. Not yet run end to end as tools; the first real use is their
+proof.
+
+## Forwarding and filters
+
+```js
+// Add a forwarding address (never answers the follow-on challenge itself):
+await learnings("mail-google-com", "addForwardingAddress", { authuser: 0, address: "someone@example.com" })
+// -> {status: "challenge", popupTargetId} (a Verify-it's-you accounts.google.com popup) or
+//    {status: "sent"} (Google emailed a confirmation link instead). Answer the challenge/email
+//    yourself, then:
+await learnings("mail-google-com", "confirmForwarding", { verifyUrl: "https://mail-settings.google.com/mail/vf-..." })
+
+// Forward matching mail via a filter, dry-run first:
+await learnings("mail-google-com", "createForwardFilter", {
+  authuser: 0, query: "from:(alerts@bank.com) subject:(Statement)",
+  forwardTo: "finance@example.com", dryRun: true,
+})
+// once the asserted state looks right, re-run with dryRun: false (or omitted) to actually create it.
+```
+
 ## Forwarding + filter limits (learned 2026-09-28)
 
 - **The forwarding settings page (`#settings/fwdandpop`) can take 20-40s to render in a background
@@ -101,14 +154,7 @@ await learnings("mail-google-com", "createForwardFilter", {
   `{checkedOnes, listboxText}` state a real run would have proceeded past, so a caller can read it
   back before ever mutating anything.
 
-## Provenance
-
-2026-09-27, live session sending as a Google Group send-as alias. Driven by hand through
-`browser-harness-js` with an explicit `wsUrl`, then distilled here.
-
-Tool status: `findAccountSlot` ran live (hit on slot 1, clean `not-found` on a miss).
-`prepareDraftAs`, `sendPreparedDraft` and `verifySent` encode the recipe proven by hand
-but have not yet run end to end as tools; the first real use is their proof.
+### Provenance (forwarding verbs)
 
 2026-09-28, live session on Han's running Helium (`ws://127.0.0.1:9222`, explicit `wsUrl`) adding
 forwarding + filter verbs. `createForwardFilter` ran live end to end with `dryRun: true` against

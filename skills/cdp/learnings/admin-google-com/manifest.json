@@ -1,0 +1,28 @@
+{
+  "id": "admin-google-com",
+  "name": "Google Workspace Admin (domain-wide delegation)",
+  "domains": ["admin.google.com"],
+  "notes": ["notes/overview.md"],
+  "nodeTools": {
+    "listDelegation": {
+      "description": "Open the domain-wide delegation page in a FOREGROUND tab (a re-auth passkey challenge may appear; only a human at the machine can pass it) and wait up to ~4 minutes, polling every 10s, for the URL to settle on domainwidedelegation rather than an accounts.google.com challenge. Returns the delegation rows once the page is ready, or a reauth stop if it never settles.",
+      "path": "tools/admin-google-com.mjs",
+      "callable": "listDelegation",
+      "args": {
+        "authuser": {"type": "number", "required": false, "description": "account slot, default 0"}
+      },
+      "returns": {"type": "object", "description": "{targetId, rows:[{name, clientId, scopes}]} on success; {stop:\"reauth-required\", hint} if the passkey prompt never clears"}
+    },
+    "deleteDelegation": {
+      "description": "WRITE, revokes an integration. Refuses unless confirm:true. Real-clicks the Delete leaf in the row matching clientId, then the Delete button in the confirm dialog, then re-reads the table to verify the row is actually gone -- a synthetic click reporting success proves nothing on this page.",
+      "path": "tools/admin-google-com.mjs",
+      "callable": "deleteDelegation",
+      "args": {
+        "targetId": {"type": "string", "required": true, "description": "from listDelegation"},
+        "clientId": {"type": "string", "required": true, "description": "21-digit OAuth client id identifying the row"},
+        "confirm": {"type": "boolean", "required": true, "description": "must be true; a human has decided to revoke this delegation"}
+      },
+      "returns": {"type": "object", "description": "{deleted: true} once re-reading the rows confirms clientId is no longer listed; {stop:\"still-listed\"} or another stop reason otherwise"}
+    }
+  }
+}

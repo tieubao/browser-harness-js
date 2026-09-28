@@ -132,20 +132,181 @@ export async function verifySent(ctx, { authuser = 0, recipient, days = 1 } = {}
   }
 }
 
-// addForwardingAddress / confirmForwarding / createForwardFilter, verified live 2026-09-28.
-// Settings and search-results/filter dialogs are the same finicky Gmail SPA as compose: elements
-// get real-clicked at their own bounding-rect centre (element.click() and dispatched MouseEvents
-// on a menuitem/checkbox do nothing, see the header comment), and checkboxes here are rendered
-// completely off-screen (x < 0) -- click their associated <label> text, which toggles the input
-// via native label-for semantics.
+const BODY_SELECTOR = 'div[aria-label="Message Body"], div.Am.Al.editable';
 
-async function pollUntil(ctx, expr, timeoutMs, intervalMs) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (await evaluate(ctx, expr)) return true;
-    await wait(intervalMs);
+// ponytail: attachment names are a heuristic union of the download_url attribute (reliable,
+// present on both read and compose attachment chips) and any childless leaf whose text ends in
+// a file-extension-shaped suffix (catches names Gmail doesn't expose via download_url). Ceiling:
+// the leaf scan is document-wide and can false-positive on domain-like text ("dwarves.foundation")
+// -- upgrade path is scoping it to the attachment-chip container once that class is confirmed live.
+const ATTACHMENT_NAMES_JS = `
+  const names = new Set();
+  document.querySelectorAll('[download_url]').forEach((el) => {
+    const raw = el.getAttribute('download_url') || '';
+    const seg = raw.split(':');
+    if (seg[1]) { try { names.add(decodeURIComponent(seg[1])); } catch (e) { names.add(seg[1]); } }
+  });
+  document.querySelectorAll('*').forEach((el) => {
+    if (el.children.length === 0) {
+      const t = (el.textContent || '').trim();
+      if (/\\.[A-Za-z0-9]{2,5}$/.test(t) && t.length < 100) names.add(t);
+    }
+  });
+`;
+
+// Background-tab rows: innerText comes back empty for every row after the first when the tab
+// is not foregrounded (Chrome skips layout for background tabs) -- textContent does not depend
+// on layout, so it is the one that works here. Learned live 2026-09-28.
+export async function searchRows(ctx, { authuser = 0, query, limit = 25 } = {}) {
+  if (!query) throw new Error("searchRows: query is required");
+  const url = `https://mail.google.com/mail/u/${authuser}/#search/${encodeURIComponent(query)}`;
+  const { targetId } = await ctx.session.Target.createTarget({ url, background: true });
+  try {
+    await ctx.session.use(targetId);
+    await wait(9000);
+    const rows = JSON.parse((await evaluate(ctx, `JSON.stringify(
+      [...document.querySelectorAll('tr.zA')].slice(0, ${Number(limit) || 25}).map((r) =>
+        (r.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 200)))`)) || "[]");
+    return { rows };
+  } finally {
+    ctx.session.Target.closeTarget({ targetId }).catch(() => {});
   }
-  return false;
+}
+
+export async function readThread(ctx, { authuser = 0, query, maxChars = 1600 } = {}) {
+  if (!query) throw new Error("readThread: query is required");
+  const url = `https://mail.google.com/mail/u/${authuser}/#search/${encodeURIComponent(query)}`;
+  const { targetId } = await ctx.session.Target.createTarget({ url, background: true });
+  try {
+    await ctx.session.use(targetId);
+    await wait(9000);
+
+    const rowRect = JSON.parse((await evaluate(ctx, `JSON.stringify((() => {
+      const row = document.querySelector('tr.zA');
+      return row ? row.getBoundingClientRect() : null;
+    })())`)) || "null");
+    if (!rowRect) return { stop: "no-results", hint: `no rows for query ${query}` };
+    await clickRect(ctx, rowRect);
+    await wait(3000);
+
+    const expandRect = JSON.parse((await evaluate(ctx, `JSON.stringify((() => {
+      const btn = document.querySelector('[aria-label="Expand all"]');
+      return btn ? btn.getBoundingClientRect() : null;
+    })())`)) || "null");
+    if (expandRect) {
+      await clickRect(ctx, expandRect);
+      await wait(1500);
+    }
+
+    const data = JSON.parse((await evaluate(ctx, `JSON.stringify((() => {
+      ${ATTACHMENT_NAMES_JS}
+      const max = ${Number(maxChars) || 1600};
+      const messages = [...document.querySelectorAll('div.a3s')].map((m) =>
+        (m.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, max));
+      const links = [...new Set([...document.querySelectorAll('div.a3s a')]
+        .map((a) => a.href)
+        .filter((h) => h && !h.includes('mail.google.com')))];
+      return { attachments: [...names], links, messages };
+    })())`)) || "{}");
+
+    return data;
+  } finally {
+    ctx.session.Target.closeTarget({ targetId }).catch(() => {});
+  }
+}
+
+// Never sends -- Gmail auto-saves an open compose as a draft, so an aborted or failed call
+// still leaves recoverable state instead of a stray outbound message.
+export async function composeDraft(ctx, { authuser = 0, to = "", cc = "", bcc = "", subject = "", body = "", attachments = [] } = {}) {
+  const qs = new URLSearchParams({ view: "cm", fs: "1", to, cc, bcc, su: subject, body }).toString().replace(/\+/g, "%20");
+  const url = `https://mail.google.com/mail/u/${authuser}/?${qs}`;
+  const { targetId } = await ctx.session.Target.createTarget({ url, background: false });
+  await ctx.session.use(targetId);
+  await wait(7000);
+
+  if (attachments.length) {
+    await ctx.session.DOM.enable();
+    const { root } = await ctx.session.DOM.getDocument({ depth: -1, pierce: true });
+    const { nodeId } = await ctx.session.DOM.querySelector({ nodeId: root.nodeId, selector: "input[type=file][name=Filedata]" });
+    if (!nodeId) return { targetId, stop: "no-file-input" };
+    await ctx.session.DOM.setFileInputFiles({ nodeId, files: attachments });
+    await wait(8000);
+  }
+
+  const readback = JSON.parse((await evaluate(ctx, `JSON.stringify((() => {
+    ${ATTACHMENT_NAMES_JS}
+    const body = document.querySelector(${JSON.stringify(BODY_SELECTOR)});
+    return {
+      from: (document.querySelector('input[name=from]') || {}).value || '',
+      recipients: [...document.querySelectorAll('[data-hovercard-id]')].map((e) => e.getAttribute('data-hovercard-id')),
+      subject: (document.querySelector('input[name=subjectbox]') || {}).value || '',
+      attachments: [...names],
+      body: body ? body.innerText : '',
+    };
+  })())`)) || "{}");
+
+  return {
+    targetId,
+    from: readback.from || "",
+    recipients: readback.recipients || [],
+    subject: readback.subject || "",
+    attachments: readback.attachments || [],
+    body: (readback.body || "").slice(0, 200),
+  };
+}
+
+// Gmail's compose body enforces Trusted Types: a page-script `el.innerHTML = ...` assignment
+// throws. Plain-text replacement builds real DOM nodes instead (replaceChildren + <br>
+// elements). An HTML fragment (a signature, say) needs a different bypass: CDP's
+// DOM.setOuterHTML writes through the DOM domain, not a page-script property assignment, so
+// Trusted Types does not see it -- swap a placeholder div in first, then setOuterHTML it.
+// Learned live 2026-09-28.
+export async function replaceDraftBody(ctx, { targetId, lines, html } = {}) {
+  if (!targetId) throw new Error("replaceDraftBody: targetId is required");
+  if (!lines && !html) throw new Error("replaceDraftBody: exactly one of lines or html is required");
+  await ctx.session.use(targetId);
+
+  if (lines) {
+    const result = await evaluate(ctx, `(() => {
+      const body = document.querySelector(${JSON.stringify(BODY_SELECTOR)});
+      if (!body) return { stop: "no-body-editable" };
+      const parts = ${JSON.stringify(lines)};
+      const nodes = [];
+      parts.forEach((line, i) => {
+        if (i > 0) nodes.push(document.createElement("br"));
+        nodes.push(document.createTextNode(line));
+      });
+      body.replaceChildren(...nodes);
+      body.dispatchEvent(new Event("input", { bubbles: true }));
+      return { length: body.innerText.length };
+    })()`);
+    return result;
+  }
+
+  const placeholderId = "bh-replace-" + Date.now();
+  const placed = await evaluate(ctx, `(() => {
+    const body = document.querySelector(${JSON.stringify(BODY_SELECTOR)});
+    if (!body) return false;
+    const ph = document.createElement("div");
+    ph.id = ${JSON.stringify(placeholderId)};
+    body.replaceChildren(ph);
+    return true;
+  })()`);
+  if (!placed) return { stop: "no-body-editable" };
+
+  await ctx.session.DOM.enable();
+  const { root } = await ctx.session.DOM.getDocument({ depth: -1 });
+  const { nodeId } = await ctx.session.DOM.querySelector({ nodeId: root.nodeId, selector: `#${placeholderId}` });
+  if (!nodeId) return { stop: "placeholder-not-found" };
+  await ctx.session.DOM.setOuterHTML({ nodeId, outerHTML: html });
+
+  const length = await evaluate(ctx, `(() => {
+    const body = document.querySelector(${JSON.stringify(BODY_SELECTOR)});
+    if (!body) return 0;
+    body.dispatchEvent(new Event("input", { bubbles: true }));
+    return body.innerText.length;
+  })()`);
+  return { length: Number(length) || 0 };
 }
 
 export async function addForwardingAddress(ctx, { authuser = 0, address } = {}) {
@@ -324,4 +485,13 @@ export async function createForwardFilter(ctx, { authuser = 0, query, forwardTo,
   }
 
   return { targetId, created: true, checkedOnes, listboxText: state.listboxText };
+}
+
+async function pollUntil(ctx, expr, timeoutMs, intervalMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await evaluate(ctx, expr)) return true;
+    await wait(intervalMs);
+  }
+  return false;
 }

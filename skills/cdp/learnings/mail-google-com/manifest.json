@@ -4,6 +4,37 @@
   "domains": ["mail.google.com"],
   "notes": ["notes/overview.md"],
   "nodeTools": {
+    "addForwardingAddress": {
+      "description": "Open #settings/fwdandpop, poll for the form to render (can take 20-40s in a background tab), click the real \"Add a forwarding address\" button, fill the dialog's email input, click Next. Never touches the inline 'Forward a copy of incoming mail to' textbox (typing into it directly auto-selects that radio and forwards ALL mail). Never answers the follow-on challenge.",
+      "path": "tools/mail-google-com.mjs",
+      "callable": "addForwardingAddress",
+      "args": {
+        "authuser": {"type": "number", "required": false, "description": "default 0"},
+        "address": {"type": "string", "required": true, "description": "the address to forward to"}
+      },
+      "returns": {"type": "object", "description": "{status:'challenge', targetId, popupTargetId} when Google opens a Verify-it's-you popup (accounts.google.com); {status:'sent', targetId} when it goes straight to a confirmation email; {stop:reason} at the step that failed"}
+    },
+    "confirmForwarding": {
+      "description": "Open a mail-settings.google.com/mail/vf-... confirmation link from the forwarding-confirmation email and click Confirm.",
+      "path": "tools/mail-google-com.mjs",
+      "callable": "confirmForwarding",
+      "args": {
+        "verifyUrl": {"type": "string", "required": true, "description": "the vf-... link from the confirmation email"}
+      },
+      "returns": {"type": "object", "description": "{targetId, successText} the page's visible text after clicking Confirm; {stop:reason} otherwise"}
+    },
+    "createForwardFilter": {
+      "description": "Open #search/<query>, Advanced search options -> Create filter, tick \"Forward it to\" (checkboxes render off-screen, click the label text) and pick forwardTo from the custom listbox, assert exactly that one checkbox is ticked and the listbox shows forwardTo, then click Create filter with real Input.dispatchMouseEvent clicks (a DOM .click() has no user gesture and Gmail's verify-it's-you popup is then blocked) and Continue on the verify dialog the same way. dryRun:true stops right before clicking Create filter.",
+      "path": "tools/mail-google-com.mjs",
+      "callable": "createForwardFilter",
+      "args": {
+        "authuser": {"type": "number", "required": false, "description": "default 0"},
+        "query": {"type": "string", "required": true, "description": "Gmail search query, e.g. \"from:(x@y.com) subject:(z)\""},
+        "forwardTo": {"type": "string", "required": true, "description": "an already-verified forwarding address on this account"},
+        "dryRun": {"type": "boolean", "required": false, "description": "default false; when true, stop right before Create filter and return the asserted state"}
+      },
+      "returns": {"type": "object", "description": "{targetId, dryRun:true, checkedOnes, listboxText} on a dry run; {targetId, created:true, checkedOnes, listboxText} on a real create; {stop:reason} at the step that failed"}
+    },
     "findAccountSlot": {
       "description": "Which signed-in account slot (authuser index) owns an email address. Navigates /mail/u/<n>/ for n=0..maxSlots-1 and matches document.title against the address.",
       "path": "tools/mail-google-com.mjs",
@@ -48,36 +79,53 @@
       },
       "returns": {"type": "object", "description": "{found: boolean, count}"}
     },
-    "addForwardingAddress": {
-      "description": "Open #settings/fwdandpop, poll for the form to render (can take 20-40s in a background tab), click the real \"Add a forwarding address\" button, fill the dialog's email input, click Next. Never touches the inline 'Forward a copy of incoming mail to' textbox (typing into it directly auto-selects that radio and forwards ALL mail). Never answers the follow-on challenge.",
+    "searchRows": {
+      "description": "Open a Gmail search in a background tab and read the result-list rows as text. Uses textContent, not innerText: a background tab returns empty innerText for every row after the first.",
       "path": "tools/mail-google-com.mjs",
-      "callable": "addForwardingAddress",
+      "callable": "searchRows",
       "args": {
         "authuser": {"type": "number", "required": false, "description": "default 0"},
-        "address": {"type": "string", "required": true, "description": "the address to forward to"}
+        "query": {"type": "string", "required": true, "description": "Gmail search operators, e.g. \"from:x is:unread\""},
+        "limit": {"type": "number", "required": false, "description": "max rows to return, default 25"}
       },
-      "returns": {"type": "object", "description": "{status:'challenge', targetId, popupTargetId} when Google opens a Verify-it's-you popup (accounts.google.com); {status:'sent', targetId} when it goes straight to a confirmation email; {stop:reason} at the step that failed"}
+      "returns": {"type": "object", "description": "{rows: string[]} each row whitespace-collapsed and truncated to 200 chars"}
     },
-    "confirmForwarding": {
-      "description": "Open a mail-settings.google.com/mail/vf-... confirmation link from the forwarding-confirmation email and click Confirm.",
+    "readThread": {
+      "description": "Open a Gmail search, click the first result row, expand the whole thread, and return its messages, attachment names, and outbound links. Same search+background-tab mechanics as searchRows.",
       "path": "tools/mail-google-com.mjs",
-      "callable": "confirmForwarding",
-      "args": {
-        "verifyUrl": {"type": "string", "required": true, "description": "the vf-... link from the confirmation email"}
-      },
-      "returns": {"type": "object", "description": "{targetId, successText} the page's visible text after clicking Confirm; {stop:reason} otherwise"}
-    },
-    "createForwardFilter": {
-      "description": "Open #search/<query>, Advanced search options -> Create filter, tick \"Forward it to\" (checkboxes render off-screen, click the label text) and pick forwardTo from the custom listbox, assert exactly that one checkbox is ticked and the listbox shows forwardTo, then click Create filter with real Input.dispatchMouseEvent clicks (a DOM .click() has no user gesture and Gmail's verify-it's-you popup is then blocked) and Continue on the verify dialog the same way. dryRun:true stops right before clicking Create filter.",
-      "path": "tools/mail-google-com.mjs",
-      "callable": "createForwardFilter",
+      "callable": "readThread",
       "args": {
         "authuser": {"type": "number", "required": false, "description": "default 0"},
-        "query": {"type": "string", "required": true, "description": "Gmail search query, e.g. \"from:(x@y.com) subject:(z)\""},
-        "forwardTo": {"type": "string", "required": true, "description": "an already-verified forwarding address on this account"},
-        "dryRun": {"type": "boolean", "required": false, "description": "default false; when true, stop right before Create filter and return the asserted state"}
+        "query": {"type": "string", "required": true, "description": "Gmail search operators that should resolve to one thread"},
+        "maxChars": {"type": "number", "required": false, "description": "per-message truncation, default 1600"}
       },
-      "returns": {"type": "object", "description": "{targetId, dryRun:true, checkedOnes, listboxText} on a dry run; {targetId, created:true, checkedOnes, listboxText} on a real create; {stop:reason} at the step that failed"}
+      "returns": {"type": "object", "description": "{attachments: string[], links: string[] (non-mail.google.com hrefs), messages: string[]} on a hit; {stop:\"no-results\", hint} when the search returns nothing"}
+    },
+    "composeDraft": {
+      "description": "Open a prefilled compose (view=cm) with To/Cc/Bcc/Subject/Body and optional attachments. Never sends -- Gmail auto-saves the open compose as a draft. Returns a readback to verify before any further action.",
+      "path": "tools/mail-google-com.mjs",
+      "callable": "composeDraft",
+      "args": {
+        "authuser": {"type": "number", "required": false, "description": "default 0"},
+        "to": {"type": "string", "required": false},
+        "cc": {"type": "string", "required": false},
+        "bcc": {"type": "string", "required": false},
+        "subject": {"type": "string", "required": false},
+        "body": {"type": "string", "required": false},
+        "attachments": {"type": "array", "required": false, "description": "absolute host file paths"}
+      },
+      "returns": {"type": "object", "description": "{targetId, from, recipients: [data-hovercard-id values], subject, attachments: [filenames seen], body: first 200 chars}; {targetId, stop:\"no-file-input\"} if attachments were given but the file input was not found"}
+    },
+    "replaceDraftBody": {
+      "description": "Replace the body of an already-open compose (targetId from composeDraft). Gmail's body enforces Trusted Types, so plain lines are written as real DOM text/<br> nodes (replaceChildren) and an HTML fragment goes through CDP DOM.setOuterHTML on a placeholder div, which bypasses Trusted Types because it is not a page-script innerHTML assignment.",
+      "path": "tools/mail-google-com.mjs",
+      "callable": "replaceDraftBody",
+      "args": {
+        "targetId": {"type": "string", "required": true, "description": "from composeDraft"},
+        "lines": {"type": "array", "required": false, "description": "plain-text lines, joined with <br>; exactly one of lines or html"},
+        "html": {"type": "string", "required": false, "description": "an HTML fragment (e.g. a signature); exactly one of lines or html"}
+      },
+      "returns": {"type": "object", "description": "{length: number} body innerText length after the replace; {stop:reason} if the body editable or placeholder was not found"}
     }
   }
 }

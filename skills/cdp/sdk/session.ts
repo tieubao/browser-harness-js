@@ -272,6 +272,9 @@ export class Session implements Transport {
     // inherits it.
     // Retain the authorized endpoint, transport and timeout policy for reconnect.
     this.connectionOptions = { ...opts };
+    // The pin describes only the last SUCCESSFUL connect; a failed new intent
+    // must not let self-heal fall back onto the earlier browser.
+    this.pinnedWsUrl = undefined;
     if (opts.autoAllow !== undefined) this.autoAllow = opts.autoAllow;
     this.connectingOpts = opts;
     this.connectPromise = this._connect(this.connectionOptions);

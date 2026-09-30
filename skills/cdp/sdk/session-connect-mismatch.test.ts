@@ -380,7 +380,9 @@ test(
       const realHome = process.env.HOME;
       process.env.HOME = fakeHome;
       try {
-        await session.connect();
+        // Explicit {}: a bare connect() now reuses the retained explicit target
+        // (upstream's reconnect contract), so opting back into auto-detect is explicit.
+        await session.connect({});
       } finally {
         process.env.HOME = realHome;
         rmSync(fakeHome, { recursive: true, force: true });

@@ -163,6 +163,18 @@ export class Session implements Transport {
    *  (no explicit target): re-running auto-detect on heal is the existing,
    *  intended behavior for that case, not a bug. */
   private pinnedWsUrl?: string;
+  private connectionOptions?: ConnectOptions;
+  private connectionGeneration = 0;
+
+  getConnectionGeneration(): number { return this.connectionGeneration; }
+
+  private connectionChanged(): void {
+    this.connectionGeneration++;
+    this.activeSessionId = undefined;
+    for (const fn of this.eventListeners) {
+      try { fn('Session.connectionChanged', { generation: this.connectionGeneration }); } catch { /* isolate listeners */ }
+    }
+  }
 
   /** On by default: connect()/reconnect auto-dismisses Dia's "Allow
    *  debugging connection?" prompt (macOS, via osascript Return) — a no-op
@@ -196,7 +208,7 @@ export class Session implements Transport {
    * directly to that remote-debugging URL. `{ transport: 'extension' }` waits
    * on the extension and does not fall back.
    */
-  async connect(opts: ConnectOptions = {}): Promise<void> {
+  async connect(opts: ConnectOptions = this.connectionOptions ?? {}): Promise<void> {
     // Fast path: already connected -- but not blindly. If the caller passed
     // an explicit target (wsUrl, port+host, or profileDir) that doesn't
     // match what this Session is ALREADY attached to, silently riding the
@@ -258,9 +270,11 @@ export class Session implements Transport {
     }
     // Persist autoAllow so the auto-heal reconnect in _call (no-arg connect)
     // inherits it.
+    // Retain the authorized endpoint, transport and timeout policy for reconnect.
+    this.connectionOptions = { ...opts };
     if (opts.autoAllow !== undefined) this.autoAllow = opts.autoAllow;
     this.connectingOpts = opts;
-    this.connectPromise = this._connect(opts);
+    this.connectPromise = this._connect(this.connectionOptions);
     try {
       await this.connectPromise;
       // Pin the target so a later auto-heal reconnect in _call() (after a WS
@@ -384,7 +398,13 @@ export class Session implements Transport {
               dismissDiaAllowPrompt();
             }, allow.autoAllowDelayMs)
           : null;
-      ws.addEventListener('open', () => finish());
+      ws.addEventListener('open', () => {
+        // Auto-discovery selects once; reconnect never silently chooses another browser.
+        if (!this.connectionOptions?.wsUrl && !this.connectionOptions?.profileDir && !this.connectionOptions?.port) {
+          this.connectionOptions = { ...this.connectionOptions, transport: 'cdp', wsUrl };
+        }
+        finish();
+      });
       ws.addEventListener('error', (e) => finish(new Error(`WS error: ${(e as any)?.message ?? 'connect failed (likely 403, permission not granted, or port closed)'}`)));
       ws.addEventListener('close', () => {
         finish(new Error('WS closed before open (likely 403 or port closed)'));
@@ -393,9 +413,12 @@ export class Session implements Transport {
     });
   }
 
-  /** Plug an inbound extension socket. Favors the extension even if a
-   *  remote-debugging WS is already open (pending calls reject and auto-heal). */
+  /** Plug an inbound extension socket unless authorized settings pin CDP.
+   *  Replacing a wire rejects pending calls; effects are never replayed. */
   adoptExtension(wire: Wire): void {
+    const opts = this.connectionOptions;
+    if (opts?.wsUrl || opts?.profileDir || opts?.port || opts?.transport === 'cdp') return;
+    this.connectionOptions = { ...opts, transport: 'extension' };
     this.bindWire(wire, 'extension');
   }
 
@@ -408,6 +431,7 @@ export class Session implements Transport {
   }
 
   close(): void {
+    this.connectionChanged();
     this.ws?.close();
   }
 
@@ -424,14 +448,19 @@ export class Session implements Transport {
       return;
     }
     const prev = this.ws;
+    for (const [, pending] of this.pending) pending.reject(new Error('CDP connection replaced'));
+    this.pending.clear();
     this.ws = wire;
     this.transportName = name;
+    if (name === 'extension') this.connectionOptions = { ...this.connectionOptions, transport: 'extension' };
+    this.connectionChanged();
     wire.addEventListener('message', e => {
       if (this.ws !== wire) return;
       this.onMessage(String(e.data ?? ''));
     });
     wire.addEventListener('close', () => {
       if (this.ws !== wire) return;
+      this.connectionChanged();
       for (const [, p] of this.pending) p.reject(new Error('CDP socket closed'));
       this.pending.clear();
     });
@@ -548,7 +577,12 @@ export class Session implements Transport {
   }
 
   // Transport implementation. Called by the generated domain bindings.
-  _call(method: string, params: unknown = {}, opts?: { sessionId?: string }, reconnected = false): Promise<unknown> {
+  _call(method: string, params: unknown = {}, opts?: { sessionId?: string; expectedGeneration?: number }, reconnected = false): Promise<unknown> {
+    // Guarded callers fence dispatch to the observed connection; never reconnect/retry effects.
+    if (opts?.expectedGeneration !== undefined &&
+        (opts.expectedGeneration !== this.connectionGeneration || !this.isConnected())) {
+      return Promise.reject(new Error('CDP connection generation changed'));
+    }
     // Self-heal: a giant CDP response (e.g. getFullAXTree on a huge page) or a
     // browser hiccup can close the WebSocket. Reconnect once and retry rather
     // than poisoning every subsequent call with `Not connected`. After a
@@ -566,8 +600,15 @@ export class Session implements Transport {
     // different browser just because the intended one is unreachable.
     if (!this.ws || this.ws.readyState !== WIRE_OPEN) {
       if (reconnected) return Promise.reject(new Error('Not connected. Call session.connect(...) first.'));
-      const healOpts: ConnectOptions = this.pinnedWsUrl ? { wsUrl: this.pinnedWsUrl } : {};
-      return this.connect(healOpts).then(() => this._call(method, params, opts, true));
+      const wasScoped = !!(opts?.sessionId ?? this.activeSessionId) && !isBrowserLevel(method);
+      // A pinned explicit target wins; otherwise the retained options (transport included).
+      const healOpts: ConnectOptions = this.pinnedWsUrl
+        ? { ...this.connectionOptions, wsUrl: this.pinnedWsUrl }
+        : (this.connectionOptions ?? {});
+      return this.connect(healOpts).then(() => {
+        if (wasScoped) throw new Error('CDP connection changed; reattach the target before calling again');
+        return this._call(method, params, opts, true);
+      });
     }
     const id = this.nextId++;
     const msg: Record<string, unknown> = { id, method, params: params ?? {} };
@@ -713,9 +754,18 @@ async function resolveWsUrlFromPort(port: number, host: string): Promise<string 
     const resp = await fetch(`http://${host}:${port}/json/version`);
     if (resp.ok) {
       const json: any = await resp.json();
-      if (json.webSocketDebuggerUrl) return json.webSocketDebuggerUrl;
+      if (typeof json.webSocketDebuggerUrl === 'string') {
+        const url = new URL(json.webSocketDebuggerUrl);
+        const requestedHost = new URL(`http://${host}:${port}`).hostname;
+        const loopback = (name: string) => ['localhost', '127.0.0.1', '[::1]'].includes(name);
+        if (['ws:', 'wss:'].includes(url.protocol) && !url.username && !url.password &&
+            (url.hostname === requestedHost || (loopback(url.hostname) && loopback(requestedHost))) &&
+            Number(url.port || (url.protocol === 'wss:' ? 443 : 80)) === port) return url.href;
+      }
     }
   } catch { /* /json/version not served (Chrome 144+, Dia, etc.) */ }
+  // A remote host failure must never fall back to a local browser on the same port.
+  if (!['localhost', '127.0.0.1', '[::1]', '::1'].includes(host)) return undefined;
   const browsers = await detectBrowsers();
   const match = browsers.find(b => b.port === port);
   return match?.wsUrl;

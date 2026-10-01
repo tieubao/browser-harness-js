@@ -1,0 +1,24 @@
+{
+  "id": "meta-business-suite",
+  "name": "Meta for Developers and Business Suite",
+  "domains": [
+    "developers.facebook.com",
+    "business.facebook.com",
+    "www.facebook.com"
+  ],
+  "notes": [
+    "notes/overview.md"
+  ],
+  "nodeTools": {
+    "status": {
+      "description": "Where the tab is: no-tab (no open tab matches domains) | tab.",
+      "path": "tools/meta-business-suite.mjs",
+      "callable": "status",
+      "args": {},
+      "returns": {
+        "type": "object",
+        "description": "{state:\"tab\", url} or {state:\"no-tab\", hint}"
+      }
+    }
+  }
+}

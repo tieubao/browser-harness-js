@@ -98,5 +98,5 @@ hand-driven step done by a human watching the screen.
 
 2026-10-01 scaffolded via `browser-cdp learn new meta-business-suite --domains
 developers.facebook.com,business.facebook.com,www.facebook.com`. Notes
-captured from one session hand-driving Han's logged-in Helium across Meta for
+captured from one session hand-driving the operator's logged-in browser across Meta for
 Developers and Business Suite; no further automation built on top.

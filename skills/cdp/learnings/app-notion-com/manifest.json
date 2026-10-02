@@ -1,0 +1,129 @@
+{
+  "id": "app-notion-com",
+  "name": "Notion developer portal (internal connections)",
+  "domains": [
+    "app.notion.com"
+  ],
+  "notes": [
+    "notes/overview.md"
+  ],
+  "nodeTools": {
+    "list_connections": {
+      "description": "List internal connections (rows of name lines) on the developer portal. Throws 'not signed in to app.notion.com' when signed out.",
+      "path": "tools/connections.mjs",
+      "callable": "listConnections",
+      "args": {},
+      "returns": {
+        "type": "array",
+        "description": "[{name, details[]}] per row, header excluded; ids come from open_connection"
+      }
+    },
+    "open_connection": {
+      "description": "Open a connection by exact name.",
+      "path": "tools/connections.mjs",
+      "callable": "openConnection",
+      "args": {
+        "name": {
+          "type": "string",
+          "required": true
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "{id,name}"
+      }
+    },
+    "create_connection": {
+      "description": "Create an API-token internal connection and land on its page. Does NOT reveal the token.",
+      "path": "tools/connections.mjs",
+      "callable": "createConnection",
+      "args": {
+        "name": {
+          "type": "string",
+          "required": true
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "{id,name}"
+      }
+    },
+    "set_capabilities": {
+      "description": "Set capability toggles and user-info level on the open connection (autosaves). Omitted keys unchanged.",
+      "path": "tools/connections.mjs",
+      "callable": "setCapabilities",
+      "args": {
+        "read": {
+          "type": "boolean"
+        },
+        "update": {
+          "type": "boolean"
+        },
+        "insert": {
+          "type": "boolean"
+        },
+        "readComments": {
+          "type": "boolean"
+        },
+        "insertComments": {
+          "type": "boolean"
+        },
+        "sessions": {
+          "type": "boolean"
+        },
+        "userInfo": {
+          "type": "string",
+          "description": "none|no_email|email"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "resulting toggle state"
+      }
+    },
+    "share_pages": {
+      "description": "Grant the open connection access to pages by search query, then Save.",
+      "path": "tools/connections.mjs",
+      "callable": "sharePages",
+      "args": {
+        "queries": {
+          "type": "array",
+          "required": true
+        },
+        "exact": {
+          "type": "boolean",
+          "description": "menuitem text must end with the query"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "{added,missing,summary}"
+      }
+    },
+    "rename_connection": {
+      "description": "Rename the open connection (explicit Save).",
+      "path": "tools/connections.mjs",
+      "callable": "renameConnection",
+      "args": {
+        "newName": {
+          "type": "string",
+          "required": true
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "{newName}"
+      }
+    },
+    "reveal_token": {
+      "description": "Reveal, read and re-hide the API token. Returns the raw secret: capture it into a variable, never print it.",
+      "path": "tools/connections.mjs",
+      "callable": "revealToken",
+      "args": {},
+      "returns": {
+        "type": "string",
+        "description": "ntn_ token"
+      }
+    }
+  }
+}

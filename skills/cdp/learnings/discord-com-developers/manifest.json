@@ -1,0 +1,75 @@
+{
+  "id": "discord-com-developers",
+  "name": "Discord Developer Portal (app and bot setup)",
+  "domains": ["discord.com"],
+  "notes": ["notes/overview.md"],
+  "nodeTools": {
+    "status": {
+      "description": "Open the portal app list in the dedicated tab. Read-only.",
+      "path": "tools/portal.mjs", "callable": "status", "args": {},
+      "returns": {"type": "object", "description": "{signedIn, url, tabId}"}
+    },
+    "create_app": {
+      "description": "WRITE. New Application dialog: name, ToS, Create. hCaptcha cannot be scripted.",
+      "path": "tools/portal.mjs", "callable": "createApp",
+      "args": {"name": {"type": "string", "required": true}},
+      "returns": {"type": "object", "description": "{appId} or {needsHuman:\"captcha\"} or {stop:\"not-signed-in\"}"}
+    },
+    "get_bot_settings": {
+      "description": "Read the six Bot-page switches with label confirmation. Read-only.",
+      "path": "tools/portal.mjs", "callable": "getBotSettings",
+      "args": {"appId": {"type": "string", "required": true}},
+      "returns": {"type": "array", "description": "[{label, checked, labelConfirmed}] in DOM order"}
+    },
+    "set_intents": {
+      "description": "WRITE. Presence / Server Members / Message Content intents; omitted keys are left alone. Saves and re-reads.",
+      "path": "tools/portal.mjs", "callable": "setIntents",
+      "args": {
+        "appId": {"type": "string", "required": true},
+        "presence": {"type": "boolean", "required": false},
+        "members": {"type": "boolean", "required": false},
+        "messageContent": {"type": "boolean", "required": false}
+      },
+      "returns": {"type": "object", "description": "{saved, settings} or {saved:false, reason, settings}"}
+    },
+    "set_public_bot": {
+      "description": "WRITE. Public Bot on/off. Off first sets Install Link to None (real mouse click + Enter).",
+      "path": "tools/portal.mjs", "callable": "setPublicBot",
+      "args": {"appId": {"type": "string", "required": true}, "value": {"type": "boolean", "required": true}},
+      "returns": {"type": "object", "description": "{saved, settings} or {step:\"install-link\", saved:false, reason}"}
+    },
+    "reset_token": {
+      "description": "WRITE, destructive: the old token dies. Returns the new token once, or needsHuman mfa.",
+      "path": "tools/portal.mjs", "callable": "resetToken",
+      "args": {"appId": {"type": "string", "required": true}},
+      "returns": {"type": "object", "description": "{token} or {needsHuman:\"mfa\"}"}
+    },
+    "read_token": {
+      "description": "Poll the current page text for a bot token (call after the human clears MFA). Returns it to the caller, never logs it.",
+      "path": "tools/portal.mjs", "callable": "readToken",
+      "args": {"timeoutMs": {"type": "integer", "required": false}},
+      "returns": {"type": "object", "description": "{token} or {token:null}"}
+    },
+    "invite_url": {
+      "description": "Pure. Build the oauth2/authorize URL for scope=bot.",
+      "path": "tools/portal.mjs", "callable": "inviteUrl",
+      "args": {
+        "appId": {"type": "string", "required": true},
+        "permissions": {"type": "integer", "required": false},
+        "guildId": {"type": "string", "required": false}
+      },
+      "returns": {"type": "string", "description": "invite URL"}
+    },
+    "authorize_invite": {
+      "description": "WRITE. Walk the consent flow (Continue to Discord, scroll, Continue, Authorize). MFA returns needsHuman.",
+      "path": "tools/portal.mjs", "callable": "authorizeInvite",
+      "args": {
+        "appId": {"type": "string", "required": true},
+        "permissions": {"type": "integer", "required": false},
+        "guildId": {"type": "string", "required": false}
+      },
+      "returns": {"type": "object", "description": "{authorized:true} or {needsHuman:\"mfa\"} or {authorized:false, reason}"}
+    }
+  },
+  "browserTools": {}
+}

@@ -8,6 +8,8 @@ set -euo pipefail
 #   xpost "text" --reply-to https://x.com/u/status/ID     # reply under a post
 #   xpost "text" --dry-run                                # everything but the Post click
 #   xpost --json "text"                                   # JSON result
+#   xpost --json like https://x.com/u/status/ID           # like a post (never toggles off)
+#   xpost --json like --check https://x.com/u/status/ID   # read the like state, never clicks
 #
 # Posts whatever text it is given, through the logged-in X session in the
 # user's own browser. No X API key, no jq. One foreground tab per call.
@@ -30,6 +32,7 @@ usage() {
   cat >&2 <<'USAGE'
 Usage:
   xpost [--json] [--dry-run] [--image <file>] [--reply-to <permalink>] <text>
+  xpost [--json] like [--check] <status-url>
 
   <text>                  Post body, posted verbatim (it is not drafted or
                           reviewed). Empty only allowed together with --image.
@@ -40,6 +43,12 @@ Usage:
                           DRY_RUN_OK plus the readiness state.
   --json                  Emit the result as a JSON object.
 
+  like <status-url>       Like a post: https://x.com/<handle>/status/<id> (or
+                          twitter.com). Reads the like state first and never
+                          clicks an already-liked post (a click would unlike).
+                          Exits non-zero unless the like is verified.
+  like --check <url>      Read-only: report the like state, never click.
+
   XPOST_PORT / BH_PORT    Pin the CDP port (e.g. 9222) instead of auto-detect.
 
 Examples:
@@ -47,6 +56,7 @@ Examples:
   xpost "with a picture" --image ~/Desktop/chart.png
   xpost "nice work" --reply-to https://x.com/injaneity/status/2065110712511500620
   xpost --dry-run "does the composer hydrate?"
+  xpost --json like --check https://x.com/nntruonghan/status/2106269126666985956
 USAGE
   exit 1
 }
@@ -55,6 +65,7 @@ USAGE
 
 json_output=false
 dry_run=false
+check=false
 image=""
 reply_to=""
 pos=()
@@ -62,6 +73,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --json) json_output=true; shift ;;
     --dry-run) dry_run=true; shift ;;
+    --check) check=true; shift ;;
     --image)
       [ $# -ge 2 ] || { echo "xpost: --image requires a file path" >&2; exit 1; }
       image="$2"; shift 2 ;;
@@ -75,8 +87,25 @@ while [ $# -gt 0 ]; do
 done
 
 [ ${#pos[@]} -lt 1 ] && usage
-[ ${#pos[@]} -gt 1 ] && { echo "xpost: unexpected argument '${pos[1]}'" >&2; exit 1; }
-text="${pos[0]}"
+
+# `like` is a verb only with a URL after it (or --check): a lone `xpost like`
+# still posts the word "like", as before.
+like_url=""
+like_id=""
+if [ "${pos[0]}" = "like" ] && { [ ${#pos[@]} -ge 2 ] || $check; }; then
+  [ ${#pos[@]} -eq 2 ] || { echo "xpost like: requires exactly one <status-url>" >&2; exit 1; }
+  { $dry_run || [ -n "$image" ] || [ -n "$reply_to" ]; } && { echo "xpost like: --dry-run/--image/--reply-to not supported (use --check for a read-only probe)" >&2; exit 1; }
+  # Strict: a status permalink only, validated before the browser is touched.
+  re='^https://(www\.|mobile\.)?(x|twitter)\.com/([A-Za-z0-9_]{1,15})/status/([0-9]{1,25})/?(\?[^#]*)?$'
+  [[ "${pos[1]}" =~ $re ]] || { echo "xpost like: <status-url> must be https://x.com/<handle>/status/<id> or the twitter.com equivalent (got '${pos[1]}')" >&2; exit 1; }
+  like_id="${BASH_REMATCH[4]}"
+  like_url="https://x.com/${BASH_REMATCH[3]}/status/${like_id}"
+  text=""
+else
+  $check && { echo "xpost: --check only applies to: xpost like --check <status-url>" >&2; exit 1; }
+  [ ${#pos[@]} -gt 1 ] && { echo "xpost: unexpected argument '${pos[1]}'" >&2; exit 1; }
+  text="${pos[0]}"
+fi
 
 if [ -n "$image" ]; then
   [ -f "$image" ] || { echo "xpost: --image file not found: $image" >&2; exit 1; }
@@ -90,7 +119,7 @@ if [ -n "$reply_to" ]; then
   esac
 fi
 
-[ -z "$text" ] && [ -z "$image" ] && { echo "xpost: nothing to post (empty text and no --image)" >&2; exit 1; }
+[ -z "$like_url" ] && [ -z "$text" ] && [ -z "$image" ] && { echo "xpost: nothing to post (empty text and no --image)" >&2; exit 1; }
 
 # Optional explicit CDP port, auto-detect has missed a running browser that
 # was listening on --remote-debugging-port=9222 (observed with Helium).
@@ -114,9 +143,12 @@ const REPLY_TO = __XPOST_REPLY_TO__
 const DRY_RUN = __XPOST_DRY_RUN__
 const JSON_OUT = __XPOST_JSON__
 const PORT = __XPOST_PORT__
+const LIKE_URL = __XPOST_LIKE_URL__
+const LIKE_ID = __XPOST_LIKE_ID__
+const CHECK = __XPOST_CHECK__
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
-const MODE = REPLY_TO ? "reply" : "post"
+const MODE = LIKE_URL ? "like" : REPLY_TO ? "reply" : "post"
 const fail = (reason, extra) => JSON_OUT
   ? Object.assign({ ok: false, mode: MODE, reason: reason }, extra || {})
   : "NOT_POSTED " + reason + (extra && extra.url ? " (" + extra.url + ")" : "")
@@ -139,8 +171,9 @@ if (!session.isConnected()) {
 }
 
 // Foreground tab (background: false), proven for the composer; a background
-// tab's throttled timers can lag React hydration.
-const t = await session.Target.createTarget({ url: "about:blank", background: false })
+// tab's throttled timers can lag React hydration. `like --check` only reads,
+// so it stays in the background.
+const t = await session.Target.createTarget({ url: "about:blank", background: CHECK })
 const { sessionId } = await session.Target.attachToTarget({ targetId: t.targetId, flatten: true })
 
 try {
@@ -151,10 +184,56 @@ try {
   // Arm BEFORE Page.navigate: lifecycle events fire once, and a fast load can
   // fire networkIdle between navigate returning and the listener subscribing.
   const ready = session.waitFor({ method: 'Page.lifecycleEvent', sessionId, predicate: (p) => p.name === 'networkIdle', timeoutMs: 30_000 })
-  await cdp(sessionId, "Page.navigate", { url: REPLY_TO || "https://x.com/compose/post" })
+  await cdp(sessionId, "Page.navigate", { url: LIKE_URL || REPLY_TO || "https://x.com/compose/post" })
   await ready
   // React hydration, networkIdle fires before React mounts the composer.
-  await sleep(REPLY_TO ? 4500 : 4000)
+  await sleep(REPLY_TO || LIKE_URL ? 4500 : 4000)
+
+  if (LIKE_URL) {
+    // A blind click on a liked post UNLIKES it, so the state is read first and
+    // the click only happens in the same in-page tick that saw "unliked".
+    // The target is the article whose own timestamp links to /status/<id>:
+    // on a reply permalink the parent tweets render ABOVE the focus tweet, so
+    // "first article" would like the wrong post. The like button's
+    // data-testid is "like" (not liked) or "unlike" (liked).
+    const LIKE_FN = function (id, doClick) {
+      if (document.querySelector('[data-testid="loginButton"],a[href="/login"]') || /^\/(i\/flow\/)?login/.test(location.pathname)) return "loggedout"
+      const art = [].slice.call(document.querySelectorAll('article[data-testid="tweet"]')).find(function (a) {
+        return [].slice.call(a.querySelectorAll("a[href]")).some(function (l) {
+          return (l.getAttribute("href") || "").split("?")[0].endsWith("/status/" + id) && !!l.querySelector("time")
+        })
+      })
+      const b = art && art.querySelector('[data-testid="like"],[data-testid="unlike"]')
+      if (!b) return "missing"
+      if (b.getAttribute("data-testid") === "unlike") return "liked"
+      if (!doClick) return "unliked"
+      b.click()
+      return "clicked"
+    }
+    const ev = async (expr) => (await cdp(sessionId, "Runtime.evaluate", { expression: expr, returnByValue: true })).result.value
+    const likeState = (doClick) => ev("(" + LIKE_FN.toString() + ")(" + JSON.stringify(LIKE_ID) + "," + doClick + ")")
+    const likeFail = (error) => JSON_OUT ? { ok: false, mode: "like", url: LIKE_URL, error: error } : "NOT_LIKED " + error
+    // The action bar can mount after the 4.5s settle; poll a little.
+    let s = "missing"
+    for (let i = 0; i < 10; i++) {
+      s = await likeState(false)
+      if (s !== "missing") break
+      await sleep(1000)
+    }
+    if (s === "loggedout") return likeFail("logged out, X shows a login wall")
+    if (s === "missing") return likeFail("no like button on the focus tweet, bad URL, deleted post, or protected account")
+    if (CHECK) return JSON_OUT ? { ok: true, mode: "like", url: LIKE_URL, liked: s === "liked" } : "LIKE_STATE liked=" + (s === "liked") + " " + LIKE_URL
+    if (s === "liked") return JSON_OUT ? { ok: true, mode: "like", url: LIKE_URL, liked: true, already: true } : "ALREADY_LIKED " + LIKE_URL
+    const c = await likeState(true)
+    if (c === "liked") return JSON_OUT ? { ok: true, mode: "like", url: LIKE_URL, liked: true, already: true } : "ALREADY_LIKED " + LIKE_URL
+    if (c !== "clicked") return likeFail("like button vanished before the click (" + c + ")")
+    // Verify the effect, never trust .click(): the button must flip to "unlike".
+    for (let i = 0; i < 10; i++) {
+      await sleep(800)
+      if (await likeState(false) === "liked") return JSON_OUT ? { ok: true, mode: "like", url: LIKE_URL, liked: true, already: false } : "LIKED " + LIKE_URL
+    }
+    return likeFail("clicked like but the state did not flip to liked")
+  }
 
   if (REPLY_TO) {
     // The focus tweet is the first [data-testid="tweet"] in DOM order on a
@@ -262,13 +341,24 @@ final=$(node -e '
 let c=require("fs").readFileSync(0,"utf8");
 let json=process.argv[1], dry=process.argv[2], port=process.argv[3];
 let text=process.argv[4]||"", image=process.argv[5]||null, reply=process.argv[6]||null;
+let likeUrl=process.argv[7]||null, likeId=process.argv[8]||null, check=process.argv[9];
 c=c.replace(/__XPOST_JSON__/g,()=>json)
     .replace(/__XPOST_DRY_RUN__/g,()=>dry)
     .replace(/__XPOST_PORT__/g,()=>port||"null")
     .replace(/__XPOST_TEXT__/g,()=>JSON.stringify(text))
     .replace(/__XPOST_IMAGE__/g,()=>JSON.stringify(image))
-    .replace(/__XPOST_REPLY_TO__/g,()=>JSON.stringify(reply));
+    .replace(/__XPOST_REPLY_TO__/g,()=>JSON.stringify(reply))
+    .replace(/__XPOST_LIKE_URL__/g,()=>JSON.stringify(likeUrl))
+    .replace(/__XPOST_LIKE_ID__/g,()=>JSON.stringify(likeId))
+    .replace(/__XPOST_CHECK__/g,()=>check);
 process.stdout.write(c);
-' "$json_output" "$dry_run" "$port" "$text" "$image" "$reply_to" <<<"$code")
+' "$json_output" "$dry_run" "$port" "$text" "$image" "$reply_to" "$like_url" "$like_id" "$check" <<<"$code")
 
-printf '%s' "$final" | browser-harness-js
+if [ -z "$like_url" ]; then
+  printf '%s' "$final" | browser-harness-js
+  exit
+fi
+# like: a caller retries on a non-zero exit, so an unverified like must fail.
+out=$(printf '%s' "$final" | browser-harness-js)
+printf '%s\n' "$out"
+case "$out" in *'"ok":false'*|NOT_LIKED*) exit 1 ;; esac

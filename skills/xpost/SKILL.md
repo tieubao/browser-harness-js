@@ -1,9 +1,9 @@
 ---
 name: xpost
 description: >-
-  Post a tweet or reply on X (Twitter) through the user's own browser via CDP.
-  Use when the user asks to post to X, tweet this, post on Twitter, reply to a
-  tweet or post, or "đăng twitter/X". Requires browser-harness-js on PATH, a
+  Post a tweet or reply, or like a post, on X (Twitter) through the user's own
+  browser via CDP. Use when the user asks to post to X, tweet this, post on
+  Twitter, reply to a tweet or post, like a post, or "đăng twitter/X". Requires browser-harness-js on PATH, a
   Chromium browser with remote debugging, and a logged-in X session.
 setup: bash <skill-dir>/scripts/setup
 compatibility: >-
@@ -26,6 +26,8 @@ xpost "text" --image /abs/path.png                  # attach one image
 xpost "text" --reply-to https://x.com/u/status/ID   # reply under a post
 xpost "text" --dry-run                              # everything EXCEPT the Post click
 xpost --json "text"                                 # JSON result
+xpost --json like https://x.com/u/status/ID         # like a post (never toggles off)
+xpost --json like --check https://x.com/u/status/ID # read the like state, never clicks
 ```
 
 `--dry-run` runs the full flow (navigate, hydrate, insert text, attach image, wait for the button) and stops before the click, printing `DRY_RUN_OK` plus the readiness state. Use it to verify a session before a real post; `DRY_RUN_NOT_READY` means the Post button never enabled.
@@ -36,6 +38,8 @@ xpost --json "text"                                 # JSON result
 | `--reply-to <url>` | Reply under a post via an `x.com`/`twitter.com` permalink; uses the inline reply composer on that page |
 | `--dry-run` | Do everything except the final Post click |
 | `--json` | Emit the result as a JSON object |
+| `like <url>` | Like the post at a status permalink (`https://x.com/<handle>/status/<id>` or `twitter.com`, optional `?query`); anything else is refused before the browser opens |
+| `like --check <url>` | Read-only: report the like state, never click |
 | `XPOST_PORT` / `BH_PORT` | Env vars: pin the CDP port (e.g. `9222`) instead of auto-detect |
 
 ## Result shape
@@ -49,6 +53,19 @@ Pretty mode prints one line (`POSTED [url]` / `DRY_RUN_OK …` / `NOT_POSTED <re
 - `ok: true` means the post toast was seen. `url` is the new post's permalink **only if** the toast's "View" link was caught in time; X never redirects to the post, so `url` is often `null` even on success.
 - `ok: false` carries a `reason` (`no composer`, `no focus tweet`, `post button never enabled`, `post toast not detected`, …).
 - Dry-run returns `{ ok, dry_run: true, mode, text, image, reply_to, button_enabled, image_attached }`.
+
+### `like`
+
+The like state is read BEFORE any click: a click on an already-liked post would unlike it, so a retry never toggles. After the click the state is re-read and success is reported only when it flipped. Exit code is non-zero whenever `ok` is false.
+
+| Case | `--json` | Pretty |
+|------|----------|--------|
+| Liked now | `{ok:true, mode:"like", url, liked:true, already:false}` | `LIKED <url>` |
+| Was already liked (no click) | `{ok:true, mode:"like", url, liked:true, already:true}` | `ALREADY_LIKED <url>` |
+| `--check` (never clicks) | `{ok:true, mode:"like", url, liked:<bool>}` | `LIKE_STATE liked=<bool> <url>` |
+| Failure | `{ok:false, mode:"like", url, error}` | `NOT_LIKED <error>` |
+
+`url` is the normalized `https://x.com/<handle>/status/<id>`. Errors: `logged out`, `no like button on the focus tweet` (bad URL, deleted or protected post), `clicked like but the state did not flip to liked`.
 
 ## How it works
 
@@ -75,4 +92,5 @@ Pretty mode prints one line (`POSTED [url]` / `DRY_RUN_OK …` / `NOT_POSTED <re
 - **Over the character cap** (280 on the free tier) the Post button never enables; it surfaces as `post button never enabled`.
 - **Verification is the toast, not the URL.** X does not redirect to the new post; success is the toast regex in `body.innerText` ~6s after the click. The post URL comes only from the toast's "View" link and is often missed; `url: null` does not mean the post failed.
 - **Foreground tab.** The composer is flaky in a throttled background tab, so `xpost` opens a foreground tab; it briefly steals focus.
+- **Like targets the focus tweet by its own timestamp link.** On a reply permalink the parent tweets render ABOVE the focus tweet, so the first `article` is the wrong post. `like` picks the `article[data-testid="tweet"]` holding an `a[href$="/status/<id>"]` with a `<time>`, then its `[data-testid="like"]` (not liked) or `[data-testid="unlike"]` (liked) button. The state read and the click run in one in-page call, so nothing can flip between them.
 - **`session.connect()` fallback.** Auto-detect has missed a running Helium listening on `--remote-debugging-port=9222`; on failure `xpost` retries `connect({ port: 9222 })`. Set `XPOST_PORT`/`BH_PORT` to pin a port directly (then only that port is tried).

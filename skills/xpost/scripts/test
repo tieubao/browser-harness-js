@@ -1,11 +1,21 @@
 #!/usr/bin/env bash
 # Smoke test for the xpost skill.
-# NEVER posts: the only live calls are `xpost --dry-run`, which does everything
-# except the final Post click and prints DRY_RUN_OK plus the readiness state.
+# NEVER posts or likes: the only live calls are `xpost --dry-run`, which does
+# everything except the final Post click and prints DRY_RUN_OK plus the
+# readiness state. The `like` tests run OFFLINE against a fake
+# browser-harness-js (a tiny DOM in node), so they need no browser at all.
 # Requires a Chromium-based browser running with remote debugging AND a
-# logged-in X session (see the cdp skill). Exits 77 if the browser is
-# unreachable, 0 if all checks pass, 1 otherwise.
+# logged-in X session for the live part (see the cdp skill).
+#
+#   bash scripts/test             # offline like tests + live dry-run + guards
+#   bash scripts/test --offline   # offline like tests + guards, no browser
+#
+# Exits 77 if the browser is unreachable (and the offline tests passed), 0 if
+# all checks pass, 1 otherwise.
 set -uo pipefail
+
+offline=false
+[ "${1:-}" = "--offline" ] && offline=true
 
 script_dir="$(cd "$(dirname "$0")" && pwd)"
 cli="$script_dir/xpost"
@@ -15,22 +25,8 @@ if [ ! -f "$cli" ]; then
   exit 1
 fi
 
-if ! command -v browser-harness-js >/dev/null 2>&1; then
-  echo "skip: browser-harness-js not on PATH (run scripts/setup first)" >&2
-  exit 77
-fi
-
 # Run the project's own xpost script, not whatever happens to be on PATH.
 run() { "$cli" "$@" 2>&1 || true; }
-
-# Skip cleanly if the browser isn't reachable. This also serves as the first
-# live dry-run, so a successful probe is not wasted work.
-probe=$(run --dry-run "xpost smoke")
-case "$probe" in
-  *Cannot*connect*|*ECONNREFUSED*|*connect:*|*"No running browser"*|*"No detected browser"*)
-    echo "skip: browser not reachable ($(printf '%s' "$probe" | head -1 | sed 's/^[[:space:]]*//'))" >&2
-    exit 77 ;;
-esac
 
 pass=0
 fail=0
@@ -43,17 +39,162 @@ refuse() { # desc  needle  actual   -> pass if actual does NOT contain needle
   if printf '%s' "$3" | grep -qF "$2"; then bad "$1" "$3"; else ok "$1"; fi
 }
 
-echo "xpost smoke test (--dry-run only, never posts)"
+echo "xpost like (offline, fake browser-harness-js, never touches a browser)"
 
-# Live dry-run against the real composer (needs a logged-in X session).
-expect "dry-run: reports DRY_RUN_OK" "DRY_RUN_OK" "$probe"
-refuse "dry-run: no unparsed placeholder" "__XPOST_" "$probe"
+# The fake browser-harness-js runs the CLI's generated JS in node against a
+# fixture DOM. It logs every navigate/click/tab to $FAKE_LOG, so a test can
+# prove a click did or did not happen. FAKE_FIXTURE: liked | unliked |
+# reply-thread (unliked parent above a liked focus tweet) | loggedout;
+# FAKE_ONCLICK: flip (the button turns into "unlike") | noflip.
+fake_dir="$(mktemp -d)"
+trap 'rm -rf "$fake_dir"' EXIT
+cat >"$fake_dir/browser-harness-js" <<'FAKE_EOF'
+#!/usr/bin/env node
+const fs = require("fs"), vm = require("vm")
+const log = (s) => fs.appendFileSync(process.env.FAKE_LOG, s + "\n")
+const fixture = process.env.FAKE_FIXTURE, onClick = process.env.FAKE_ONCLICK || "flip"
+class El {
+  constructor(tag, attrs, kids) {
+    this.tagName = tag.toUpperCase(); this.attrs = attrs || {}; this.parentElement = null
+    this.children = (kids || []).map((k) => { k.parentElement = this; return k })
+  }
+  getAttribute(n) { return n in this.attrs ? this.attrs[n] : null }
+  setAttribute(n, v) { this.attrs[n] = String(v) }
+  getBoundingClientRect() { return { x: 0, y: 0, width: 10, height: 10 } }
+  click() {
+    log("click " + (this.attrs["data-fake"] || this.tagName))
+    if (onClick === "flip" && this.attrs["data-testid"] === "like") this.attrs["data-testid"] = "unlike"
+  }
+  querySelectorAll(sel) {
+    const out = [], walk = (e) => e.children.forEach((c) => { if (matches(c, sel)) out.push(c); walk(c) })
+    walk(this); return out
+  }
+  querySelector(sel) { return this.querySelectorAll(sel)[0] || null }
+}
+// Selector subset: tag, [a], [a="v"], [a^="v"], [a*="v"], [a$="v"], comma lists.
+function matches(el, sel) {
+  return sel.split(",").some((s) => {
+    const m = s.trim().match(/^([a-zA-Z]*)((?:\[[^\]]+\])*)$/)
+    if (!m) throw new Error("fake DOM: unsupported selector " + s)
+    if (m[1] && el.tagName !== m[1].toUpperCase()) return false
+    const re = /\[([\w-]+)(?:([*^$]?=)"?([^"\]]*)"?)?\]/g
+    let a
+    while ((a = re.exec(m[2]))) {
+      const v = el.getAttribute(a[1]), w = a[3]
+      if (v === null) return false
+      if ((a[2] === "=" && v !== w) || (a[2] === "*=" && !v.includes(w)) || (a[2] === "^=" && !v.startsWith(w)) || (a[2] === "$=" && !v.endsWith(w))) return false
+    }
+    return true
+  })
+}
+const tweet = (id, testid, fake) => new El("article", { "data-testid": "tweet" }, [
+  new El("a", { href: "/someone/status/" + id }, [new El("time", {})]),
+  new El("button", { "data-testid": testid, "data-fake": fake })
+])
+const page = {
+  liked: [tweet("111", "unlike", "like-111")],
+  unliked: [tweet("111", "like", "like-111")],
+  "reply-thread": [tweet("999", "like", "like-999"), tweet("111", "unlike", "like-111")],
+  loggedout: [new El("a", { href: "/login" }), tweet("111", "like", "like-111")]
+}[fixture]
+const root = new El("html", {}, [new El("body", {}, page)])
+const location = { href: "about:blank", pathname: "/" }
+const ctx = vm.createContext({ document: { querySelector: (s) => root.querySelector(s), querySelectorAll: (s) => root.querySelectorAll(s), body: root }, location })
+const session = {
+  isConnected: () => true,
+  connect: async () => {},
+  Target: {
+    createTarget: async (p) => { log("tab background=" + p.background); return { targetId: "T" } },
+    attachToTarget: async () => ({ sessionId: "S" })
+  },
+  waitFor: async () => ({}),
+  closeTab: async () => { log("closeTab") }
+}
+const cdp = async (sid, method, params) => {
+  if (method === "Runtime.evaluate") return { result: { value: vm.runInContext(params.expression, ctx) } }
+  if (method === "Page.navigate") { log("navigate " + params.url); location.href = params.url; location.pathname = new URL(params.url).pathname }
+  return {}
+}
+const code = fs.readFileSync(0, "utf8")
+const AsyncFunction = (async () => {}).constructor
+// setTimeout is shadowed so the CLI's hydration sleeps cost nothing.
+AsyncFunction("session", "cdp", "setTimeout", code)(session, cdp, (f) => setImmediate(f)).then(
+  (v) => { if (v !== undefined && v !== null) process.stdout.write((typeof v === "string" ? v : JSON.stringify(v)) + "\n") },
+  (e) => { process.stderr.write(String((e && e.stack) || e) + "\n"); process.exit(1) })
+FAKE_EOF
+chmod +x "$fake_dir/browser-harness-js"
 
-# JSON mode + special chars (&, $, quotes, backtick) through the
-# function-replacement placeholder injection, nothing gets eaten.
-json=$(run --json --dry-run 'a & $b "q" `tick`')
-expect "json: parses dry_run flag" '"dry_run":true' "$json"
-refuse "json: no unparsed placeholder" "__XPOST_" "$json"
+FAKE_LOG="$fake_dir/log"
+export FAKE_LOG
+# like_run <fixture> <onclick> <xpost args...>: sets $out, $rc, $flog.
+like_run() {
+  local fx="$1" oc="$2"; shift 2
+  : >"$FAKE_LOG"
+  out=$(PATH="$fake_dir:$PATH" FAKE_FIXTURE="$fx" FAKE_ONCLICK="$oc" "$cli" "$@" 2>&1); rc=$?
+  flog=$(cat "$FAKE_LOG")
+}
+clicks() { printf '%s\n' "$flog" | grep -c '^click' ; }
+U="https://x.com/someone/status/111"
+
+like_run liked flip --json like "$U"
+if [ "$rc" -eq 0 ] && [ "$(clicks)" -eq 0 ] && printf '%s' "$out" | grep -qF '"liked":true,"already":true'; then ok "like: already liked -> no click, already:true"; else bad "like: already liked -> no click, already:true" "rc=$rc out=$out log=$flog"; fi
+
+like_run unliked flip --json like "$U"
+if [ "$rc" -eq 0 ] && [ "$(clicks)" -eq 1 ] && printf '%s' "$out" | grep -qF '"liked":true,"already":false'; then ok "like: not liked -> one click -> flips -> liked:true"; else bad "like: not liked -> one click -> flips -> liked:true" "rc=$rc out=$out log=$flog"; fi
+
+like_run unliked noflip --json like "$U"
+if [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -qF '"ok":false' && printf '%s' "$out" | grep -qF '"error"'; then ok "like: click without flip -> ok:false, non-zero exit"; else bad "like: click without flip -> ok:false, non-zero exit" "rc=$rc out=$out"; fi
+
+like_run reply-thread flip --json like "$U"
+if [ "$rc" -eq 0 ] && [ "$(clicks)" -eq 0 ] && printf '%s' "$out" | grep -qF '"already":true'; then ok "like: targets the focus tweet, not the parent above it"; else bad "like: targets the focus tweet, not the parent above it" "rc=$rc out=$out log=$flog"; fi
+
+like_run loggedout flip --json like "$U"
+if [ "$rc" -ne 0 ] && [ "$(clicks)" -eq 0 ] && printf '%s' "$out" | grep -qF 'logged out'; then ok "like: login wall -> refused, no click"; else bad "like: login wall -> refused, no click" "rc=$rc out=$out log=$flog"; fi
+
+like_run unliked flip --json like --check "$U"
+if [ "$rc" -eq 0 ] && [ "$(clicks)" -eq 0 ] && printf '%s' "$out" | grep -qF '"liked":false'; then ok "check: not liked -> liked:false, never clicks"; else bad "check: not liked -> liked:false, never clicks" "rc=$rc out=$out log=$flog"; fi
+
+like_run liked flip --json like --check "$U"
+if [ "$rc" -eq 0 ] && [ "$(clicks)" -eq 0 ] && printf '%s' "$out" | grep -qF '"liked":true' && printf '%s' "$flog" | grep -qF 'tab background=true'; then ok "check: liked -> liked:true, background tab, never clicks"; else bad "check: liked -> liked:true, background tab, never clicks" "rc=$rc out=$out log=$flog"; fi
+
+like_run liked flip like "https://twitter.com/someone/status/111?s=20"
+if [ "$rc" -eq 0 ] && printf '%s' "$flog" | grep -qF "navigate $U" && printf '%s' "$out" | grep -qF 'ALREADY_LIKED'; then ok "like: twitter.com URL normalized to x.com, pretty output"; else bad "like: twitter.com URL normalized to x.com, pretty output" "rc=$rc out=$out log=$flog"; fi
+
+for badurl in "https://example.com/someone/status/111" "http://x.com/someone/status/111" "https://x.com/someone/status/abc" \
+              "https://x.com/someone/status/111/photo/1" "https://x.com/someone" "https://x.com.evil.io/someone/status/111"; do
+  like_run unliked flip --json like "$badurl"
+  if [ "$rc" -ne 0 ] && [ -z "$flog" ] && printf '%s' "$out" | grep -qF 'must be https://x.com'; then ok "like: refuses $badurl before the browser"; else bad "like: refuses $badurl before the browser" "rc=$rc out=$out log=$flog"; fi
+done
+
+if ! $offline; then
+  if ! command -v browser-harness-js >/dev/null 2>&1; then
+    echo "skip: browser-harness-js not on PATH (run scripts/setup first)" >&2
+    [ "$fail" -eq 0 ] || exit 1
+    exit 77
+  fi
+
+  # Skip cleanly if the browser isn't reachable. This also serves as the first
+  # live dry-run, so a successful probe is not wasted work.
+  probe=$(run --dry-run "xpost smoke")
+  case "$probe" in
+    *Cannot*connect*|*ECONNREFUSED*|*connect:*|*"No running browser"*|*"No detected browser"*)
+      echo "skip: browser not reachable ($(printf '%s' "$probe" | head -1 | sed 's/^[[:space:]]*//'))" >&2
+      [ "$fail" -eq 0 ] || exit 1
+      exit 77 ;;
+  esac
+
+  echo "xpost smoke test (--dry-run only, never posts)"
+
+  # Live dry-run against the real composer (needs a logged-in X session).
+  expect "dry-run: reports DRY_RUN_OK" "DRY_RUN_OK" "$probe"
+  refuse "dry-run: no unparsed placeholder" "__XPOST_" "$probe"
+
+  # JSON mode + special chars (&, $, quotes, backtick) through the
+  # function-replacement placeholder injection, nothing gets eaten.
+  json=$(run --json --dry-run 'a & $b "q" `tick`')
+  expect "json: parses dry_run flag" '"dry_run":true' "$json"
+  refuse "json: no unparsed placeholder" "__XPOST_" "$json"
+fi
 
 echo "-- guards --"
 # No args -> usage, non-zero exit.
@@ -71,6 +212,12 @@ if [ "$rc4" -ne 0 ] && printf '%s' "$g4" | grep -qF "permalink"; then ok "guard:
 # Extra positional -> error, non-zero exit.
 g5=$("$cli" "x" "y" 2>&1); rc5=$?
 if [ "$rc5" -ne 0 ] && printf '%s' "$g5" | grep -qF "unexpected argument"; then ok "guard: extra positional rejected"; else bad "guard: extra positional rejected" "rc=$rc5 out=$g5"; fi
+# --check outside like -> error, non-zero exit.
+g6=$("$cli" --check "x" 2>&1); rc6=$?
+if [ "$rc6" -ne 0 ] && printf '%s' "$g6" | grep -qF "only applies to"; then ok "guard: --check without like rejected"; else bad "guard: --check without like rejected" "rc=$rc6 out=$g6"; fi
+# like with --dry-run -> error (a dry-run like would be a silent no-op).
+g7=$("$cli" like --dry-run https://x.com/someone/status/111 2>&1); rc7=$?
+if [ "$rc7" -ne 0 ] && printf '%s' "$g7" | grep -qF "not supported"; then ok "guard: like --dry-run rejected"; else bad "guard: like --dry-run rejected" "rc=$rc7 out=$g7"; fi
 
 echo
 echo "$pass passed, $fail failed"

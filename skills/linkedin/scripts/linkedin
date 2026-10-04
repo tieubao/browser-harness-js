@@ -8,7 +8,8 @@ set -euo pipefail
 #   linkedin comment <post-url> "text" [--dry-run]         # comment under a post
 #   linkedin inbox [N]                                     # N recent message threads (default 10)
 #   linkedin reply <thread|index> "text" [--dry-run]       # reply inside a thread
-#   linkedin --json <verb> ...                             # JSON output for every verb
+#   linkedin like [--check] <post-or-comment-url>          # like (never toggles off)
+#   linkedin --json <verb> ...                           # JSON output for every verb
 #
 # --dry-run does everything EXCEPT the final Post/Comment/Send click.
 # No API key, no jq. One tab per call. Selectors are role / aria-label /
@@ -45,9 +46,17 @@ Verbs:
   reply <thread|index> <text> [--dry-run]  Reply inside a thread. <thread> is
                                            a case-insensitive substring of the
                                            name, or a 0-based inbox index.
+  like [--check] <url>                     Like a post, or a comment when the
+                                           URL carries commentUrn/replyUrn.
+                                           Reads the reaction state first and
+                                           never clicks an already-reacted
+                                           target (a click would unlike).
+                                           Exits non-zero unless verified.
+                                           --check only reads the state.
 
 Flags:
   --dry-run   Do everything EXCEPT the final Post/Comment/Send click.
+  --check     like only: read the reaction state, never click.
   --json      Emit the result as JSON.
 
   LINKEDIN_PORT / BH_PORT   Pin the CDP port (e.g. 9222) instead of auto-detect.
@@ -58,6 +67,7 @@ Examples:
   linkedin comment "https://www.linkedin.com/feed/update/urn:li:activity:123/" "nice work"
   linkedin inbox
   linkedin reply "chuyen" "thanks!" --dry-run
+  linkedin --json like --check "https://www.linkedin.com/feed/update/urn:li:activity:123/"
 USAGE
   exit 1
 }
@@ -74,14 +84,16 @@ set -- "${args[@]}"
 [ $# -lt 1 ] && usage
 
 verb="$1"; shift
-case "$verb" in post|notifs|comment|inbox|reply) ;; *) usage ;; esac
+case "$verb" in post|notifs|comment|inbox|reply|like) ;; *) usage ;; esac
 
 dry_run=false
+check=false
 image=""
 pos=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --dry-run) dry_run=true; shift ;;
+    --check) check=true; shift ;;
     --image)
       [ $# -ge 2 ] || { echo "linkedin: --image requires a file path" >&2; exit 1; }
       image="$2"; shift 2 ;;
@@ -112,11 +124,18 @@ case "$verb" in
     [ ${#pos[@]} -lt 2 ] && { echo "linkedin reply: requires <thread|index> and <text>" >&2; exit 1; }
     [ ${#pos[@]} -gt 2 ] && { echo "linkedin reply: unexpected argument '${pos[2]}'" >&2; exit 1; }
     target="${pos[0]}"; text="${pos[1]}" ;;
+  like)
+    [ ${#pos[@]} -ne 1 ] && { echo "linkedin like: requires exactly one <post-or-comment-url>" >&2; exit 1; }
+    post_url="${pos[0]}" ;;
 esac
+
+$check && [ "$verb" != "like" ] && { echo "linkedin $verb: --check only applies to like" >&2; exit 1; }
 
 # --image and --dry-run only make sense on write verbs.
 case "$verb" in
   post) ;;
+  like)
+    { $dry_run || [ -n "$image" ]; } && { echo "linkedin like: --dry-run/--image not supported (use --check for a read-only probe)" >&2; exit 1; } ;;
   comment|reply)
     [ -n "$image" ] && { echo "linkedin $verb: --image not supported" >&2; exit 1; } ;;
   notifs|inbox)
@@ -132,6 +151,40 @@ fi
 case "$verb" in post|comment|reply)
   [ -z "$text" ] && [ -z "$image" ] && { echo "linkedin $verb: nothing to send (empty text)" >&2; exit 1; }
 esac
+
+# like: strict URL check before the browser is touched, normalized to the
+# single-post page (/feed/update/<urn>/) so no other post's Like button is on
+# it. A commentUrn/replyUrn query (LinkedIn's "copy link to comment" shape) or
+# a urn:li:comment path targets that comment; the rest target the post.
+like_cid=""
+if [ "$verb" = "like" ]; then
+  parsed=$(node -e '
+const raw = process.argv[1]
+const die = (m) => { console.error("linkedin like: " + m + " (got \x27" + raw + "\x27)"); process.exit(1) }
+let u
+try { u = new URL(raw) } catch (e) { die("not a URL") }
+if (u.protocol !== "https:" || !/^(www\.)?linkedin\.com$/.test(u.hostname)) die("<url> must be an https://www.linkedin.com URL")
+if (/^\/messaging(\/|$)/.test(u.pathname)) die("DMs have no like, pass a post or comment URL")
+const p = decodeURIComponent(u.pathname)
+const q = new URLSearchParams()
+let m, post = null, cid = null
+if ((m = p.match(/^\/feed\/update\/(urn:li:(activity|ugcPost|share):\d+)\/?$/))) post = m[1]
+else if ((m = p.match(/^\/feed\/update\/(urn:li:comment:\((activity|ugcPost|share):(\d+),(\d+)\))\/?$/))) { post = "urn:li:" + m[2] + ":" + m[3]; cid = m[4]; q.set("commentUrn", m[1]) }
+else if ((m = p.match(/^\/posts\/[^/]*[-_](activity|ugcPost|share)-(\d+)(-[^/]*)?\/?$/))) post = "urn:li:" + m[1] + ":" + m[2]
+else if (/^\/feed\/?$/.test(p) && (m = (u.searchParams.get("highlightedUpdateUrn") || "").match(/^urn:li:(activity|ugcPost|share):\d+$/))) post = m[0]
+else die("<url> must be a post (feed/update/urn:li:activity:N, /posts/...-activity-N-..., feed/?highlightedUpdateUrn=...) or a comment URL")
+for (const k of ["commentUrn", "replyUrn"]) {
+  const v = u.searchParams.get(k)
+  if (!v) continue
+  if (!(m = v.match(/^urn:li:comment:\((activity|ugcPost|share):\d+,(\d+)\)$/))) die(k + " is not a urn:li:comment")
+  q.set(k, v)
+  if (k === "replyUrn" || !cid) cid = m[2]
+}
+const qs = q.toString()
+process.stdout.write("https://www.linkedin.com/feed/update/" + post + "/" + (qs ? "?" + qs : "") + "\t" + (cid || ""))
+' "$post_url")
+  IFS=$'\t' read -r post_url like_cid <<<"$parsed"
+fi
 
 case "$post_url" in ""|*linkedin.com*) ;; *) echo "linkedin comment: <post-url> must be a linkedin.com URL" >&2; exit 1 ;; esac
 
@@ -160,6 +213,8 @@ const COUNT = __LI_COUNT__
 const DRY_RUN = __LI_DRY_RUN__
 const JSON_OUT = __LI_JSON__
 const PORT = __LI_PORT__
+const LIKE_CID = __LI_LIKE_CID__
+const CHECK = __LI_CHECK__
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 const WRITE_VERB = { post: "POSTED", comment: "COMMENTED", reply: "SENT" }
@@ -186,7 +241,7 @@ if (!session.isConnected()) {
 // Write verbs need a foreground tab (the composer is flaky in a throttled
 // background tab); read verbs stay in the background. One tab per call keeps
 // parallel calls safe.
-const bg = VERB === "notifs" || VERB === "inbox"
+const bg = VERB === "notifs" || VERB === "inbox" || CHECK
 const t = await session.Target.createTarget({ url: "about:blank", background: bg })
 const { sessionId } = await session.Target.attachToTarget({ targetId: t.targetId, flatten: true })
 const ev = async (expr) => (await cdp(sessionId, "Runtime.evaluate", { expression: expr, returnByValue: true })).result.value
@@ -576,6 +631,68 @@ try {
     if (JSON_OUT) return { ok: true, verb: "reply", thread: p.name, thread_url: threadUrl }
     return "SENT thread=\"" + (p.name || "") + "\""
   }
+
+  // ---------------- like ----------------
+  if (VERB === "like") {
+    await nav(POST_URL, "networkIdle")
+    await sleep(5000)
+
+    // A blind click on a reacted target UNREACTS it, so the state is read
+    // first and the click only happens in the same in-page tick that saw "no
+    // reaction". LinkedIn has no aria-pressed here: the state lives in
+    // aria-label="Reaction button state: <state>", on the post's <button> and
+    // on an svg[role=img] inside the comment's div[role=button]. Any state
+    // other than "no reaction" (Like, Celebrate, ...) counts as liked. Each
+    // comment sits in div[id="replaceableComment_urn:li:comment:(activity:A,C)"];
+    // a control's innermost such ancestor says whose it is (none = the post).
+    const LIKE_FN = function (cid, doClick) {
+      if (document.querySelector("input[name=session_key]") || /\/login|\/authwall|\/checkpoint/.test(location.href)) return "loggedout"
+      const owner = function (el) {
+        for (let e = el; e; e = e.parentElement) {
+          const id = (e.getAttribute && e.getAttribute("id")) || ""
+          if (id.indexOf("replaceableComment_") === 0) return id
+        }
+        return null
+      }
+      const el = [].slice.call(document.querySelectorAll('[aria-label^="Reaction button state"]')).find(function (e) {
+        const o = owner(e)
+        return cid ? !!o && o.endsWith("," + cid + ")") : o === null
+      })
+      if (!el) return "missing"
+      const state = (el.getAttribute("aria-label") || "").replace(/^Reaction button state:?/i, "").trim().toLowerCase()
+      if (state !== "no reaction") return "liked"
+      if (!doClick) return "unliked"
+      let btn = el
+      while (btn && !(btn.tagName === "BUTTON" || btn.getAttribute("role") === "button")) btn = btn.parentElement
+      if (!btn) return "missing"
+      btn.click()
+      return "clicked"
+    }
+    const likeState = (doClick) => ev("(" + LIKE_FN.toString() + ")(" + JSON.stringify(LIKE_CID) + "," + doClick + ")")
+    const target = LIKE_CID ? "comment" : "post"
+    const done = (o) => JSON_OUT ? Object.assign({ ok: true, verb: "like", url: POST_URL, target: target }, o) : (o.already ? "ALREADY_LIKED " : "LIKED ") + target + " " + POST_URL
+    const likeFail = (reason) => JSON_OUT ? { ok: false, verb: "like", url: POST_URL, target: target, reason: reason } : (CHECK ? "ERROR " : "NOT_LIKED ") + reason
+    // The social bar and comments lazy-mount after networkIdle; poll a little.
+    let s = "missing"
+    for (let i = 0; i < 10; i++) {
+      s = await likeState(false)
+      if (s !== "missing") break
+      await sleep(1000)
+    }
+    if (s === "loggedout") return likeFail("logged out")
+    if (s === "missing") return likeFail(LIKE_CID ? "comment " + LIKE_CID + " or its reaction control not found on the page" : "no reaction button on the post, bad URL or deleted post")
+    if (CHECK) return JSON_OUT ? { ok: true, verb: "like", url: POST_URL, target: target, liked: s === "liked" } : "LIKE_STATE liked=" + (s === "liked") + " " + target + " " + POST_URL
+    if (s === "liked") return done({ liked: true, already: true })
+    const c = await likeState(true)
+    if (c === "liked") return done({ liked: true, already: true })
+    if (c !== "clicked") return likeFail("reaction control vanished before the click (" + c + ")")
+    // Verify the effect, never trust .click(): the state must leave "no reaction".
+    for (let i = 0; i < 10; i++) {
+      await sleep(800)
+      if (await likeState(false) === "liked") return done({ liked: true, already: false })
+    }
+    return likeFail("clicked like but the reaction state did not flip")
+  }
 } finally {
   session.closeTab(t.targetId, sessionId).catch(() => {})
 }
@@ -590,6 +707,7 @@ let c=require("fs").readFileSync(0,"utf8");
 let verb=process.argv[1], json=process.argv[2], dry=process.argv[3], port=process.argv[4];
 let text=process.argv[5]||"", url=process.argv[6]||null, image=process.argv[7]||null;
 let target=process.argv[8]||"", count=process.argv[9]||"10";
+let likeCid=process.argv[10]||null, check=process.argv[11];
 c=c.replace(/__LI_VERB__/g,()=>JSON.stringify(verb))
     .replace(/__LI_JSON__/g,()=>json)
     .replace(/__LI_DRY_RUN__/g,()=>dry)
@@ -598,8 +716,17 @@ c=c.replace(/__LI_VERB__/g,()=>JSON.stringify(verb))
     .replace(/__LI_URL__/g,()=>JSON.stringify(url))
     .replace(/__LI_IMAGE__/g,()=>JSON.stringify(image))
     .replace(/__LI_TARGET__/g,()=>JSON.stringify(target))
-    .replace(/__LI_COUNT__/g,()=>String(Math.max(1,parseInt(count,10)||10)));
+    .replace(/__LI_COUNT__/g,()=>String(Math.max(1,parseInt(count,10)||10)))
+    .replace(/__LI_LIKE_CID__/g,()=>JSON.stringify(likeCid))
+    .replace(/__LI_CHECK__/g,()=>check);
 process.stdout.write(c);
-' "$verb" "$json_output" "$dry_run" "$port" "$text" "$post_url" "$image" "$target" "$count" <<<"$code")
+' "$verb" "$json_output" "$dry_run" "$port" "$text" "$post_url" "$image" "$target" "$count" "$like_cid" "$check" <<<"$code")
 
-printf '%s' "$final" | browser-harness-js
+if [ "$verb" != "like" ]; then
+  printf '%s' "$final" | browser-harness-js
+  exit
+fi
+# like: a caller retries on a non-zero exit, so an unverified like must fail.
+out=$(printf '%s' "$final" | browser-harness-js)
+printf '%s\n' "$out"
+case "$out" in *'"ok":false'*|NOT_LIKED*|ERROR*) exit 1 ;; esac

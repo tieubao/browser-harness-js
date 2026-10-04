@@ -194,10 +194,10 @@ This repo contains thirteen skills installable via `npx skills add`:
 | **gsearch** | Search the web via Google through CDP — structured results in under 1 second; `follow <url>` opens a result link and reads its page text or JSON |
 | **gnews** | Search Google News through CDP (`tbm=nws`) — structured results (title, url, source, time, snippet) with the publisher's direct URL, no redirect wrapper |
 | **xsearch** | Search X (Twitter) via CDP, structured results (requires an active X login) |
-| **xpost** | Post tweets and replies to X (Twitter) via CDP, text, one image, `--reply-to` permalinks, `--dry-run` preview (requires an active X login) |
+| **xpost** | Post tweets and replies to X (Twitter) via CDP, text, one image, `--reply-to` permalinks, `--dry-run` preview, `like` a post with a read-only `like --check` (requires an active X login) |
 | **fbpost** | Post to the user's own Facebook timeline via CDP, text, one image, `--dry-run` preview (requires an active Facebook login; English and Vietnamese composer labels) |
 | **social-post** | Cross-post the same text to every platform via CDP, orchestrates `xpost`/`fbpost`/`linkedin post` with `--platforms`, `--image`, `--dry-run`, per-platform JSON results |
-| **linkedin** | LinkedIn via CDP, post updates (`post`, `--image`, `--dry-run`), list notifications (`notifs`), comment under posts (`comment`), and read/reply to message threads (`inbox`, `reply`) (requires an active LinkedIn login; English UI) |
+| **linkedin** | LinkedIn via CDP, post updates (`post`, `--image`, `--dry-run`), list notifications (`notifs`), comment under posts (`comment`), like posts or comments (`like`, read-only `like --check`), and read/reply to message threads (`inbox`, `reply`) (requires an active LinkedIn login; English UI) |
 | **rsearch** | Search Reddit posts via CDP — same-origin fetch of reddit's own `/search.json` with the browser's cookies (subreddit/sort/time filters, media URLs), no API key, login optional |
 | **findata** | Free, keyless financial data via CDP — SEC EDGAR statements + Yahoo Finance prices |
 | **ytdl** | Download YouTube videos browser-natively via CDP — records MediaSource output, no `yt-dlp` binary |
@@ -231,13 +231,13 @@ This repo contains thirteen skills installable via `npx skills add`:
 - `skills/xsearch/SKILL.md`, X (Twitter) Search skill instructions
 - `skills/xsearch/scripts/xsearch`, X Search CLI
 - `skills/xpost/SKILL.md`, X (Twitter) posting skill instructions
-- `skills/xpost/scripts/xpost`, X post CLI (compose + reply + one image, a `browser-harness-js` heredoc, no runtime)
+- `skills/xpost/scripts/xpost`, X post CLI (compose + reply + one image + like, a `browser-harness-js` heredoc, no runtime)
 - `skills/fbpost/SKILL.md`, Facebook timeline posting skill instructions
 - `skills/fbpost/scripts/fbpost`, Facebook post CLI (compose + one image, a `browser-harness-js` heredoc, no runtime)
 - `skills/social-post/SKILL.md`, cross-platform posting skill instructions (includes the neko desk voice summary)
 - `skills/social-post/scripts/social-post`, cross-post CLI (orchestrates the per-platform CLIs, no runtime)
 - `skills/linkedin/SKILL.md`, LinkedIn skill instructions
-- `skills/linkedin/scripts/linkedin`, LinkedIn CLI (`post` / `notifs` / `comment` / `inbox` / `reply` verbs, a `browser-harness-js` heredoc, no runtime)
+- `skills/linkedin/scripts/linkedin`, LinkedIn CLI (`post` / `notifs` / `comment` / `inbox` / `reply` / `like` verbs, a `browser-harness-js` heredoc, no runtime)
 - `skills/rsearch/SKILL.md` — Reddit search skill instructions
 - `skills/rsearch/scripts/rsearch` — Reddit search CLI (a `browser-harness-js` heredoc, no runtime; adapted from opencli's reddit adapter)
 - `skills/findata/SKILL.md` — financial-data skill instructions

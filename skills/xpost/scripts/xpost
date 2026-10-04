@@ -212,7 +212,7 @@ try {
     }
     const ev = async (expr) => (await cdp(sessionId, "Runtime.evaluate", { expression: expr, returnByValue: true })).result.value
     const likeState = (doClick) => ev("(" + LIKE_FN.toString() + ")(" + JSON.stringify(LIKE_ID) + "," + doClick + ")")
-    const likeFail = (error) => JSON_OUT ? { ok: false, mode: "like", url: LIKE_URL, error: error } : "NOT_LIKED " + error
+    const likeFail = (reason) => JSON_OUT ? { ok: false, mode: "like", url: LIKE_URL, reason: reason } : "NOT_LIKED " + reason
     // The action bar can mount after the 4.5s settle; poll a little.
     let s = "missing"
     for (let i = 0; i < 10; i++) {

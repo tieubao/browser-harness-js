@@ -143,7 +143,7 @@ like_run unliked flip --json like "$U"
 if [ "$rc" -eq 0 ] && [ "$(clicks)" -eq 1 ] && printf '%s' "$out" | grep -qF '"liked":true,"already":false'; then ok "like: not liked -> one click -> flips -> liked:true"; else bad "like: not liked -> one click -> flips -> liked:true" "rc=$rc out=$out log=$flog"; fi
 
 like_run unliked noflip --json like "$U"
-if [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -qF '"ok":false' && printf '%s' "$out" | grep -qF '"error"'; then ok "like: click without flip -> ok:false, non-zero exit"; else bad "like: click without flip -> ok:false, non-zero exit" "rc=$rc out=$out"; fi
+if [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -qF '"ok":false' && printf '%s' "$out" | grep -qF '"reason"'; then ok "like: click without flip -> ok:false, non-zero exit"; else bad "like: click without flip -> ok:false, non-zero exit" "rc=$rc out=$out"; fi
 
 like_run reply-thread flip --json like "$U"
 if [ "$rc" -eq 0 ] && [ "$(clicks)" -eq 0 ] && printf '%s' "$out" | grep -qF '"already":true'; then ok "like: targets the focus tweet, not the parent above it"; else bad "like: targets the focus tweet, not the parent above it" "rc=$rc out=$out log=$flog"; fi

@@ -671,7 +671,7 @@ try {
     const likeState = (doClick) => ev("(" + LIKE_FN.toString() + ")(" + JSON.stringify(LIKE_CID) + "," + doClick + ")")
     const target = LIKE_CID ? "comment" : "post"
     const done = (o) => JSON_OUT ? Object.assign({ ok: true, verb: "like", url: POST_URL, target: target }, o) : (o.already ? "ALREADY_LIKED " : "LIKED ") + target + " " + POST_URL
-    const likeFail = (error) => JSON_OUT ? { ok: false, verb: "like", url: POST_URL, target: target, error: error } : (CHECK ? "ERROR " : "NOT_LIKED ") + error
+    const likeFail = (reason) => JSON_OUT ? { ok: false, verb: "like", url: POST_URL, target: target, reason: reason } : (CHECK ? "ERROR " : "NOT_LIKED ") + reason
     // The social bar and comments lazy-mount after networkIdle; poll a little.
     let s = "missing"
     for (let i = 0; i < 10; i++) {

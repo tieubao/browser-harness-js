@@ -63,9 +63,9 @@ The like state is read BEFORE any click: a click on an already-liked post would 
 | Liked now | `{ok:true, mode:"like", url, liked:true, already:false}` | `LIKED <url>` |
 | Was already liked (no click) | `{ok:true, mode:"like", url, liked:true, already:true}` | `ALREADY_LIKED <url>` |
 | `--check` (never clicks) | `{ok:true, mode:"like", url, liked:<bool>}` | `LIKE_STATE liked=<bool> <url>` |
-| Failure | `{ok:false, mode:"like", url, error}` | `NOT_LIKED <error>` |
+| Failure | `{ok:false, mode:"like", url, reason}` | `NOT_LIKED <reason>` |
 
-`url` is the normalized `https://x.com/<handle>/status/<id>`. Errors: `logged out`, `no like button on the focus tweet` (bad URL, deleted or protected post), `clicked like but the state did not flip to liked`.
+`url` is the normalized `https://x.com/<handle>/status/<id>`. Reasons: `logged out`, `no like button on the focus tweet` (bad URL, deleted or protected post), `clicked like but the state did not flip to liked`.
 
 ## How it works
 

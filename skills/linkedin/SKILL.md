@@ -54,7 +54,7 @@ linkedin --json <verb> ...                            # JSON output for every ve
 | `reply` | `SENT thread="…"` / `DRY_RUN_OK verb=reply thread="…" …` / `NOT_SENT <reason>` | `{ok, verb:"reply", thread, thread_url}` |
 | `notifs` | one entry per line-group: `[type] actor · time`, text, url | array of `{type, actor, text, url, time}` |
 | `inbox` | `index. name · time [unread]`, snippet | array of `{index, name, snippet, time, unread, url}` |
-| `like` | `LIKED <target> <url>` / `ALREADY_LIKED …` / `LIKE_STATE liked=<bool> …` / `NOT_LIKED <error>` | `{ok:true, verb:"like", url, target, liked:true, already}`; `--check`: `{ok:true, verb:"like", url, target, liked}`; failure `{ok:false, verb:"like", url, target, error}` |
+| `like` | `LIKED <target> <url>` / `ALREADY_LIKED …` / `LIKE_STATE liked=<bool> …` / `NOT_LIKED <reason>` | `{ok:true, verb:"like", url, target, liked:true, already}`; `--check`: `{ok:true, verb:"like", url, target, liked}`; failure `{ok:false, verb:"like", url, target, reason}` |
 
 - `notifs` `type` is parsed from the card text: `posted`, `commented-on`, `reposted`, `mentioned-you`, `tagged-you`, `suggested`, or `other`. `time` is the relative badge (`10m`, `2h`), `null` when absent.
 - `inbox` `url` is always `null`: thread rows are not anchors, the thread URL only resolves by opening the row (which `reply` does; it reports `thread_url`). Select threads by `index` or name substring.

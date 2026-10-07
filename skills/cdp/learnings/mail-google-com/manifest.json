@@ -91,7 +91,7 @@
       "returns": {"type": "object", "description": "{rows: string[]} each row whitespace-collapsed and truncated to 200 chars"}
     },
     "readThread": {
-      "description": "Open a Gmail search, click the first result row, expand the whole thread, and return its messages, attachment names, and outbound links. Same search+background-tab mechanics as searchRows.",
+      "description": "Open a Gmail search, read the first result row's data-legacy-thread-id, navigate the same target to #search/<query>/<threadId> (clicking the row does nothing in a background tab), expand the whole thread, and return its messages, attachment names, outbound links and recipients. Same search+background-tab mechanics as searchRows.",
       "path": "tools/mail-google-com.mjs",
       "callable": "readThread",
       "args": {
@@ -99,7 +99,7 @@
         "query": {"type": "string", "required": true, "description": "Gmail search operators that should resolve to one thread"},
         "maxChars": {"type": "number", "required": false, "description": "per-message truncation, default 1600"}
       },
-      "returns": {"type": "object", "description": "{attachments: string[], links: string[] (non-mail.google.com hrefs), messages: string[]} on a hit; {stop:\"no-results\", hint} when the search returns nothing"}
+      "returns": {"type": "object", "description": "{attachments: string[], links: string[] (non-mail.google.com hrefs), messages: string[], recipients: [{email, name}] (unique [email] attributes)} on a hit; {stop:\"no-results\", hint} when the search returns nothing; {stop:\"no-thread-id\", hint} when the first row has no data-legacy-thread-id"}
     },
     "composeDraft": {
       "description": "Open a prefilled compose (view=cm) with To/Cc/Bcc/Subject/Body and optional attachments. Never sends -- Gmail auto-saves the open compose as a draft. Returns a readback to verify before any further action.",
@@ -126,6 +126,46 @@
         "html": {"type": "string", "required": false, "description": "an HTML fragment (e.g. a signature); exactly one of lines or html"}
       },
       "returns": {"type": "object", "description": "{length: number} body innerText length after the replace; {stop:reason} if the body editable or placeholder was not found"}
+    },
+    "pickSignature": {
+      "description": "In an open compose, open the \"Insert signature\" menu (visible button whose aria-label or data-tooltip contains \"signature\") and real-click the menu item whose text equals name. Picks the LAST visible matching leaf (the first match is often a zero-size copy). Reuses an already-open menu: a second click on the button would close it.",
+      "path": "tools/mail-google-com.mjs",
+      "callable": "pickSignature",
+      "args": {
+        "targetId": {"type": "string", "required": true, "description": "from composeDraft"},
+        "name": {"type": "string", "required": true, "description": "exact menu item text, e.g. \"Dwarves LLC (EN)\" or \"No signature\""}
+      },
+      "returns": {"type": "object", "description": "{signature: innerText of [data-smartmail=gmail_signature] in the body, newlines collapsed, empty string if none} or {stop:\"no-sig-button\"|\"no-signature-item\"}"}
+    },
+    "setBodyAboveSignature": {
+      "description": "Rewrite the compose body but keep Gmail's signature block: remove every body child before the top-level ancestor of [data-smartmail=gmail_signature], insert a placeholder div before it, and replace it via DOM.setOuterHTML (Trusted Types blocks innerHTML). With no signature present it behaves like replaceDraftBody html mode.",
+      "path": "tools/mail-google-com.mjs",
+      "callable": "setBodyAboveSignature",
+      "args": {
+        "targetId": {"type": "string", "required": true, "description": "from composeDraft"},
+        "html": {"type": "string", "required": true, "description": "an HTML fragment for the text above the signature"}
+      },
+      "returns": {"type": "object", "description": "{length: number} body innerText length after the edit; {stop:reason} if the body editable or placeholder was not found"}
+    },
+    "replaceAttachments": {
+      "description": "Real-click every visible \"Remove...\" control (aria-label or data-tooltip starting with Remove) inside a chip whose text matches removeMatch until none remain, then attach files with DOM.setFileInputFiles on input[type=file][name=Filedata]. A leftover chip happened once, so the caller must read the returned list.",
+      "path": "tools/mail-google-com.mjs",
+      "callable": "replaceAttachments",
+      "args": {
+        "targetId": {"type": "string", "required": true, "description": "from composeDraft"},
+        "files": {"type": "array", "required": false, "description": "absolute host file paths to attach after the removal; omit to only remove"},
+        "removeMatch": {"type": "string", "required": false, "description": "regex source tested case-insensitively against the chip text, default \"\\.(pdf|docx|xlsx)\\b\" (every pdf, docx and xlsx chip)"}
+      },
+      "returns": {"type": "object", "description": "{attachments: string[]} names of the visible chips after the run; {stop:\"no-file-input\"} if files were given but the file input was not found"}
+    },
+    "saveDraftNow": {
+      "description": "Force Gmail to save the draft after a DOM-only body edit (which never triggers autosave): focus input[name=subjectbox], caret to the end, Input.insertText a space, Backspace keyDown/keyUp, wait 6s.",
+      "path": "tools/mail-google-com.mjs",
+      "callable": "saveDraftNow",
+      "args": {
+        "targetId": {"type": "string", "required": true, "description": "from composeDraft"}
+      },
+      "returns": {"type": "object", "description": "{subject: string} the subject box value after the save; {stop:\"no-subject-box\"} if the compose subject field is missing"}
     }
   }
 }

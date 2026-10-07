@@ -181,13 +181,19 @@ export async function readThread(ctx, { authuser = 0, query, maxChars = 1600 } =
     await ctx.session.use(targetId);
     await wait(9000);
 
-    const rowRect = JSON.parse((await evaluate(ctx, `JSON.stringify((() => {
+    // Clicking the first row does nothing in a background tab, so read the thread id off the row
+    // and navigate the same target straight to the thread URL instead.
+    const threadId = await evaluate(ctx, `(() => {
       const row = document.querySelector('tr.zA');
-      return row ? row.getBoundingClientRect() : null;
-    })())`)) || "null");
-    if (!rowRect) return { stop: "no-results", hint: `no rows for query ${query}` };
-    await clickRect(ctx, rowRect);
-    await wait(3000);
+      if (!row) return null;
+      const el = row.matches('[data-legacy-thread-id]') ? row : row.querySelector('[data-legacy-thread-id]');
+      return el ? el.getAttribute('data-legacy-thread-id') : '';
+    })()`);
+    if (threadId === null || threadId === undefined) return { stop: "no-results", hint: `no rows for query ${query}` };
+    if (!threadId) return { stop: "no-thread-id", hint: "first row has no data-legacy-thread-id descendant" };
+    await ctx.session.Page.enable();
+    await ctx.session.Page.navigate({ url: `${url}/${encodeURIComponent(threadId)}` });
+    await wait(4000);
 
     const expandRect = JSON.parse((await evaluate(ctx, `JSON.stringify((() => {
       const btn = document.querySelector('[aria-label="Expand all"]');
@@ -206,7 +212,13 @@ export async function readThread(ctx, { authuser = 0, query, maxChars = 1600 } =
       const links = [...new Set([...document.querySelectorAll('div.a3s a')]
         .map((a) => a.href)
         .filter((h) => h && !h.includes('mail.google.com')))];
-      return { attachments: [...names], links, messages };
+      const seen = new Map();
+      document.querySelectorAll('[email]').forEach((el) => {
+        const email = el.getAttribute('email');
+        if (email && !seen.has(email)) seen.set(email, el.getAttribute('name') || '');
+      });
+      const recipients = [...seen].map(([email, name]) => ({ email, name }));
+      return { attachments: [...names], links, messages, recipients };
     })())`)) || "{}");
 
     return data;
@@ -307,6 +319,185 @@ export async function replaceDraftBody(ctx, { targetId, lines, html } = {}) {
     return body.innerText.length;
   })()`);
   return { length: Number(length) || 0 };
+}
+
+const SIGNATURE_SELECTOR = '[data-smartmail=gmail_signature]';
+
+// Open the compose "Insert signature" menu and real-click the item whose text equals name. The
+// DOM holds zero-size copies of the menu items, so the visible match is the LAST one. A second
+// click on the toolbar button closes an open menu, so an already-open menu is reused.
+export async function pickSignature(ctx, { targetId, name } = {}) {
+  if (!targetId || !name) throw new Error("pickSignature: targetId and name are required");
+  await ctx.session.use(targetId);
+
+  const menuOpenJs = `[...document.querySelectorAll('[role=menu]')].some((m) => {
+    const r = m.getBoundingClientRect();
+    return r.width > 0 && r.height > 0 && /manage signatures/i.test(m.innerText || '');
+  })`;
+
+  if (!(await evaluate(ctx, menuOpenJs))) {
+    const btnRect = JSON.parse((await evaluate(ctx, `JSON.stringify((() => {
+      const hits = [...document.querySelectorAll('[aria-label],[data-tooltip]')].filter((e) => {
+        const label = (e.getAttribute('aria-label') || '') + ' ' + (e.getAttribute('data-tooltip') || '');
+        const r = e.getBoundingClientRect();
+        return /signature/i.test(label) && r.width > 0 && r.height > 0;
+      });
+      const btn = hits.find((e) => e.getAttribute('role') === 'button') || hits[0];
+      return btn ? btn.getBoundingClientRect() : null;
+    })())`)) || "null");
+    if (!btnRect) return { stop: "no-sig-button" };
+    await clickRect(ctx, btnRect);
+    await pollUntil(ctx, menuOpenJs, 3000, 200);
+  }
+
+  const itemRect = JSON.parse((await evaluate(ctx, `JSON.stringify((() => {
+    const want = ${JSON.stringify(name)};
+    const hits = [...document.querySelectorAll('[role=menu] *')].filter((e) => {
+      const r = e.getBoundingClientRect();
+      return e.children.length === 0 && (e.textContent || '').trim() === want && r.width > 0 && r.height > 0;
+    });
+    const hit = hits[hits.length - 1];
+    return hit ? hit.getBoundingClientRect() : null;
+  })())`)) || "null");
+  if (!itemRect) return { stop: "no-signature-item" };
+  await clickRect(ctx, itemRect);
+  await wait(1500);
+
+  const signature = await evaluate(ctx, `(() => {
+    const body = document.querySelector(${JSON.stringify(BODY_SELECTOR)});
+    const sig = body && body.querySelector(${JSON.stringify(SIGNATURE_SELECTOR)});
+    return sig ? (sig.innerText || sig.textContent || '').replace(/\\s*\\n\\s*/g, ' ').trim() : '';
+  })()`);
+  return { signature: String(signature || "") };
+}
+
+// Rewrite the body above Gmail's signature block without touching the block itself. Everything
+// before the signature's top-level ancestor is removed, a placeholder takes its place, and
+// DOM.setOuterHTML fills it (Trusted Types blocks innerHTML, see replaceDraftBody). With no
+// signature in the body this is the same as replaceDraftBody html mode.
+export async function setBodyAboveSignature(ctx, { targetId, html } = {}) {
+  if (!targetId || !html) throw new Error("setBodyAboveSignature: targetId and html are required");
+  await ctx.session.use(targetId);
+
+  const placeholderId = "bh-above-sig-" + Date.now();
+  const state = await evaluate(ctx, `(() => {
+    const body = document.querySelector(${JSON.stringify(BODY_SELECTOR)});
+    if (!body) return "no-body";
+    const sig = body.querySelector(${JSON.stringify(SIGNATURE_SELECTOR)});
+    if (!sig) return "no-signature";
+    let top = sig;
+    while (top.parentElement && top.parentElement !== body) top = top.parentElement;
+    while (body.firstChild && body.firstChild !== top) body.removeChild(body.firstChild);
+    const ph = document.createElement("div");
+    ph.id = ${JSON.stringify(placeholderId)};
+    body.insertBefore(ph, top);
+    return "placed";
+  })()`);
+  if (state === "no-body") return { stop: "no-body-editable" };
+  if (state === "no-signature") return replaceDraftBody(ctx, { targetId, html });
+
+  await ctx.session.DOM.enable();
+  const { root } = await ctx.session.DOM.getDocument({ depth: -1 });
+  const { nodeId } = await ctx.session.DOM.querySelector({ nodeId: root.nodeId, selector: `#${placeholderId}` });
+  if (!nodeId) return { stop: "placeholder-not-found" };
+  await ctx.session.DOM.setOuterHTML({ nodeId, outerHTML: html });
+
+  const length = await evaluate(ctx, `(() => {
+    const body = document.querySelector(${JSON.stringify(BODY_SELECTOR)});
+    if (!body) return 0;
+    body.dispatchEvent(new Event("input", { bubbles: true }));
+    return body.innerText.length;
+  })()`);
+  return { length: Number(length) || 0 };
+}
+
+// Visible attachment chip names only (zero-size copies skipped), same two sources as
+// ATTACHMENT_NAMES_JS.
+const VISIBLE_ATTACHMENT_NAMES_JS = `
+  const names = new Set();
+  const shown = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+  document.querySelectorAll('[download_url]').forEach((el) => {
+    if (!shown(el)) return;
+    const seg = (el.getAttribute('download_url') || '').split(':');
+    if (seg[1]) { try { names.add(decodeURIComponent(seg[1])); } catch (e) { names.add(seg[1]); } }
+  });
+  document.querySelectorAll('*').forEach((el) => {
+    if (el.children.length === 0 && shown(el)) {
+      const t = (el.textContent || '').trim();
+      if (/\\.[A-Za-z0-9]{2,5}$/.test(t) && t.length < 100) names.add(t);
+    }
+  });
+`;
+
+// Remove every matching attachment chip with real clicks, then attach files. A leftover chip
+// happened once, so the caller must read the returned list instead of assuming it is clean.
+export async function replaceAttachments(ctx, { targetId, files = [], removeMatch = "\\.(pdf|docx|xlsx)\\b" } = {}) {
+  if (!targetId) throw new Error("replaceAttachments: targetId is required");
+  await ctx.session.use(targetId);
+
+  // A remove control belongs to the nearest ancestor whose text matches removeMatch; the climb
+  // stops once an ancestor holds more than one remove control (it is the attachment tray, not a chip).
+  const findRemoveRect = `JSON.stringify((() => {
+    const re = new RegExp(${JSON.stringify(removeMatch)}, 'i');
+    const shown = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+    const isRemove = (el) => /^remove/i.test((el.getAttribute('aria-label') || el.getAttribute('data-tooltip') || '').trim());
+    const controls = [...document.querySelectorAll('[aria-label],[data-tooltip]')].filter((el) => isRemove(el) && shown(el));
+    for (const ctl of controls) {
+      let node = ctl;
+      for (let depth = 0; depth < 6 && node; depth++, node = node.parentElement) {
+        if (node !== ctl && controls.filter((c) => node.contains(c)).length > 1) break;
+        const text = (node.getAttribute('aria-label') || '') + ' ' + (node.getAttribute('data-tooltip') || '') + ' ' + (node.textContent || '');
+        if (re.test(text)) return ctl.getBoundingClientRect();
+      }
+    }
+    return null;
+  })())`;
+
+  for (let n = 0; n < 30; n++) {
+    const rect = JSON.parse((await evaluate(ctx, findRemoveRect)) || "null");
+    if (!rect) break;
+    await clickRect(ctx, rect);
+    await wait(800);
+  }
+
+  if (files.length) {
+    await ctx.session.DOM.enable();
+    const { root } = await ctx.session.DOM.getDocument({ depth: -1, pierce: true });
+    const { nodeId } = await ctx.session.DOM.querySelector({ nodeId: root.nodeId, selector: "input[type=file][name=Filedata]" });
+    if (!nodeId) return { stop: "no-file-input" };
+    await ctx.session.DOM.setFileInputFiles({ nodeId, files });
+    await wait(8000);
+  }
+
+  const attachments = JSON.parse((await evaluate(ctx, `JSON.stringify((() => {
+    ${VISIBLE_ATTACHMENT_NAMES_JS}
+    return [...names];
+  })())`)) || "[]");
+  return { attachments };
+}
+
+// A DOM-only body edit never triggers Gmail's autosave. A real keystroke in the subject box
+// does: type a space, delete it, wait out the save debounce.
+export async function saveDraftNow(ctx, { targetId } = {}) {
+  if (!targetId) throw new Error("saveDraftNow: targetId is required");
+  await ctx.session.use(targetId);
+  const focused = await evaluate(ctx, `(() => {
+    const box = document.querySelector('input[name=subjectbox]');
+    if (!box) return false;
+    box.focus();
+    box.setSelectionRange(box.value.length, box.value.length);
+    return true;
+  })()`);
+  if (!focused) return { stop: "no-subject-box" };
+
+  await ctx.session.Input.insertText({ text: " " });
+  const key = { key: "Backspace", code: "Backspace", windowsVirtualKeyCode: 8 };
+  await ctx.session.Input.dispatchKeyEvent({ type: "keyDown", ...key });
+  await ctx.session.Input.dispatchKeyEvent({ type: "keyUp", ...key });
+  await wait(6000);
+
+  const subject = await evaluate(ctx, "(document.querySelector('input[name=subjectbox]') || {}).value || ''");
+  return { subject: String(subject || "") };
 }
 
 export async function addForwardingAddress(ctx, { authuser = 0, address } = {}) {

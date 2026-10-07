@@ -25,6 +25,18 @@ const draft = await learnings("mail-google-com", "composeDraft", {
 // read back draft.{from, recipients, subject, attachments, body} before any further action
 await learnings("mail-google-com", "replaceDraftBody", { targetId: draft.targetId, lines: ["Line one", "Line two"] })
 await learnings("mail-google-com", "replaceDraftBody", { targetId: draft.targetId, html: "<div>-- <br>Signature</div>" })
+
+// Draft polish: signature, body above it, attachments, forced save
+await learnings("mail-google-com", "pickSignature", { targetId: draft.targetId, name: "Dwarves LLC (EN)" })
+// -> { signature: "..." } or { stop: "no-sig-button" | "no-signature-item" }
+await learnings("mail-google-com", "setBodyAboveSignature", { targetId: draft.targetId, html: "<div>Hi,<br><br>Body text</div>" })
+// -> { length }; the signature block stays untouched
+await learnings("mail-google-com", "replaceAttachments", {
+  targetId: draft.targetId, files: ["/absolute/path/to/new.pdf"], removeMatch: "\\.(pdf|docx|xlsx)\\b",
+})
+// -> { attachments: [...] }: READ it, a leftover chip happened once
+await learnings("mail-google-com", "saveDraftNow", { targetId: draft.targetId })
+// -> { subject }
 ```
 
 ## Limits (learned 2026-09-27)
@@ -87,6 +99,38 @@ await learnings("mail-google-com", "replaceDraftBody", { targetId: draft.targetI
   newlines runs but prints nothing back to the caller -- wrap any multi-step read/compose work in
   one node-tool call (as above) instead of a multi-statement inline snippet.
 
+## Limits (learned 2026-10-07)
+
+- **Signature menu items have zero-size twins.** The "Insert signature" menu is a `[role=menu]`
+  whose `innerText` reads like `Manage signatures | No signature | Dwarves LLC (EN) | Dwarves
+  Vietnam (VI)`. The DOM holds more than one leaf with the same text and the first is often a
+  zero-size copy, so `pickSignature` real-clicks the LAST visible leaf whose trimmed
+  `textContent` equals the name. It also skips the button click when the menu is already open,
+  because a second click closes it.
+- **Keep Gmail's signature block, replace only what is above it.** `setBodyAboveSignature` finds
+  the top-level body ancestor of `[data-smartmail=gmail_signature]`, removes every body child
+  before it, drops in a placeholder div and swaps that via `DOM.setOuterHTML` (innerHTML is
+  blocked by Trusted Types, see the 2026-09-28 limit). No signature in the body: it falls back
+  to `replaceDraftBody` html mode.
+- **A leftover attachment chip happened once.** `replaceAttachments` real-clicks each visible
+  `Remove...` control (aria-label or data-tooltip) whose chip text matches `removeMatch` until
+  none remain, then sets the files on `input[type=file][name=Filedata]`. Always read the
+  returned `attachments` list and compare it to what you expect; do not assume it is clean.
+  `removeMatch` is a regex source string (default every `.pdf`, `.docx`, `.xlsx` chip).
+- **A DOM-only body edit is not autosaved.** Gmail saves on real input, not on DOM mutation or a
+  synthetic `input` event. `saveDraftNow` focuses `input[name=subjectbox]`, puts the caret at the
+  end, `Input.insertText` a space, sends a Backspace keyDown/keyUp, then waits 6s. Run it after
+  `replaceDraftBody`, `setBodyAboveSignature` or `replaceAttachments` before trusting the draft
+  is stored.
+- **`readThread` returned no messages twice: a row click in a background tab does not open the
+  thread.** It now reads `data-legacy-thread-id` from the first `tr.zA` row's descendant and
+  navigates the same target to `#search/<encoded query>/<threadId>`, then reads as before. The
+  result also carries `recipients`: the unique `[email]` attribute values with their `name`
+  attribute, as `[{ email, name }]`. A first row with no thread id returns
+  `{ stop: "no-thread-id" }`.
+- **Not run live yet.** These five changes were written offline and checked with `node --check`
+  and an export listing only; the first real use is their proof.
+
 ## Provenance
 
 2026-09-27, live session sending as a Google Group send-as alias. Driven by hand through
@@ -100,6 +144,10 @@ but have not yet run end to end as tools; the first real use is their proof.
 fourteen times distilled `searchRows`, `readThread`, `composeDraft`, and `replaceDraftBody` here
 from that session's working recipe. Not yet run end to end as tools; the first real use is their
 proof.
+
+2026-10-07, a session that drove Gmail compose by hand about eight times without these verbs
+distilled `pickSignature`, `setBodyAboveSignature`, `replaceAttachments`, `saveDraftNow` and the
+`readThread` fix. Offline code change, no browser touched.
 
 ## Forwarding and filters
 

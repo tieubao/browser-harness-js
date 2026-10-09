@@ -686,3 +686,95 @@ async function pollUntil(ctx, expr, timeoutMs, intervalMs) {
   }
   return false;
 }
+
+const SIG_EDITOR = '[contenteditable=true][aria-label=Signature]';
+
+// Open the inbox first (a direct cold load of the settings hash often renders nothing), then the
+// general settings, and poll for the signature editor.
+async function openSignatureSettings(ctx, authuser) {
+  await ctx.session.Page.navigate({ url: `https://mail.google.com/mail/u/${authuser}/` });
+  await wait(6000);
+  await ctx.session.Page.navigate({ url: `https://mail.google.com/mail/u/${authuser}/#settings/general` });
+  return pollUntil(ctx, `!!document.querySelector('${SIG_EDITOR}')`, 15000, 500);
+}
+
+async function clickByText(ctx, text, scope) {
+  const rect = JSON.parse((await evaluate(ctx, `JSON.stringify((() => {
+    const want = ${JSON.stringify(text)};
+    const el = [...document.querySelectorAll(${JSON.stringify(scope)})].find((e) => e.children.length === 0 && (e.innerText || '').trim() === want
+      && !e.closest('select,[contenteditable]') && e.getBoundingClientRect().width > 0);
+    if (el) el.scrollIntoView({ block: 'center' }); // settings rows sit far below the fold; a real click outside the viewport hits nothing
+    return el ? el.getBoundingClientRect() : null;
+  })())`)) || "null");
+  if (!rect) return false;
+  await clickRect(ctx, rect);
+  return true;
+}
+
+export async function setSignatureHtml(ctx, { authuser = 0, name, htmlFile, create = false } = {}) {
+  if (!name || !htmlFile) throw new Error("setSignatureHtml: name and htmlFile are required");
+  const { readFileSync } = await import("node:fs");
+  const { execFileSync } = await import("node:child_process");
+  const hex = readFileSync(htmlFile).toString("hex");
+
+  const { targetId } = await ctx.session.Target.createTarget({ url: "about:blank", background: false });
+  await ctx.session.use(targetId);
+  await ctx.session.Page.enable();
+  if (!(await openSignatureSettings(ctx, authuser))) return { targetId, stop: "settings-not-rendered" };
+  await wait(1000);
+
+  if (!(await clickByText(ctx, name, "span,div,td"))) {
+    if (!create) return { targetId, stop: "signature-not-found" };
+    if (!(await clickByText(ctx, "Create new", "span,div,button,[role=button]"))) return { targetId, stop: "create-new-not-found" };
+    await wait(800);
+    const inputRect = JSON.parse((await evaluate(ctx, `JSON.stringify((() => {
+      const dlg = [...document.querySelectorAll('[role=dialog]')].pop();
+      const input = dlg && dlg.querySelector('input[type=text]');
+      return input ? input.getBoundingClientRect() : null;
+    })())`)) || "null");
+    if (!inputRect) return { targetId, stop: "dialog-input-not-found" };
+    await clickRect(ctx, { x: inputRect.x, y: inputRect.y, width: inputRect.width, height: inputRect.height });
+    await ctx.session.Input.insertText({ text: name });
+    await wait(300);
+    const createRect = JSON.parse((await evaluate(ctx, `JSON.stringify((() => {
+      const btn = [...document.querySelectorAll('[role=dialog] button,[role=dialog] [role=button]')].find((b) => (b.innerText || '').trim() === 'Create');
+      return btn ? btn.getBoundingClientRect() : null;
+    })())`)) || "null");
+    if (!createRect) return { targetId, stop: "create-button-not-found" };
+    await clickRect(ctx, createRect);
+    await wait(1500);
+  }
+  await wait(800);
+
+  // Trusted Types blocks innerHTML/insertHTML, so paste real HTML from the clipboard.
+  execFileSync("osascript", ["-e", `set the clipboard to {«class HTML»:«data HTML${hex}», string:"sig"}`]);
+  if (!(await evaluate(ctx, `(() => { const e = document.querySelector('${SIG_EDITOR}'); if (!e) return false; e.focus(); return true; })()`))) {
+    return { targetId, stop: "editor-not-found" };
+  }
+  for (const command of ["selectAll", "paste"]) {
+    for (const type of ["keyDown", "keyUp"]) {
+      await ctx.session.Input.dispatchKeyEvent({ type, modifiers: 4, commands: [command] });
+    }
+    await wait(800);
+  }
+
+  const saveRect = JSON.parse((await evaluate(ctx, `JSON.stringify((() => {
+    const btn = [...document.querySelectorAll('button')].find((b) => (b.innerText || '').trim() === 'Save Changes');
+    if (btn) btn.scrollIntoView({ block: 'center' });
+    return btn ? btn.getBoundingClientRect() : null;
+  })())`)) || "null");
+  if (!saveRect) return { targetId, stop: "save-button-not-found" };
+  await clickRect(ctx, saveRect);
+  await wait(5000);
+
+  if (!(await openSignatureSettings(ctx, authuser))) return { targetId, stop: "settings-not-rendered-after-save" };
+  await wait(1000);
+  if (!(await clickByText(ctx, name, "span,div,td"))) return { targetId, stop: "signature-not-found-after-save" };
+  await wait(800);
+  const readback = JSON.parse((await evaluate(ctx, `JSON.stringify((() => {
+    const e = document.querySelector('${SIG_EDITOR}');
+    const imgs = [...e.querySelectorAll('img')];
+    return { text: (e.innerText || '').slice(0, 300), imgs: imgs.length, imgsLoaded: imgs.filter((i) => i.naturalWidth > 0).length, links: e.querySelectorAll('a').length };
+  })())`)) || "{}");
+  return { targetId, name, ...readback };
+}

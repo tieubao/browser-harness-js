@@ -35,6 +35,18 @@
       },
       "returns": {"type": "object", "description": "{targetId, dryRun:true, checkedOnes, listboxText} on a dry run; {targetId, created:true, checkedOnes, listboxText} on a real create; {stop:reason} at the step that failed"}
     },
+    "setSignatureHtml": {
+      "description": "Set a Gmail signature's body from an HTML file. Opens the inbox, then #settings/general (a cold settings load often renders nothing), polls for the Signature editor, real-clicks the signature named name (create:true makes it via Create new), puts the HTML on the macOS clipboard (Trusted Types blocks innerHTML/insertHTML) and pastes it with selectAll + paste key commands, clicks Save Changes, reloads and reads back the editor.",
+      "path": "tools/mail-google-com.mjs",
+      "callable": "setSignatureHtml",
+      "args": {
+        "authuser": {"type": "number", "required": false, "description": "default 0"},
+        "name": {"type": "string", "required": true, "description": "the signature's display name in Gmail's list"},
+        "htmlFile": {"type": "string", "required": true, "description": "absolute path to the HTML file to paste"},
+        "create": {"type": "boolean", "required": false, "description": "default false: stop with signature-not-found when the name is missing; true: create it first"}
+      },
+      "returns": {"type": "object", "description": "{targetId, name, text (editor innerText, first 300 chars), imgs, imgsLoaded (naturalWidth>0), links}; {stop:reason} at the step that failed"}
+    },
     "findAccountSlot": {
       "description": "Which signed-in account slot (authuser index) owns an email address. Navigates /mail/u/<n>/ for n=0..maxSlots-1 and matches document.title against the address.",
       "path": "tools/mail-google-com.mjs",

@@ -212,3 +212,10 @@ with exactly the "Forward it to:" checkbox ticked and the listbox reading `finan
 `addForwardingAddress` and `confirmForwarding` encode the recipe (the inline-textbox landmine and
 the off-screen forwarding checkbox were both confirmed live by hand during discovery) but have not
 yet run end to end as tools -- the first real use is their proof.
+
+## Signature body from HTML (`setSignatureHtml`)
+
+- **Paste, don't inject.** Gmail enforces Trusted Types, so `innerHTML` and `execCommand('insertHTML')` throw in the signature editor. Put the HTML on the macOS clipboard (`osascript` with `«class HTML»` hex data), focus `[contenteditable=true][aria-label=Signature]`, then send `Input.dispatchKeyEvent` with `modifiers:4` and `commands:['selectAll']`, then `['paste']`.
+- **Warm the settings page.** Load the inbox first, then `#settings/general`; a cold load of the settings hash often renders nothing. Poll for the editor up to 15 s.
+- **Select the signature by its list text:** the visible leaf whose text equals the name, outside any `<select>` or contenteditable. Then click `Save Changes` and wait about 5 s.
+- **Verify by reload.** The tool reloads and returns the editor text, `<img>` count, loaded-image count (`naturalWidth>0`) and link count. It never returns clipboard contents.

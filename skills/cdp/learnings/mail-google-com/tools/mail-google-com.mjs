@@ -44,8 +44,9 @@ export async function findAccountSlot(ctx, { email, maxSlots = 4 } = {}) {
 
 export async function prepareDraftAs(ctx, { authuser = 0, to, subject, body, alias } = {}) {
   if (!to || !subject || !body || !alias) throw new Error("prepareDraftAs: to, subject, body, alias are all required");
+  // No body= here: a prefilled body makes Gmail skip the signature, even after the alias switch.
   const url = `https://mail.google.com/mail/u/${authuser}/?view=cm&fs=1` +
-    `&to=${encodeURIComponent(to)}&su=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+    `&to=${encodeURIComponent(to)}&su=${encodeURIComponent(subject)}`;
   const { targetId } = await ctx.session.Target.createTarget({ url, background: false });
   await ctx.session.use(targetId);
   await wait(6000); // Gmail's compose JS is heavy; a shorter wait sometimes catches an empty from selector.
@@ -78,29 +79,43 @@ export async function prepareDraftAs(ctx, { authuser = 0, to, subject, body, ali
     });
     return cand ? cand.getBoundingClientRect() : null;
   })())`)) || "null");
-  if (!fromLineRect) return { targetId, stop: "from-line-not-found" };
+  if (fromLineRect) {
+    // Step B: real-click the From line to open its menu.
+    await clickRect(ctx, fromLineRect);
+    await wait(600);
 
-  // Step B: real-click the From line to open its menu.
-  await clickRect(ctx, fromLineRect);
-  await wait(600);
-
-  // Step C: pick the alias option. Filter to non-zero-width options only (closed/hidden
-  // menu copies of the same items exist in the DOM with width 0).
-  const optionRect = JSON.parse((await evaluate(ctx, `JSON.stringify((() => {
-    const alias = ${JSON.stringify(alias)};
-    const opts = [...document.querySelectorAll('[role=menuitem],[role=option]')]
-      .filter((el) => (el.textContent || '').includes(alias) && el.getBoundingClientRect().width > 0);
-    return opts[0] ? opts[0].getBoundingClientRect() : null;
-  })())`)) || "null");
-  if (!optionRect) return { targetId, stop: "alias-option-not-found" };
-  await clickRect(ctx, optionRect);
+    // Step C: pick the alias option. Filter to non-zero-width options only (closed/hidden
+    // menu copies of the same items exist in the DOM with width 0).
+    const optionRect = JSON.parse((await evaluate(ctx, `JSON.stringify((() => {
+      const alias = ${JSON.stringify(alias)};
+      const opts = [...document.querySelectorAll('[role=menuitem],[role=option]')]
+        .filter((el) => (el.textContent || '').includes(alias) && el.getBoundingClientRect().width > 0);
+      return opts[0] ? opts[0].getBoundingClientRect() : null;
+    })())`)) || "null");
+    if (!optionRect) return { targetId, stop: "alias-option-not-found" };
+    await clickRect(ctx, optionRect);
+  } else {
+    // The header did not expand (seen 2026-10-09 on a send-as alias). A synthetic
+    // mousedown/mouseup/click on the hidden option still switched From; the check below guards it.
+    await evaluate(ctx, `(() => {
+      const o = [...document.querySelectorAll('[role=menuitem],[role=option]')].find((e) => (e.textContent || '').includes(${JSON.stringify(alias)}));
+      if (o) ["mousedown", "mouseup", "click"].forEach((t) => o.dispatchEvent(new MouseEvent(t, { bubbles: true })));
+    })()`);
+  }
   await wait(600);
 
   const fromValues = JSON.parse((await evaluate(ctx, "JSON.stringify([...document.querySelectorAll('input[name=from]')].map((x) => x.value))")) || "[]");
   const subjectValue = String((await evaluate(ctx, "(document.querySelector('input[name=subjectbox]') || {}).value || ''")) || "");
   if (!fromValues.some((v) => v.includes(alias))) return { targetId, stop: "alias-not-selected", from: fromValues };
 
-  return { targetId, to, subject: subjectValue || subject, from: fromValues };
+  // The alias switch swaps in that alias's default signature; write the body above it.
+  await wait(1500);
+  const esc = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const html = `<div>${body.split("\n").map((l) => (l ? esc(l) : "<br>")).join("</div><div>")}</div>`;
+  await setBodyAboveSignature(ctx, { targetId, html });
+  const signature = String((await evaluate(ctx, `((document.querySelector(${JSON.stringify(SIGNATURE_SELECTOR)}) || {}).innerText || '').replace(/\\s+/g, ' ').trim()`)) || "");
+
+  return { targetId, to, subject: subjectValue || subject, from: fromValues, signature };
 }
 
 export async function sendPreparedDraft(ctx, { targetId, confirm } = {}) {

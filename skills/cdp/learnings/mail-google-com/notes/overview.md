@@ -131,6 +131,14 @@ await learnings("mail-google-com", "saveDraftNow", { targetId: draft.targetId })
 - **Not run live yet.** These five changes were written offline and checked with `node --check`
   and an export listing only; the first real use is their proof.
 
+## Limits (learned 2026-10-09)
+
+- **A prefilled `body=` drops the signature.** A compose opened with `body=` in the URL gets no signature, even after the From switch. Opened with to and su only, the alias switch swaps in that alias's default signature. `prepareDraftAs` now omits `body=` and writes the body through `setBodyAboveSignature`. It returns `signature` in the readback: an empty string means the draft has none, so check it before Send.
+- **`from=` in the compose URL is ignored.** The compose always opens on the account's primary address.
+- **Never infer "this alias has no signature" from a draft.** Read Settings > General > Signature defaults instead.
+- **The header did not expand on a send-as alias.** The real click on the To row left the From line at width 0, so `prepareDraftAs` stopped at `from-line-not-found`. A synthetic `mousedown`/`mouseup`/`click` on the hidden `[role=option]` switched From three times out of three that day. It is now the fallback, and the `input[name=from]` check still guards it.
+- **Proven live end to end** for the first time: `han@console.so` alias, signature "Console Labs" present, body escaped above it. No send.
+
 ## Provenance
 
 2026-09-27, live session sending as a Google Group send-as alias. Driven by hand through

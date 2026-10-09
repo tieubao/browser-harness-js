@@ -58,7 +58,7 @@
       "returns": {"type": "object", "description": "{slot, title} on match; {stop:\"not-found\", hint} otherwise"}
     },
     "prepareDraftAs": {
-      "description": "Open a prefilled compose (view=cm) in the given account slot and switch the sender to a send-as alias (e.g. a Google Group address). Never sends. The From selector is hidden on this view: real Input.dispatchMouseEvent clicks (not element.click()) on the To row, then the revealed From line, then the alias option are required to change it. Returns a readback of To/Subject/From for the caller to verify before calling sendPreparedDraft.",
+      "description": "Open a prefilled compose (view=cm) in the given account slot and switch the sender to a send-as alias (e.g. a Google Group address). Never sends. The From selector is hidden on this view: real Input.dispatchMouseEvent clicks (not element.click()) on the To row, then the revealed From line, then the alias option are required to change it. The body is written above the alias's default signature after the switch (a body= URL param makes Gmail drop the signature). If the header does not expand, a synthetic click on the hidden alias option is the fallback. Returns a readback of To/Subject/From/signature for the caller to verify before calling sendPreparedDraft.",
       "path": "tools/mail-google-com.mjs",
       "callable": "prepareDraftAs",
       "args": {
@@ -68,7 +68,7 @@
         "body": {"type": "string", "required": true},
         "alias": {"type": "string", "required": true, "description": "substring identifying the send-as option, e.g. the alias address or \"Team Dwarves\""}
       },
-      "returns": {"type": "object", "description": "{targetId, to, subject, from:[...values]} on success; {stop:reason} at the step that failed"}
+      "returns": {"type": "object", "description": "{targetId, to, subject, from:[...values], signature: text of the signature block, empty if none} on success; {stop:reason} at the step that failed"}
     },
     "sendPreparedDraft": {
       "description": "WRITE, irreversible. Click Send on a draft opened by prepareDraftAs. Refuses unless confirm:true: this is the point past which the message is outward and cannot be recalled, so the caller must have already read back prepareDraftAs's {to, subject, from} and gotten the human's explicit go-ahead.",

@@ -2,7 +2,7 @@
   "id": "dash-cloudflare-com",
   "name": "Cloudflare dashboard (cookie-authenticated API)",
   "domains": ["dash.cloudflare.com"],
-  "notes": ["notes/overview.md"],
+  "notes": ["notes/overview.md", "notes/turnstile-and-ai-gateway.md", "notes/account-access.md"],
   "nodeTools": {
     "whoami": {
       "description": "Signed-in user's email, read from the dashboard profile page. Returns {stop:\"sudo\"|\"turnstile\"|\"no-email-found\"} instead of clicking through a blocking page.",
@@ -42,6 +42,42 @@
         "value": {"type": "string", "required": true}
       },
       "returns": {"type": "object", "description": "{key, value} on success; {error} or {stop} otherwise"}
+    },
+    "addTurnstileWidget": {
+      "description": "Create a Turnstile widget through the dashboard form (in-page POST to /api/v4 returns 403). Fills name, adds each hostname via a real mouse click on the custom-hostname option (verified by the \"You have configured N out of 10\" counter), keeps mode Managed unless asked, clicks Create. Returns the public site key read back from the widget list; never reads or returns the secret.",
+      "path": "tools/forms.mjs",
+      "callable": "addTurnstileWidget",
+      "args": {
+        "accountId": {"type": "string", "required": true},
+        "name": {"type": "string", "required": true},
+        "hostnames": {"type": "array", "required": true, "description": "hostnames to add, e.g. [\"app.example.com\"]"},
+        "mode": {"type": "string", "required": false, "description": "managed (default) | non-interactive | invisible"}
+      },
+      "returns": {"type": "object", "description": "{name, sitekey, mode, domains, hostnames}; {stop} or {error} otherwise"}
+    },
+    "addGatewayProviderKey": {
+      "description": "Add a provider API key to an AI Gateway via the Provider Keys tab. The key is read from the env var NAMED by secretEnv inside the REPL process and typed with Input.insertText; it is never returned or logged. First key auto-creates and binds a Secrets Store. A \"saved but couldn't verify\" dialog is closed via Close anyway. Verified by GET provider_configs (aliases only).",
+      "path": "tools/forms.mjs",
+      "callable": "addGatewayProviderKey",
+      "args": {
+        "accountId": {"type": "string", "required": true},
+        "gateway": {"type": "string", "required": true, "description": "gateway id as it appears in the dashboard URL"},
+        "provider": {"type": "string", "required": true, "description": "provider row label, e.g. OpenAI"},
+        "alias": {"type": "string", "required": true},
+        "secretEnv": {"type": "string", "required": true, "description": "NAME of an env var already set in the REPL process (process.env[secretEnv]); not the key itself"}
+      },
+      "returns": {"type": "object", "description": "{added, verifiedByProvider, aliases:[{provider, alias}]}; {stop:\"secret-env-missing\"} or {error} otherwise"}
+    },
+    "createGatewayToken": {
+      "description": "Mint the AI Gateway Run token from the gateway Settings side panel (presets Account / AI Gateway / Run). The one-time token is returned to the caller only, same convention as mintToken; capture it with VAR=$(...), never echo it.",
+      "path": "tools/forms.mjs",
+      "callable": "createGatewayToken",
+      "args": {
+        "accountId": {"type": "string", "required": true},
+        "gateway": {"type": "string", "required": true},
+        "name": {"type": "string", "required": true, "description": "token name"}
+      },
+      "returns": {"type": "object", "description": "{name, value} on success; {stop} or {error} otherwise"}
     }
   }
 }

@@ -15,6 +15,10 @@ await learnings("dash-cloudflare-com", "mintToken", { name: "x", policies: [...]
 await learnings("dash-cloudflare-com", "setZoneSetting", { zoneId, key: "ssl", value: "full" })
 ```
 
+Flows where in-page POST/PUT returns 403 (Turnstile widgets, AI Gateway provider keys and token)
+are form-driven: see `turnstile-and-ai-gateway.md`. Login and passkey workarounds:
+`login-and-passkey.md`.
+
 ## Limits (learned 2026-09-04)
 
 - **Acts as the signed-in user.** Every call carries that user's own permissions, nothing more:

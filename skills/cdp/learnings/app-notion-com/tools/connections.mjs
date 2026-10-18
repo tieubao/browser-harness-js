@@ -24,6 +24,8 @@ async function ev(ctx, expression) {
 
 // Click the first element matching sel whose trimmed textContent equals text (exact).
 const clickText = (ctx, sel, text) => ev(ctx, `(()=>{const e=[...document.querySelectorAll(${JSON.stringify(sel)})].find(x=>x.textContent.trim()===${JSON.stringify(text)});if(!e)return false;e.click();return true})()`);
+// User-info buttons carry a description after the label since 2026-10, so they match on the label prefix.
+const clickPrefix = (ctx, sel, text) => ev(ctx, `(()=>{const e=[...document.querySelectorAll(${JSON.stringify(sel)})].find(x=>x.textContent.trim().startsWith(${JSON.stringify(text)}));if(!e)return false;e.click();return true})()`);
 
 async function until(ctx, expr, what, ms = 10000) {
   for (let t = 0; t < ms; t += 250) { if (await ev(ctx, `!!(${expr})`)) return; await wait(250); }
@@ -92,20 +94,20 @@ export async function setCapabilities(ctx, caps = {}) {
   await clickText(ctx, "[role=tab]", "Configuration");
   for (const [key, label] of Object.entries(CAPS)) {
     if (typeof caps[key] !== "boolean") continue;
-    const state = await ev(ctx, `(()=>{const b=[...document.querySelectorAll('button[aria-pressed]')].find(x=>x.textContent.trim()===${JSON.stringify(label)});if(!b)return null;
+    const state = await ev(ctx, `(()=>{const b=[...document.querySelectorAll('button[aria-pressed]')].find(x=>x.textContent.trim().startsWith(${JSON.stringify(label)}));if(!b)return null;
       if((b.getAttribute('aria-pressed')==='true')!==${caps[key]})b.click();return true})()`);
     if (state === null) throw new Error("capability button not found: " + label);
     await wait(500);
   }
   if (caps.userInfo) {
     if (!USER_INFO[caps.userInfo]) throw new Error("userInfo must be none|no_email|email");
-    if (!(await clickText(ctx, "button", USER_INFO[caps.userInfo]))) throw new Error("user info button not found");
+    if (!(await clickPrefix(ctx, "button", USER_INFO[caps.userInfo]))) throw new Error("user info button not found");
     await wait(500);
   }
   return ev(ctx, `(()=>{const o={};const C=${JSON.stringify(CAPS)};
-    for(const [k,l] of Object.entries(C)){const b=[...document.querySelectorAll('button[aria-pressed]')].find(x=>x.textContent.trim()===l);o[k]=b?b.getAttribute('aria-pressed')==='true':null}
+    for(const [k,l] of Object.entries(C)){const b=[...document.querySelectorAll('button[aria-pressed]')].find(x=>x.textContent.trim().startsWith(l));o[k]=b?b.getAttribute('aria-pressed')==='true':null}
     const u=${JSON.stringify(USER_INFO)};
-    for(const [k,l] of Object.entries(u)){const b=[...document.querySelectorAll('button')].find(x=>x.textContent.trim()===l);if(b&&b.querySelector('span span'))o.userInfo=k}
+    for(const [k,l] of Object.entries(u)){const b=[...document.querySelectorAll('button')].find(x=>x.textContent.trim().startsWith(l));if(b&&b.querySelector('span span'))o.userInfo=k}
     return o})()`);
 }
 

@@ -1,0 +1,50 @@
+{
+  "id": "corp-delaware-gov",
+  "name": "Delaware Division of Corporations (franchise / LLC tax lookup)",
+  "domains": [
+    "icis.corp.delaware.gov",
+    "corp.delaware.gov"
+  ],
+  "notes": [
+    "notes/overview.md"
+  ],
+  "nodeTools": {
+    "prepare": {
+      "description": "Open the franchise tax login page (reusing an existing icis.corp.delaware.gov tab), type the file number, and export the CAPTCHA image as a PNG data URL for the agent to show the human. Never solves the CAPTCHA.",
+      "path": "tools/tax.mjs",
+      "callable": "prepare",
+      "args": {
+        "fileNumber": {
+          "type": "string",
+          "required": true,
+          "description": "Delaware entity file number, digits only"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "{targetId, captchaPng} where captchaPng is a data:image/png;base64 URL; or {stop} when the form or image is missing"
+      }
+    },
+    "submit": {
+      "description": "Type the human-read CAPTCHA, click Continue, wait for the postback, and parse the tax table. Returns {stop:\"captcha-rejected\"} when the login page comes back, {stop:\"unknown-page\"} for any other page.",
+      "path": "tools/tax.mjs",
+      "callable": "submit",
+      "args": {
+        "targetId": {
+          "type": "string",
+          "required": true,
+          "description": "targetId returned by prepare"
+        },
+        "captcha": {
+          "type": "string",
+          "required": true,
+          "description": "the characters the human read off the image"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "{fileNumber, name, taxYear, rows:[{year, tax, penalty, interest, credit, due}], total, url} or {stop, text}"
+      }
+    }
+  }
+}

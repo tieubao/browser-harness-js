@@ -1,10 +1,11 @@
 ---
 name: linkedin
 description: >-
-  Post updates, comment on posts, list notifications, and read/reply to
-  messages on LinkedIn through the user's browser via CDP. Use when the user
-  asks to post to LinkedIn, reply to a tagged/mentioned post, check LinkedIn
-  notifications or messages, or answer a LinkedIn DM. Requires
+  Post updates, comment on and like posts or comments, list notifications,
+  and read/reply to messages on LinkedIn through the user's browser via CDP.
+  Use when the user asks to post to LinkedIn, reply to a tagged/mentioned
+  post, like a post or comment, check LinkedIn notifications or messages, or
+  answer a LinkedIn DM. Requires
   browser-harness-js on PATH, a Chromium browser with remote debugging, and a
   logged-in LinkedIn session.
 setup: bash <skill-dir>/scripts/setup
@@ -28,6 +29,7 @@ linkedin notifs [N]                                   # N recent notifications (
 linkedin comment <post-url> "text" [--dry-run]        # comment under a post
 linkedin inbox [N]                                    # N recent message threads (default 10)
 linkedin reply <thread|index> "text" [--dry-run]      # reply inside a thread
+linkedin like [--check] <post-or-comment-url>         # like (never toggles off)
 linkedin --json <verb> ...                            # JSON output for every verb
 ```
 
@@ -38,6 +40,7 @@ linkedin --json <verb> ...                            # JSON output for every ve
 | `--image <file>` | `post` only; attach one image, relative paths made absolute |
 | `--dry-run` | `post`/`comment`/`reply`; everything except the final click |
 | `--json` | Emit the result as JSON (works on every verb) |
+| `--check` | `like` only; read the reaction state, never click |
 | `LINKEDIN_PORT` / `BH_PORT` | Env vars: pin the CDP port (e.g. `9222`) instead of auto-detect |
 
 `reply`'s first argument is a case-insensitive substring of the thread name (`linkedin reply "chuyen" "…"`) or a 0-based index into the `inbox` list (`linkedin reply 1 "…"`). `notifs` is how you find the post URL for `comment`: tagged/mentioned posts arrive as notifications with a `feed/?highlightedUpdateUrn=…` link.
@@ -51,10 +54,13 @@ linkedin --json <verb> ...                            # JSON output for every ve
 | `reply` | `SENT thread="…"` / `DRY_RUN_OK verb=reply thread="…" …` / `NOT_SENT <reason>` | `{ok, verb:"reply", thread, thread_url}` |
 | `notifs` | one entry per line-group: `[type] actor · time`, text, url | array of `{type, actor, text, url, time}` |
 | `inbox` | `index. name · time [unread]`, snippet | array of `{index, name, snippet, time, unread, url}` |
+| `like` | `LIKED <target> <url>` / `ALREADY_LIKED …` / `LIKE_STATE liked=<bool> …` / `NOT_LIKED <reason>` | `{ok:true, verb:"like", url, target, liked:true, already}`; `--check`: `{ok:true, verb:"like", url, target, liked}`; failure `{ok:false, verb:"like", url, target, reason}` |
 
 - `notifs` `type` is parsed from the card text: `posted`, `commented-on`, `reposted`, `mentioned-you`, `tagged-you`, `suggested`, or `other`. `time` is the relative badge (`10m`, `2h`), `null` when absent.
 - `inbox` `url` is always `null`: thread rows are not anchors, the thread URL only resolves by opening the row (which `reply` does; it reports `thread_url`). Select threads by `index` or name substring.
 - Dry-run JSON carries `{ok, dry_run:true, verb, text, button_enabled, …}`.
+- `like` reads the reaction state BEFORE any click (a click on a reacted target unreacts it), so a retry never toggles; `already:true` means no click happened. After the click it re-reads and reports success only when the state flipped. Exit code is non-zero whenever `ok` is false. `target` is `post` or `comment`.
+- `like` URLs: `feed/update/urn:li:(activity|ugcPost|share):N`, `/posts/…-activity-N-…`, the `feed/?highlightedUpdateUrn=…` links `notifs` returns, and `feed/update/urn:li:comment:(activity:N,C)`. A `commentUrn` (or `replyUrn`) query, LinkedIn's "copy link to comment" shape, likes that comment instead of the post. Every form is normalized to `https://www.linkedin.com/feed/update/<urn>/`. DMs (`/messaging/`) and anything else are refused before the browser opens.
 
 ## Traps
 
@@ -68,4 +74,5 @@ linkedin --json <verb> ...                            # JSON output for every ve
 - **CSS attribute selectors can't hold slashes or colons through the JS string layers** (`a[href*=/posts/]` and `img[src^=blob:]` are both invalid by the time the page sees them). Use slash-free fragments (`a[href*=posts]`, `img[src^=blob]`) and filter the href with a JS regex (`/feed\/update|\/posts\//` is fine inside a regex literal).
 - **Image attach is two-stage.** The composer's `aria-label="Media"` button mounts a hidden `input[type=file]` (poll for it, it can lag); `DOM.setFileInputFiles` fills it without the OS picker. The preview then renders as `img[src^=blob]` **outside** the composer container (the media editor is its own overlay), so attachment is verified by counting new blob images document-wide.
 - **Success detection has no permalink.** Posting collapses the composer (editable empties); comments clear the box and the text appears in the comments list; replies empty `.msg-form__contenteditable`. No toast or redirect is reliable.
+- **Reactions have no `aria-pressed`.** The state is `aria-label="Reaction button state: <state>"`: on the post's `<button>`, and on an `svg[role=img]` inside the comment's `div[role=button]`. `no reaction` means not liked; any other state (Like, Celebrate, …) counts as liked, so `like` never clicks it. Comments sit in `div[id="replaceableComment_urn:li:comment:(activity:A,C)"]` (the comment URN's activity can differ from the page's); `like` matches on the comment id `C` and takes the control whose innermost such ancestor is that comment, so a nested reply's control is never picked for its parent.
 - **`session.connect()` fallback.** Auto-detect has missed a browser listening on `--remote-debugging-port=9222`; on failure the CLI retries `connect({ port: 9222 })`. Set `LINKEDIN_PORT`/`BH_PORT` to pin a port directly.

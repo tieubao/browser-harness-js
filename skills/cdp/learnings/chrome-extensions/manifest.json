@@ -1,0 +1,52 @@
+{
+  "id": "chrome-extensions",
+  "name": "Chromium extension management over CDP",
+  "notes": ["notes/overview.md"],
+  "nodeTools": {
+    "loadUnpacked": {
+      "description": "Load an unpacked extension directory without the native file picker, via the browser-level CDP method Extensions.loadUnpacked (no page session attached). Restores the previously active session afterward.",
+      "path": "tools/extensions.mjs",
+      "callable": "loadUnpacked",
+      "args": {
+        "path": {"type": "string", "required": true, "description": "Absolute path to the unpacked extension directory (contains manifest.json)."}
+      },
+      "returns": {"type": "object", "description": "{id}, the new extension id."}
+    },
+    "extensionInfo": {
+      "description": "Compact status of one extension from chrome.developerPrivate.getExtensionInfo, run inside a chrome://extensions page (opened in the background and closed again if none is open).",
+      "path": "tools/extensions.mjs",
+      "callable": "extensionInfo",
+      "args": {
+        "id": {"type": "string", "required": true, "description": "32-char extension id."}
+      },
+      "returns": {"type": "object", "description": "{id, name, version, state, path, manifestErrors, runtimeErrors:{count, messages:[{id, severity, occurrences, source, message}]}}"}
+    },
+    "reloadExtension": {
+      "description": "Reload an extension via chrome.developerPrivate.reload with failQuietly, so a bad manifest returns the load error instead of throwing.",
+      "path": "tools/extensions.mjs",
+      "callable": "reloadExtension",
+      "args": {
+        "id": {"type": "string", "required": true, "description": "32-char extension id."}
+      },
+      "returns": {"type": "object", "description": "{reloaded: boolean, loadError: object|null}"}
+    },
+    "clearExtensionErrors": {
+      "description": "Delete every recorded runtime error of an extension (chrome.developerPrivate.deleteExtensionErrors), so the next extensionInfo shows only fresh errors.",
+      "path": "tools/extensions.mjs",
+      "callable": "clearExtensionErrors",
+      "args": {
+        "id": {"type": "string", "required": true, "description": "32-char extension id."}
+      },
+      "returns": {"type": "object", "description": "{cleared: number of errors removed}"}
+    },
+    "setDeveloperMode": {
+      "description": "Turn the chrome://extensions Developer mode switch on or off (chrome.developerPrivate.updateProfileConfiguration) and read it back. Unpacked extensions need it on to stay enabled across restarts.",
+      "path": "tools/extensions.mjs",
+      "callable": "setDeveloperMode",
+      "args": {
+        "enabled": {"type": "boolean", "required": true, "description": "Desired Developer mode state."}
+      },
+      "returns": {"type": "object", "description": "{inDeveloperMode: boolean}, the state after the change."}
+    }
+  }
+}

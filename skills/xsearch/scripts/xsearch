@@ -15,16 +15,21 @@ if ! command -v browser-harness-js >/dev/null 2>&1; then
   fi
 fi
 
-usage() { echo "Usage: xsearch [--json] <query> [count]" >&2; exit 1; }
+usage() { echo "Usage: xsearch [--json] [--latest] <query> [count]" >&2; exit 1; }
 [ $# -lt 1 ] && usage
 
 json_output=false
-if [ "$1" = "--json" ]; then
-  json_output=true
-  shift
-fi
+# --latest reads the Latest tab (newest first) instead of Top.
+tab=top
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --json) json_output=true; shift ;;
+    --latest) tab=live; shift ;;
+    *) break ;;
+  esac
+done
 
-query="${1:?Usage: xsearch [--json] <query> [count]}"
+query="${1:?Usage: xsearch [--json] [--latest] <query> [count]}"
 count="${2:-10}"
 # Escape for JS single-quoted string inside bash <<EOF heredoc:
 # \ → \\ (bash), $ → \$ (bash), ` → \` (bash), ' → \' (JS)
@@ -50,7 +55,7 @@ try {
   // fire networkIdle between navigate returning and the listener subscribing.
   const ready = session.waitFor({ method: 'Page.lifecycleEvent', sessionId, predicate: (p) => p.name === 'networkIdle', timeoutMs: 30_000 })
   await cdp(sessionId, "Page.navigate", {
-    url: "https://x.com/search?q=" + encodeURIComponent('${js_query}') + "&src=typed_query&f=top"
+    url: "https://x.com/search?q=" + encodeURIComponent('${js_query}') + "&src=typed_query&f=${tab}"
   })
   await ready
 

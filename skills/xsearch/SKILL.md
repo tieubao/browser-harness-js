@@ -20,6 +20,7 @@ Search X (Twitter) and extract structured results via CDP. No external dependenc
 xsearch "your query"             # pretty-printed, up to 10 results
 xsearch "your query" 5           # 5 results, pretty-printed
 xsearch --json "your query" 3   # raw JSON
+xsearch --json --latest "@handle" 5   # Latest tab, newest first (default is Top)
 ```
 
 ## Parallel use

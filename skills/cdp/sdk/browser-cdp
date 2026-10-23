@@ -10,6 +10,8 @@
 //   browser-cdp open <url> [waitMs]        new tab; prints URL, TITLE, TARGET, then body text
 //   browser-cdp read <targetId> [waitMs]   same dump for an existing tab
 //   browser-cdp eval <targetId> <js>       evaluate an expression in the tab, print JSON
+//                                          (<js> of "-" reads the expression from stdin, so
+//                                          quote-heavy JS needs no shell escaping)
 //                                          (operator-supplied JS run via Runtime.evaluate on the
 //                                          operator's own browser; that is the feature)
 //   browser-cdp click <targetId> <x> <y>   real mouse click via Input.dispatchMouseEvent
@@ -89,8 +91,9 @@ const commands = {
   },
   async read() { await dump(await target(arg)); },
   async eval() {
+    const js = a3 === "-" ? Buffer.concat(await Array.fromAsync(process.stdin)).toString() : a3;
     const ws = await connect(await target(arg));
-    const v = await evalIn(ws, a3);
+    const v = await evalIn(ws, js);
     ws.close();
     console.log(JSON.stringify(v, null, 1));
   },
@@ -145,7 +148,7 @@ const commands = {
 };
 
 if (!commands[cmd]) {
-  console.error("usage: browser-cdp open <url> [waitMs] | read <targetId> [waitMs] | eval <targetId> <js> | click <targetId> <x> <y> | pdf <targetId> <out.pdf> [--force] | close <targetId> | list | learn new <short-id> --domains a,b [--name \"...\"] | learn list");
+  console.error("usage: browser-cdp open <url> [waitMs] | read <targetId> [waitMs] | eval <targetId> <js|-> | click <targetId> <x> <y> | pdf <targetId> <out.pdf> [--force] | close <targetId> | list | learn new <short-id> --domains a,b [--name \"...\"] | learn list");
   process.exit(64);
 }
 commands[cmd]().catch((e) => { console.error(e.message); process.exit(1); });

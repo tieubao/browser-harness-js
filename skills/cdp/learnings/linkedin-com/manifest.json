@@ -1,0 +1,20 @@
+{
+  "id": "linkedin-com",
+  "name": "LinkedIn (post composer)",
+  "domains": ["linkedin.com", "www.linkedin.com"],
+  "notes": ["notes/overview.md"],
+  "nodeTools": {
+    "createPost": {
+      "description": "Publish a LinkedIn post as the logged-in member or as a company page they administer: open the composer in a background tab, type the body with one Input.insertText, optionally attach images (company pages), assert actor / media / paragraph count, click Post, then find the new post on the admin list or the member's activity page and return its permalink. Closes every tab it opens.",
+      "path": "tools/post.mjs",
+      "callable": "createPost",
+      "args": {
+        "actor": {"type": "string", "required": true, "description": "\"self\" for the member's own profile, or a company admin page URL containing the numeric company id, e.g. https://www.linkedin.com/company/12345678/admin/page-posts/published/."},
+        "text": {"type": "string", "required": true, "description": "Post body. Newlines become paragraphs (one line = one paragraph)."},
+        "media": {"type": "array", "required": false, "description": "Absolute png/jpg paths to attach. Company pages only; a self post with media is refused (not proven)."},
+        "actorName": {"type": "string", "required": false, "description": "Expected actor name shown in the composer, e.g. \"Dwarves Foundation\". Default for a company: the composer must not show the member's own name. Default for self: the composer must show the member's own name."}
+      },
+      "returns": {"type": "object", "description": "{posted: true, url} on success (url is https://www.linkedin.com/feed/update/urn:li:activity:<id>/, or null when the post is live but not located in the list); {posted: false, reason} when a pre-post check fails or the Post click did not take. Nothing is published when posted is false with a pre-post reason."}
+    }
+  }
+}

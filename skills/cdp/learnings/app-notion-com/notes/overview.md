@@ -44,3 +44,19 @@ Endpoints proven: `getSpaces`, `syncRecordValuesSpace`, `queryCollection`, `sear
 - **Personal-plan workspaces.** Other people are page guests there. `removeUsersFromSpace` does nothing. Strip access with `setPermissionItem` and role `none`.
 - **The REPL is shared across sessions.** Another session can switch the active tab between your calls. Pin the target inside every call. The tools do this; do the same in any hand-written snippet.
 - **One bare expression per snippet.** A multi-statement REPL snippet runs but prints nothing. Print a single expression.
+
+## Pages and databases (`tools/pages.mjs`)
+
+`readCollection({pageId, spaceId?, limit?})`: schema `[{name,type}]` and rows as `{_id, <property name>: plain value}`. Read-only.
+`createPage({spaceId, parentAfter?, title, blocks, editors})`: a top-level page plus blocks in one transaction. `blocks` is `[[type, text]]`, or `["table", [[cell,...],...]]` with the first row as header. `editors` is required.
+`recreateRows({pageId, spaceId?, changes:[{rowId, set:{Property: value}}], dryRun?})`: row property updates. Take `rowId` from `readCollection` `_id`. A value is a string or a raw rich-text array: people `[["‣",[["u",id]]]]`, date `[["‣",[["d",{type:"date",start_date:"2026-01-31"}]]]]`.
+
+### More gotchas
+
+- **Rows cannot be updated in place.** A `set` on `["properties", key]` fails with "Block property value updates must use high-level property operations". `recreateRows` writes a NEW row with the merged properties and sets the old row `alive:false`. The row id changes, child content under the old row stays behind it.
+- **Orphan pages.** `createPage` throws without `editors`. Same rule as `save_transaction`: the first `set` of a `parent_table:"space"` page carries `permissions`.
+- **Return plain JSON built in-page.** The REPL can print nothing for values derived from `fetch`, even a returned string; stash the JSON on `globalThis` and read it in a second call. The tools do all fetches inside one `Runtime.evaluate` and return a plain object; a hand snippet should end in one `JSON.stringify(...)` expression.
+- **Pin inside each call.** The REPL is shared across sessions, so another session can switch the active tab between calls. Every tool calls `pin` first.
+- **Navigation wipes in-page globals.** Nothing is cached on `window`; each tool rebuilds its helpers per call, so a reload mid-task is safe.
+- **Raw collection schema edits are rejected** ("Collection schema updates must use high-level schema operations"). Write into existing properties.
+- **Bring no ids into the learning.** Workspace, user and page ids are always arguments. `readCollection` finds the workspace from `pageId` when `spaceId` is omitted. A wrong `spaceId` makes Notion error ("Cross-cell memcached access is not allowed") instead of returning null.

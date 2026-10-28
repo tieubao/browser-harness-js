@@ -209,6 +209,91 @@
         "type": "object",
         "description": "{ok,error}"
       }
+    },
+    "read_collection": {
+      "description": "Read a database page through the internal API: schema names and every row as property name -> plain value. Dates give start (\"start -> end\"), people \"@<userId>\", relations \"rel:<pageId>\". Each row carries _id for recreateRows. Read-only.",
+      "path": "tools/pages.mjs",
+      "callable": "readCollection",
+      "args": {
+        "pageId": {
+          "type": "string",
+          "required": true,
+          "description": "the database page block id"
+        },
+        "spaceId": {
+          "type": "string",
+          "description": "workspace id; readCollection and recreateRows find it from pageId when omitted"
+        },
+        "limit": {
+          "type": "integer",
+          "description": "default 300"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "{spaceId,collectionId,viewId,schema:[{name,type}],rows:[{_id,<name>:value}]}"
+      }
+    },
+    "create_page": {
+      "description": "WRITE. Create a top-level page with blocks in one saveTransactionsFanout. Requires a non-empty editors array: its user_permission editor rows go on the page, otherwise it becomes an uneditable role-none orphan.",
+      "path": "tools/pages.mjs",
+      "callable": "createPage",
+      "args": {
+        "spaceId": {
+          "type": "string",
+          "required": true
+        },
+        "parentAfter": {
+          "type": "string",
+          "description": "id of the top-level page to sit after; omit to append"
+        },
+        "title": {
+          "type": "string",
+          "required": true
+        },
+        "blocks": {
+          "type": "array",
+          "description": "[[type, richText|string]] or [\"table\", [[cell,...],...]] (first row is the header)"
+        },
+        "editors": {
+          "type": "array",
+          "required": true,
+          "description": "user ids that get role editor"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "{ok,error,pageId,ops}"
+      }
+    },
+    "recreate_rows": {
+      "description": "WRITE. Update database row properties by replacing rows: in-place updates are rejected (\"Block property value updates must use high-level property operations\"), so each row is recreated with merged properties and the old row is set alive:false. dryRun:true builds the ops and sends nothing.",
+      "path": "tools/pages.mjs",
+      "callable": "recreateRows",
+      "args": {
+        "pageId": {
+          "type": "string",
+          "required": true,
+          "description": "the database page block id"
+        },
+        "spaceId": {
+          "type": "string",
+          "description": "workspace id; readCollection and recreateRows find it from pageId when omitted"
+        },
+        "changes": {
+          "type": "array",
+          "required": true,
+          "description": "[{rowId, set:{PropertyName: string|raw rich-text array}}]; rowId from readCollection _id"
+        },
+        "dryRun": {
+          "type": "boolean",
+          "description": "default false"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "{ok,error,ops,newIds{oldId:newId},dryRun?}"
+      }
     }
   }
 }

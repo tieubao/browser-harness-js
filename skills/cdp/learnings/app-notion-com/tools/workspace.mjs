@@ -6,14 +6,14 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 const HOME = "https://app.notion.com/";
 const TIME_ZONE = "Asia/Ho_Chi_Minh";
 
-async function ev(ctx, expression) {
+export async function ev(ctx, expression) {
   const { result, exceptionDetails } = await ctx.session.Runtime.evaluate({ expression, returnByValue: true, awaitPromise: true });
   if (exceptionDetails) throw new Error(exceptionDetails.text || (exceptionDetails.exception && exceptionDetails.exception.description) || "Runtime.evaluate failed");
   return result ? result.value : undefined;
 }
 
 // Pin the session to an app.notion.com tab (open one if none). Runs inside every API call.
-async function pin(ctx) {
+export async function pin(ctx) {
   const { targetInfos } = await ctx.session.Target.getTargets();
   let tab = targetInfos.find((t) => t.type === "page" && t.url.startsWith(HOME));
   if (!tab) {

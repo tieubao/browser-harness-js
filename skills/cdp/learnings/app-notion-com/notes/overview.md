@@ -27,3 +27,20 @@ Portal: `https://app.notion.com/developers/connections?spaceId=<uuid>` (the old 
 ## Tools
 
 `listConnections`, `openConnection({name})`, `createConnection({name})`, `setCapabilities({read,update,insert,readComments,insertComments,sessions,userInfo})`, `sharePages({queries,exact})`, `renameConnection({newName})`, `revealToken()`. The mutating tools act on the connection currently open: call `openConnection` first.
+
+## Internal API (any workspace)
+
+Use it when the official API token is not enough. A token is bound to one workspace. The internal API runs as the signed-in user, so it reaches every workspace that user belongs to.
+
+It is a same-origin `fetch("/api/v3/<endpoint>", {method:"POST", headers:{"content-type":"application/json"}, body})` evaluated in a logged-in app.notion.com tab. The tools live in `tools/workspace.mjs`: `list_spaces`, `get_records`, `query_collection`, `save_transaction`. Each call re-pins the session to an app.notion.com tab and opens one if none exists.
+
+Endpoints proven: `getSpaces`, `syncRecordValuesSpace`, `queryCollection`, `search` (type `BlocksInSpace`), `saveTransactionsFanout`. Records come back as `{value:{value:{...},role}}`. Errors come back as `{isNotionError:true, debugMessage}`.
+
+### Gotchas
+
+- **Top-level pages need permissions.** The FIRST `set` op of a page with `parent_table:"space"` must carry `permissions` (a `user_permission` with role `editor` per user). Without it the page is a role-none orphan that nobody can edit again, the creator included. `save_transaction` refuses this before sending.
+- **Collection schema edits are rejected.** A raw `set` on a schema fails with "Collection schema updates must use high-level schema operations". Add data in the existing properties instead.
+- **Automation records reject status "paused".** Use `alive:false` and bump `last_edited_time`.
+- **Personal-plan workspaces.** Other people are page guests there. `removeUsersFromSpace` does nothing. Strip access with `setPermissionItem` and role `none`.
+- **The REPL is shared across sessions.** Another session can switch the active tab between your calls. Pin the target inside every call. The tools do this; do the same in any hand-written snippet.
+- **One bare expression per snippet.** A multi-statement REPL snippet runs but prints nothing. Print a single expression.

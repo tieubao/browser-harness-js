@@ -124,6 +124,91 @@
         "type": "string",
         "description": "ntn_ token"
       }
+    },
+    "list_spaces": {
+      "description": "List every Notion workspace the signed-in user belongs to, via the internal API from an app.notion.com tab. Throws 'not signed in to app.notion.com' when signed out.",
+      "path": "tools/workspace.mjs",
+      "callable": "listSpaces",
+      "args": {},
+      "returns": {
+        "type": "array",
+        "description": "[{id,name,plan_type}]"
+      }
+    },
+    "get_records": {
+      "description": "Fetch records by id with syncRecordValuesSpace (internal API, any workspace).",
+      "path": "tools/workspace.mjs",
+      "callable": "getRecords",
+      "args": {
+        "table": {
+          "type": "string",
+          "required": true,
+          "description": "block|collection|collection_view|space|..."
+        },
+        "ids": {
+          "type": "array",
+          "required": true
+        },
+        "spaceId": {
+          "type": "string",
+          "required": true
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "map id -> record value (double value unwrapped); null when missing"
+      }
+    },
+    "query_collection": {
+      "description": "Query a database view with queryCollection (internal API, any workspace).",
+      "path": "tools/workspace.mjs",
+      "callable": "queryCollection",
+      "args": {
+        "collectionId": {
+          "type": "string",
+          "required": true
+        },
+        "viewId": {
+          "type": "string",
+          "required": true
+        },
+        "spaceId": {
+          "type": "string",
+          "required": true
+        },
+        "limit": {
+          "type": "integer",
+          "description": "default 50"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "{blockIds[], records{id: block value}}"
+      }
+    },
+    "save_transaction": {
+      "description": "Write blocks with saveTransactionsFanout (internal API, any workspace). Refuses a top-level page set (parent_table space) that lacks a non-empty permissions array, because that page becomes an uneditable role-none orphan.",
+      "path": "tools/workspace.mjs",
+      "callable": "saveTransaction",
+      "args": {
+        "spaceId": {
+          "type": "string",
+          "required": true
+        },
+        "operations": {
+          "type": "array",
+          "required": true,
+          "description": "[{pointer:{table,id}, path, command: set|update|listAfter|listBefore|listRemove|setPermissionItem, args}]; spaceId is filled into each pointer"
+        },
+        "label": {
+          "type": "string",
+          "description": "debug.userAction label"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "{ok,error}"
+      }
     }
   }
 }

@@ -170,6 +170,35 @@
       },
       "returns": {"type": "object", "description": "{attachments: string[]} names of the visible chips after the run; {stop:\"no-file-input\"} if files were given but the file input was not found"}
     },
+    "replyInThread": {
+      "description": "Open the thread a Gmail search resolves to (first row's data-legacy-thread-id, navigate #search/<query>/<threadId>, then Target.activateTarget), real-click Reply (span.ams.bkH, after scrollIntoView), open Cc with Cmd+Shift+C when cc is given, write bodyLines at the TOP of the editor (above the signature and the quote) from DOM nodes only (Trusted Types blocks innerHTML), optionally remove the compose's own signature nodes (never ones inside .gmail_quote), bold the first occurrence of each substring in bold via Range + execCommand, attach files with DOM.setFileInputFiles on the LAST input[type=file][name=Filedata], then force an autosave with a space + Backspace in the editor and wait 6s. Never sends.",
+      "path": "tools/mail-google-com.mjs",
+      "callable": "replyInThread",
+      "args": {
+        "authuser": {"type": "number", "required": false, "description": "default 0"},
+        "query": {"type": "string", "required": true, "description": "Gmail search operators that should resolve to one thread"},
+        "cc": {"type": "string", "required": false, "description": "comma-separated addresses"},
+        "bodyLines": {"type": "array", "required": true, "description": "plain lines; an empty string makes a blank line"},
+        "bold": {"type": "array", "required": false, "description": "exact substrings to bold; the first occurrence in bodyLines only"},
+        "attachments": {"type": "array", "required": false, "description": "absolute host file paths"},
+        "stripSignature": {"type": "boolean", "required": false, "description": "default false; true removes .gmail_signature, [data-smartmail=gmail_signature] and .gmail_signature_prefix from the compose editor"}
+      },
+      "returns": {"type": "object", "description": "{targetId, recipients: string[], body: first 300 chars, attachments: string[] (given names matched by '<name> (NNK)' plus any download_url chip in the compose), signaturePresent: boolean, boldMissed: string[]}; {targetId?, stop:reason} at the step that failed (no-results, no-thread-id, no-reply-button, compose-not-opened, no-file-input, ...)"}
+    },
+    "forwardMessage": {
+      "description": "Open the thread like replyInThread, real-click Forward (span.ams.bkG, after scrollIntoView), type to into the focused To field followed by \", \", open Cc with Cmd+Shift+C when cc is given, write noteLines at the top of the editor, optionally strip the compose's own signature nodes (never ones inside .gmail_quote, so the forwarded message keeps its sender's signature), then force an autosave. Forwarded attachments carry over by themselves and are listed in the readback. Never sends.",
+      "path": "tools/mail-google-com.mjs",
+      "callable": "forwardMessage",
+      "args": {
+        "authuser": {"type": "number", "required": false, "description": "default 0"},
+        "query": {"type": "string", "required": true, "description": "Gmail search operators that should resolve to one thread"},
+        "to": {"type": "string", "required": true, "description": "comma-separated addresses"},
+        "cc": {"type": "string", "required": false, "description": "comma-separated addresses"},
+        "noteLines": {"type": "array", "required": false, "description": "plain lines written above the forwarded message"},
+        "stripSignature": {"type": "boolean", "required": false, "description": "default false"}
+      },
+      "returns": {"type": "object", "description": "{targetId, recipients: string[], body: first 300 chars, attachments: string[] (forwarded chips), signaturePresent: boolean, boldMissed: []}; {targetId?, stop:reason} at the step that failed (no-results, no-thread-id, no-forward-button, compose-not-opened, ...)"}
+    },
     "saveDraftNow": {
       "description": "Force Gmail to save the draft after a DOM-only body edit (which never triggers autosave): focus input[name=subjectbox], caret to the end, Input.insertText a space, Backspace keyDown/keyUp, wait 6s.",
       "path": "tools/mail-google-com.mjs",

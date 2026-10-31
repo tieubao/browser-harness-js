@@ -1,0 +1,24 @@
+{
+  "id": "google-com-travel-flights",
+  "name": "Google Flights (one-way search)",
+  "domains": ["www.google.com"],
+  "notes": ["notes/overview.md"],
+  "nodeTools": {
+    "searchOneWay": {
+      "description": "Open the Google Flights natural-language URL (q=Flights from X to Y on DATE one way economy) in a NEW BACKGROUND target, poll until result rows render and the count stops changing, click \"View more flights\" when expand, read every result row, de-duplicate (each li appears twice, compact + expanded) and close the target. Prices are per adult, one-way. Never touches an existing tab.",
+      "path": "tools/google-com-travel-flights.mjs",
+      "callable": "searchOneWay",
+      "args": {
+        "from": {"type": "string", "required": true, "description": "IATA airport or city code, e.g. KIX, NRT, TYO. City names fail. SHA is Hongqiao only: use PVG for Pudong"},
+        "to": {"type": "string", "required": true, "description": "IATA airport or city code"},
+        "date": {"type": "string", "required": true, "description": "YYYY-MM-DD"},
+        "nonstopOnly": {"type": "boolean", "required": false, "description": "default false; keep only stops === 0 rows"},
+        "currency": {"type": "string", "required": false, "description": "default USD (curr= param)"},
+        "lang": {"type": "string", "required": false, "description": "default en (hl= param); the parser expects English labels (Nonstop, N stops)"},
+        "expand": {"type": "boolean", "required": false, "description": "default true; click View more flights to get past the top ~12 rows"},
+        "timeoutMs": {"type": "number", "required": false, "description": "default 40000; budget for the first rows to render"}
+      },
+      "returns": {"type": "object", "description": "{url, expanded, count, rows:[{depart, arrive, plusDays, airline, durationMin, duration, route (e.g. NRT-PVG, ASCII hyphen; Google shows an en dash), stops (0/1/2), layover (e.g. \"2 hr 20 min HKG\", empty when nonstop), price (number), priceText}]}; {stop:\"no-results\", hint, url} when nothing rendered"}
+    }
+  }
+}

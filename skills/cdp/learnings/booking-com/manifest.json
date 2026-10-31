@@ -1,0 +1,27 @@
+{
+  "id": "booking-com",
+  "name": "Booking.com (hotel search)",
+  "domains": ["www.booking.com", "booking.com"],
+  "notes": ["notes/overview.md"],
+  "nodeTools": {
+    "searchHotels": {
+      "description": "Build a Booking.com searchresults URL (city, dates, party, star classes, review floor, currency, popularity order), open it in a NEW BACKGROUND target, poll until [data-testid=property-card] cards render and the count stops changing, read the first `limit` cards and close the target. Works logged out. priceTotal is the whole stay for the room, not per night.",
+      "path": "tools/booking-com.mjs",
+      "callable": "searchHotels",
+      "args": {
+        "city": {"type": "string", "required": true, "description": "free text for ss=, e.g. \"Osaka\""},
+        "checkin": {"type": "string", "required": true, "description": "YYYY-MM-DD"},
+        "checkout": {"type": "string", "required": true, "description": "YYYY-MM-DD"},
+        "adults": {"type": "number", "required": false, "description": "default 2"},
+        "children": {"type": "array", "required": false, "description": "child ages, e.g. [7]; default []"},
+        "rooms": {"type": "number", "required": false, "description": "default 1"},
+        "minStars": {"type": "array", "required": false, "description": "star classes to keep, default [3,4]; one class=N filter each (an exact-class list, not a floor)"},
+        "minReview": {"type": "number", "required": false, "description": "minimum review score, default 8 (sent as review_score=80); 0 disables"},
+        "currency": {"type": "string", "required": false, "description": "default USD"},
+        "limit": {"type": "number", "required": false, "description": "max cards to return, default 20"},
+        "timeoutMs": {"type": "number", "required": false, "description": "default 40000"}
+      },
+      "returns": {"type": "object", "description": "{url, hotels:[{name, priceTotal (number, whole stay), priceText, score (number), reviews (number)}], summary:{count, median, cheapest:[{name, priceTotal} x3]}}; {stop:\"no-results\", hint, url} when no card rendered"}
+    }
+  }
+}

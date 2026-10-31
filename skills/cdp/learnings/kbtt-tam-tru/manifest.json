@@ -1,0 +1,6 @@
+{
+  "id": "kbtt-tam-tru",
+  "name": "Bộ Công an foreigner tạm trú declaration portal (KBTT)",
+  "domains": ["tbltkbtt.bocongan.gov.vn", "kbtt.xuatnhapcanh.gov.vn"],
+  "notes": ["notes/overview.md"]
+}

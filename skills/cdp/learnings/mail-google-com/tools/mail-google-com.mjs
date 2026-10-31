@@ -515,6 +515,227 @@ export async function saveDraftNow(ctx, { targetId } = {}) {
   return { subject: String(subject || "") };
 }
 
+// Reply to / forward an existing thread with an inline compose. Both verbs share one flow
+// (composeInThread) and never send: Gmail keeps the open compose as a draft.
+// Recipe facts: the target is opened in the background (same search + thread-id navigation as
+// readThread, since clicking a row does nothing there) and then activated, because Input.insertText
+// into a background tab lands late. Reply/Forward need a REAL mouse click after scrollIntoView.
+// Cmd+Shift+C opens and focuses Cc. Trusted Types blocks innerHTML, so the body is built from DOM
+// nodes and bolded with a Range + execCommand. The signature strip skips anything inside
+// .gmail_quote, otherwise a forward would lose the ORIGINAL sender's signature too.
+const COMPOSE_EDITOR = 'div[aria-label="Message Body"][contenteditable=true]';
+const SIGNATURE_NODES = ".gmail_signature, [data-smartmail=gmail_signature], .gmail_signature_prefix";
+
+// Last visible editor wins: a thread can hold a stale hidden editor and the fresh compose is last.
+const COMPOSE_EDITOR_JS = `
+  const shown = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+  const editors = [...document.querySelectorAll(${JSON.stringify(COMPOSE_EDITOR)})].filter(shown);
+  const ed = editors[editors.length - 1];
+`;
+
+async function pressKey(ctx, { key, code, vk, modifiers = 0 }) {
+  for (const type of ["keyDown", "keyUp"]) {
+    await ctx.session.Input.dispatchKeyEvent({ type, key, code, windowsVirtualKeyCode: vk, modifiers });
+  }
+}
+
+const addressList = (s) => String(s || "").split(",").map((a) => a.trim()).filter(Boolean).join(", ");
+
+async function openThreadForCompose(ctx, { authuser, query }) {
+  const url = `https://mail.google.com/mail/u/${authuser}/#search/${encodeURIComponent(query)}`;
+  const { targetId } = await ctx.session.Target.createTarget({ url, background: true });
+  await ctx.session.use(targetId);
+  await wait(9000);
+  const threadId = await evaluate(ctx, `(() => {
+    const row = document.querySelector('tr.zA');
+    if (!row) return null;
+    const el = row.matches('[data-legacy-thread-id]') ? row : row.querySelector('[data-legacy-thread-id]');
+    return el ? el.getAttribute('data-legacy-thread-id') : '';
+  })()`);
+  const fail = (stop, hint) => {
+    ctx.session.Target.closeTarget({ targetId }).catch(() => {});
+    return { stop, hint };
+  };
+  if (threadId === null || threadId === undefined) return fail("no-results", `no rows for query ${query}`);
+  if (!threadId) return fail("no-thread-id", "first row has no data-legacy-thread-id descendant");
+  await ctx.session.Page.enable();
+  await ctx.session.Page.navigate({ url: `${url}/${encodeURIComponent(threadId)}` });
+  await wait(4000);
+  await ctx.session.Target.activateTarget({ targetId });
+  await wait(1500);
+  return { targetId };
+}
+
+// Real-click the LAST visible match of a selector (the bottom-of-thread action button) after scrollIntoView.
+async function clickLastVisible(ctx, selector) {
+  const rect = JSON.parse(String(await evaluate(ctx, `String(JSON.stringify((() => {
+    const hits = [...document.querySelectorAll(${JSON.stringify(selector)})].filter((e) => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0; });
+    const el = hits[hits.length - 1];
+    if (!el) return null;
+    el.scrollIntoView({ block: 'center', behavior: 'instant' });
+    return el.getBoundingClientRect();
+  })()))`)) || "null");
+  if (!rect) return false;
+  await clickRect(ctx, rect);
+  return true;
+}
+
+async function openCc(ctx, cc) {
+  await pressKey(ctx, { key: "C", code: "KeyC", vk: 67, modifiers: 12 });
+  await wait(600);
+  await ctx.session.Input.insertText({ text: `${addressList(cc)}, ` });
+  await wait(600);
+}
+
+// Writes lines at the TOP of the editor (above the signature and any quote), optionally strips
+// the compose's own signature nodes, and bolds the first occurrence of each substring.
+async function writeComposeBody(ctx, { lines, bold, stripSignature }) {
+  return JSON.parse(String(await evaluate(ctx, `String((() => {
+    ${COMPOSE_EDITOR_JS}
+    if (!ed) return JSON.stringify({ stop: "no-editor" });
+    if (${stripSignature ? "true" : "false"}) {
+      ed.querySelectorAll(${JSON.stringify(SIGNATURE_NODES)}).forEach((n) => { if (!n.closest('.gmail_quote')) n.remove(); });
+    }
+    const made = ${JSON.stringify(lines)}.map((line) => {
+      const d = document.createElement('div');
+      d.appendChild(line ? document.createTextNode(line) : document.createElement('br'));
+      return d;
+    });
+    const first = ed.firstChild;
+    made.forEach((d) => ed.insertBefore(d, first));
+    const missed = [];
+    ed.focus();
+    for (const s of ${JSON.stringify(bold)}) {
+      let hit = null;
+      for (const d of made) {
+        const w = document.createTreeWalker(d, NodeFilter.SHOW_TEXT);
+        let n;
+        while ((n = w.nextNode())) {
+          const i = n.nodeValue.indexOf(s);
+          if (i >= 0 && !n.parentElement.closest('b,strong')) { hit = [n, i]; break; }
+        }
+        if (hit) break;
+      }
+      if (!hit) { missed.push(s); continue; }
+      const range = document.createRange();
+      range.setStart(hit[0], hit[1]);
+      range.setEnd(hit[0], hit[1] + s.length);
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+      document.execCommand('bold');
+    }
+    ed.dispatchEvent(new Event('input', { bubbles: true }));
+    return JSON.stringify({ written: made.length, missed });
+  })())`)) || "{}");
+}
+
+async function attachToCompose(ctx, files) {
+  await ctx.session.DOM.enable();
+  const { root } = await ctx.session.DOM.getDocument({ depth: -1, pierce: true });
+  const { nodeIds } = await ctx.session.DOM.querySelectorAll({ nodeId: root.nodeId, selector: "input[type=file][name=Filedata]" });
+  if (!nodeIds.length) return false;
+  await ctx.session.DOM.setFileInputFiles({ nodeId: nodeIds[nodeIds.length - 1], files });
+  await wait(8000);
+  return true;
+}
+
+// Same trick as saveDraftNow, but the keystroke goes into the compose editor (an inline reply
+// has no subject box to type into).
+async function autosaveCompose(ctx) {
+  const focused = String(await evaluate(ctx, `String((() => {
+    ${COMPOSE_EDITOR_JS}
+    if (!ed) return false;
+    ed.focus();
+    const sel = window.getSelection();
+    sel.selectAllChildren(ed);
+    sel.collapseToEnd();
+    return true;
+  })())`));
+  if (focused !== "true") return false;
+  await ctx.session.Input.insertText({ text: " " });
+  await pressKey(ctx, { key: "Backspace", code: "Backspace", vk: 8 });
+  await wait(6000);
+  return true;
+}
+
+async function readComposeBack(ctx, expectedNames) {
+  return JSON.parse(String(await evaluate(ctx, `String((() => {
+    ${COMPOSE_EDITOR_JS}
+    if (!ed) return JSON.stringify({ stop: "no-editor" });
+    // The compose container: nearest ancestor holding a form or the recipient fields, so the
+    // thread's own message headers and attachment chips stay out of the readback.
+    let box = ed.parentElement || ed;
+    for (let a = ed; a.parentElement; a = a.parentElement) {
+      if (a.parentElement.matches('form') || a.parentElement.querySelector('[name=to],[name=cc],[name=subjectbox],[name=from]')) { box = a.parentElement; break; }
+    }
+    const emails = new Set();
+    box.querySelectorAll('[data-hovercard-id]').forEach((e) => emails.add(e.getAttribute('data-hovercard-id')));
+    box.querySelectorAll('[name=to],[name=cc],[name=bcc]').forEach((f) => {
+      (String(f.value || '').match(/[^\\s<>,;"']+@[^\\s<>,;"']+/g) || []).forEach((m) => emails.add(m));
+    });
+    const text = (box.innerText || box.textContent || '').replace(/\\s+/g, ' ');
+    const names = new Set();
+    ${JSON.stringify(expectedNames)}.forEach((n) => {
+      const esc = n.replace(/[.*+?^$()|[\\]\\\\{}]/g, '\\\\$&');
+      if (new RegExp(esc + ' \\\\(\\\\d+K\\\\)').test(text)) names.add(n);
+    });
+    box.querySelectorAll('[download_url]').forEach((el) => {
+      const seg = (el.getAttribute('download_url') || '').split(':');
+      if (seg[1]) { try { names.add(decodeURIComponent(seg[1])); } catch (e) { names.add(seg[1]); } }
+    });
+    const sig = [...ed.querySelectorAll(${JSON.stringify(SIGNATURE_NODES)})].some((n) => !n.closest('.gmail_quote'));
+    return JSON.stringify({
+      recipients: [...emails],
+      body: (ed.innerText || ed.textContent || '').slice(0, 300),
+      attachments: [...names],
+      signaturePresent: sig,
+    });
+  })())`)) || "{}");
+}
+
+async function composeInThread(ctx, { verb, authuser, query, to, cc, lines, bold, attachments, stripSignature }) {
+  const opened = await openThreadForCompose(ctx, { authuser, query });
+  if (opened.stop) return opened;
+  const { targetId } = opened;
+
+  const buttonSelector = verb === "reply" ? "span.ams.bkH" : "span.ams.bkG";
+  if (!(await clickLastVisible(ctx, buttonSelector))) return { targetId, stop: `no-${verb}-button` };
+  if (!(await pollUntil(ctx, `(() => { ${COMPOSE_EDITOR_JS} return !!ed; })()`, 10000, 300))) {
+    return { targetId, stop: "compose-not-opened" };
+  }
+  await wait(1200); // the signature lands a beat after the editor does
+
+  // A forward opens with the To field focused; a reply opens with the caret in the body.
+  if (verb === "forward") {
+    await ctx.session.Input.insertText({ text: `${addressList(to)}, ` });
+    await wait(600);
+  }
+  if (addressList(cc)) await openCc(ctx, cc);
+
+  const written = await writeComposeBody(ctx, { lines, bold, stripSignature });
+  if (written.stop) return { targetId, stop: written.stop };
+
+  if (attachments.length && !(await attachToCompose(ctx, attachments))) return { targetId, stop: "no-file-input" };
+  if (!(await autosaveCompose(ctx))) return { targetId, stop: "no-editor-for-autosave" };
+
+  const names = attachments.map((p) => p.split("/").pop());
+  const readback = await readComposeBack(ctx, names);
+  return { targetId, ...readback, boldMissed: written.missed || [] };
+}
+
+export async function replyInThread(ctx, { authuser = 0, query, cc = "", bodyLines, bold = [], attachments = [], stripSignature = false } = {}) {
+  if (!query) throw new Error("replyInThread: query is required");
+  if (!Array.isArray(bodyLines) || !bodyLines.length) throw new Error("replyInThread: bodyLines (non-empty array) is required");
+  return composeInThread(ctx, { verb: "reply", authuser, query, cc, lines: bodyLines, bold, attachments, stripSignature });
+}
+
+export async function forwardMessage(ctx, { authuser = 0, query, to, cc = "", noteLines = [], stripSignature = false } = {}) {
+  if (!query) throw new Error("forwardMessage: query is required");
+  if (!addressList(to)) throw new Error("forwardMessage: to is required");
+  return composeInThread(ctx, { verb: "forward", authuser, query, to, cc, lines: noteLines, bold: [], attachments: [], stripSignature });
+}
+
 export async function addForwardingAddress(ctx, { authuser = 0, address } = {}) {
   if (!address) throw new Error("addForwardingAddress: address is required");
   const url = `https://mail.google.com/mail/u/${authuser}/#settings/fwdandpop`;

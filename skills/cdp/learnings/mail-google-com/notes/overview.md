@@ -157,6 +157,31 @@ proof.
 distilled `pickSignature`, `setBodyAboveSignature`, `replaceAttachments`, `saveDraftNow` and the
 `readThread` fix. Offline code change, no browser touched.
 
+## Reply and forward in a thread (`replyInThread`, `forwardMessage`)
+
+```js
+await learnings("mail-google-com", "replyInThread", {
+  query: "from:someone subject:\"Invoice #123\"", cc: "a@example.com, b@example.com",
+  bodyLines: ["Hi,", "", "Attached is the signed copy."], bold: ["signed copy"],
+  attachments: ["/absolute/path/to/file.pdf"], stripSignature: false,
+})
+await learnings("mail-google-com", "forwardMessage", {
+  query: "from:someone subject:\"Invoice #123\"", to: "finance@example.com", cc: "",
+  noteLines: ["FYI, please file this."], stripSignature: true,
+})
+// -> { targetId, recipients, body (first 300 chars), attachments, signaturePresent, boldMissed }
+// Neither verb sends. Read the readback, then send by hand or with sendPreparedDraft-style review.
+```
+
+- **One flow, two verbs.** Open `#search/<q>` in a background tab, read `data-legacy-thread-id`, navigate to `#search/<q>/<threadId>` (a row click does nothing there), then `Target.activateTarget`: `Input.insertText` into a background tab lands late.
+- **Real clicks only.** Reply is `span.ams.bkH`, Forward is `span.ams.bkG`. Take the last visible match, `scrollIntoView`, then `Input.dispatchMouseEvent`. The bottom-of-thread button acts on the last message.
+- **Cc is a keyboard shortcut.** Cmd+Shift+C (`modifiers: 12`, key `C`, code `KeyC`) opens and focuses Cc; type the addresses followed by `, ` so Gmail turns them into chips. Forward focuses To on its own: type `to` plus `, ` first.
+- **Body goes at the top of the editor.** Lines are `<div>` nodes built with `createElement` and `createTextNode` (Trusted Types blocks innerHTML) and inserted before the editor's first child, so they sit above the signature and the quote. Bold is a `Range` over the first occurrence plus `document.execCommand("bold")`; substrings not found come back in `boldMissed`.
+- **`stripSignature` stays inside the compose editor and skips `.gmail_quote`.** Otherwise a forward would lose the original sender's signature, which lives in the quote.
+- **Attachments use the LAST file input.** `DOM.querySelectorAll('input[type=file][name=Filedata]')` on a pierced document, then `DOM.setFileInputFiles` on the last node: older nodes belong to other composes. Forwarded attachments carry over by themselves and show up in the readback.
+- **Autosave needs a real keystroke.** Space then Backspace in the editor with the caret at the end, then wait 6s (an inline reply has no subject box, unlike `saveDraftNow`).
+- **Not run live yet.** Written offline from a recipe proven by hand and checked statically only; the first real use is their proof. The recipients/attachments readback scopes to the compose container by climbing from the editor to the nearest ancestor holding a form or the `to`/`cc`/`subjectbox` fields; if that scope is wrong live, fix the climb in `readComposeBack` first.
+
 ## Forwarding and filters
 
 ```js

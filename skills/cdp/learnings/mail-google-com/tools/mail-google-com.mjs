@@ -576,7 +576,15 @@ async function clickLastVisible(ctx, selector) {
     return el.getBoundingClientRect();
   })()))`)) || "null");
   if (!rect) return false;
-  await clickRect(ctx, rect);
+  // Gmail renders "Suggested reply" a beat after the thread, which pushes the action buttons
+  // down; re-read the rect once the layout settles so the click lands on the button.
+  await wait(800);
+  const settled = JSON.parse(String(await evaluate(ctx, `String(JSON.stringify((() => {
+    const hits = [...document.querySelectorAll(${JSON.stringify(selector)})].filter((e) => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0; });
+    const el = hits[hits.length - 1];
+    return el ? el.getBoundingClientRect() : null;
+  })()))`)) || "null");
+  await clickRect(ctx, settled || rect);
   return true;
 }
 
@@ -701,9 +709,13 @@ async function composeInThread(ctx, { verb, authuser, query, to, cc, lines, bold
 
   const buttonSelector = verb === "reply" ? "span.ams.bkH" : "span.ams.bkG";
   if (!(await clickLastVisible(ctx, buttonSelector))) return { targetId, stop: `no-${verb}-button` };
-  if (!(await pollUntil(ctx, `(() => { ${COMPOSE_EDITOR_JS} return !!ed; })()`, 10000, 300))) {
-    return { targetId, stop: "compose-not-opened" };
+  let editorOpen = await pollUntil(ctx, `(() => { ${COMPOSE_EDITOR_JS} return !!ed; })()`, 10000, 300);
+  if (!editorOpen) {
+    // One retry: a late layout shift can still move the button between the read and the click.
+    await clickLastVisible(ctx, buttonSelector);
+    editorOpen = await pollUntil(ctx, `(() => { ${COMPOSE_EDITOR_JS} return !!ed; })()`, 10000, 300);
   }
+  if (!editorOpen) return { targetId, stop: "compose-not-opened" };
   await wait(1200); // the signature lands a beat after the editor does
 
   // A forward opens with the To field focused; a reply opens with the caret in the body.

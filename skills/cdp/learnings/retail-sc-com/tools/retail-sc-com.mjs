@@ -81,7 +81,7 @@ async function ensureEstatementsPage({ evaluate }) {
   return { ok: true };
 }
 
-const MONTH = /(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s*[-/]?\s*\d{2,4}|\d{1,2}\s*[-/]\s*\d{4}|\d{4}\s*[-/]\s*\d{1,2}/i;
+const MONTH = /\d{1,2}\/\d{1,2}\/\d{4}|(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s*[-/]?\s*\d{2,4}|\d{1,2}\s*[-/]\s*\d{4}|\d{4}\s*[-/]\s*\d{1,2}/i;
 
 // Rows that carry a View PDF anchor. The token in each href stays inside the page.
 const ROWS_EXPR = `JSON.stringify([...document.querySelectorAll('a[href*="estatement_download_pdf.htm"]')].map((a, i) => {

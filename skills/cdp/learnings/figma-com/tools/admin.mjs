@@ -121,3 +121,73 @@ export async function adminPlan(ctx, args) {
     await closeTab(ctx, tab);
   }
 }
+
+function assertFuid(args) {
+  const id = String((args && args.fuid) || "");
+  if (!id) return "";
+  if (!/^[0-9]{1,32}$/.test(id)) throw new Error("fuid must be digits, got: " + id);
+  return id;
+}
+
+// Same-origin GET with the tab's cookies; returns the "meta" object or null on a non-200.
+const GET_META = (path) => `(async()=>{const r=await fetch(${JSON.stringify(path)},{credentials:'include'});
+  if(!r.ok)return null; const j=await r.json(); return j.meta||null;})()`;
+
+// Folder id -> {files, roles} from the paginated_files endpoint (first 200 files, newest touched first).
+async function folderContents(ctx, id) {
+  const path = "/api/folders/" + id + "/paginated_files?folderId=" + id +
+    "&sort_column=touched_at&sort_order=desc&fetch_only_trashed_with_folder_files=false&page_size=200&file_type=";
+  const meta = (await evaluate(ctx, GET_META(path))) || {};
+  const files = (meta.files || []).filter((f) => !f.trashed_at).map((f) => ({
+    name: f.name, touched: f.touched_at, link: f.link_access, pw: !!f.has_file_link_password,
+  }));
+  const roles = (meta.roles || []).map((r) => (r.user && r.user.handle ? r.user.handle : r.pending_email || "?") + ":" + r.level);
+  return { files, roles };
+}
+
+// No subfolder endpoint exists. The folder page itself fetches paginated_files for each child, so
+// open the page and read those request URLs from the resource timings (own id dropped).
+async function subfolderIds(ctx, teamId, id, fuid) {
+  await evaluate(ctx, "performance.clearResourceTimings()");
+  const q = fuid ? "?fuid=" + fuid : "";
+  await evaluate(ctx, "location.href='https://www.figma.com/files/team/" + teamId + "/folder/" + id + q + "'");
+  await wait(8000);
+  const urls = await evaluate(ctx, "performance.getEntriesByType('resource').map(e=>e.name).filter(n=>/\\/api\\/folders\\/\\d+\\/paginated_files/.test(n))");
+  const ids = new Set();
+  for (const u of urls || []) {
+    const m = u.match(/\/api\/folders\/(\d+)\/paginated_files/);
+    if (m && m[1] !== id) ids.add(m[1]);
+  }
+  return [...ids];
+}
+
+export async function teamTree(ctx, args) {
+  const teamId = assertTeam(args);
+  const fuid = assertFuid(args);
+  const q = fuid ? "?fuid=" + fuid : "";
+  const tab = await openTab(ctx, "https://www.figma.com/files/team/" + teamId + q, 8000);
+  try {
+    const top = (await evaluate(ctx, GET_META("/api/teams/" + teamId + "/folders"))) || {};
+    const rows = (top.folder_rows || []).filter((r) => !r.trashed_at);
+    const tree = [];
+    for (const row of rows) {
+      const id = String(row.id);
+      const node = {
+        id, name: row.name || row.path || "", team_access: row.team_access, invite_only: !!row.is_invite_only,
+        ...(await folderContents(ctx, id)), subs: [],
+      };
+      for (const subId of await subfolderIds(ctx, teamId, id, fuid)) {
+        const info = (await evaluate(ctx, GET_META("/api/folders/" + subId))) || {};
+        if (info.trashed_at) continue;
+        node.subs.push({
+          id: subId, name: info.path || info.name || "", team_access: info.team_access, invite_only: !!info.is_invite_only,
+          ...(await folderContents(ctx, subId)),
+        });
+      }
+      tree.push(node);
+    }
+    return tree;
+  } finally {
+    await closeTab(ctx, tab);
+  }
+}

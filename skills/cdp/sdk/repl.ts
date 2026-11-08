@@ -19,6 +19,7 @@ import { Session, listPageTargets, resolveWsUrl, detectBrowsers } from './sessio
 import { asWire, extensionConnected, setExtensionClient } from './extension-hub.ts';
 import { acceptExtensionUpgrade, isExtensionUpgrade } from './ws-server.ts';
 import { axView, axDiff, parseAxRefs, parseAxLocators } from './axview.ts';
+import { runDomView, runDomClick, runDomType, type DomViewDriver, type DomViewOptions } from './domview.ts';
 import { RecordingManager } from './recording.ts';
 import { InteractionController, type InteractionOptions } from './interaction.ts';
 import * as Generated from './generated.ts';
@@ -85,6 +86,25 @@ async function axType(ref: number | string, refs: Map<number, number> | string |
 
 (globalThis as any).axClick = axClick;
 (globalThis as any).axType = axType;
+
+// domView: one Runtime.evaluate snapshot, refs resolved in-page (see domview.ts).
+// Routes through the ACTIVE session at call time, so it follows session.use().
+const domDriver: DomViewDriver = {
+  evaluate: async (expression) => {
+    const r: any = await session.domains.Runtime.evaluate({ expression, returnByValue: true });
+    if (r.exceptionDetails) throw new Error(`domView: page threw: ${r.exceptionDetails.exception?.description ?? r.exceptionDetails.text}`);
+    return r.result?.value;
+  },
+  mouse: async (type, x, y) => {
+    await session.domains.Input.dispatchMouseEvent({ type, x, y, button: 'left', clickCount: 1 });
+  },
+  insertText: async (text) => {
+    await session.domains.Input.insertText({ text });
+  },
+};
+(globalThis as any).domView = (opts?: DomViewOptions) => runDomView(domDriver, opts);
+(globalThis as any).domClick = (ref: number | string) => runDomClick(domDriver, ref);
+(globalThis as any).domType = (ref: number | string, text: string) => runDomType(domDriver, ref, text);
 // Agent-facing helpers from helpers.ts — exactly the "things CDP structurally
 // lacks" carve-out from the README ("No helpers file. No click(), no goto()"):
 // a drainable async event queue, modal-dialog detection, locator resolution

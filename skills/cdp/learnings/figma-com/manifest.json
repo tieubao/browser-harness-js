@@ -17,6 +17,16 @@
       "callable": "adminPlan",
       "args": { "teamId": {"type": "string", "required": true} },
       "returns": {"type": "string", "description": "The Plan block text, first line to the Resources heading."}
+    },
+    "teamTree": {
+      "description": "Read-only tree of a Figma TEAM through its web API on the logged-in tab: top-level folders plus one level of subfolders, each with team_access, invite_only, roles (handle:level) and files (name, touched, link access, password flag); trashed rows skipped. Opens its own tab, navigates it once per top-level folder to discover subfolder ids (about 8 s each), and closes it.",
+      "path": "tools/admin.mjs",
+      "callable": "teamTree",
+      "args": {
+        "teamId": {"type": "string", "required": true, "description": "Numeric Figma team id from the /files/team/<id>/ URL."},
+        "fuid": {"type": "string", "required": false, "description": "Digits-only Figma user id, appended as ?fuid= to page URLs to pick which logged-in account the tab uses."}
+      },
+      "returns": {"type": "array", "description": "[{id, name, team_access, invite_only, roles:[handle:level], files:[{name, touched, link, pw}], subs:[same shape]}]"}
     }
   }
 }

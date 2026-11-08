@@ -27,9 +27,9 @@ Learned by hand-driving a real post on a managed Page:
   holds the post text, but `[role=article]` around it can be empty and the
   permalink is often absent. `createPagePost` returns `{posted: true, url: null}`
   in that case; the post is live, open the Page's Posts list to find it.
-- **Session re-bind after navigation.** After `Page.navigate` or
-  `location.reload()` the harness session can answer for a different target.
-  Call `session.use(targetId)` again before evaluating.
+- **Session re-bind after navigation.** The legacy singleton session could
+  answer for a different target after `Page.navigate` or `location.reload()`.
+  The ported tool holds its own Page from `ctx.attachPage`, so it needs no re-bind.
 - **Log-in check:** a logged-out session renders `input[name=email]` in place
   of the composer. The tool refuses with `{posted: false, reason: "logged out"}`.
 - **Personal profile:** unverified. The same dialog shape appears on a profile
@@ -47,7 +47,7 @@ until the count is unchanged for ~10 rounds (or a max-rounds bound).
   is "hidden" to the page: Facebook's lazy loader never fires. Plain
   `window.scrollTo` stalled at 11 ids. Fix, all three needed: call
   `Emulation.setFocusEmulationEnabled({enabled: true})` and
-  `Page.setWebLifecycleState({state: 'active'})` after `session.use(targetId)`,
+  `Page.setWebLifecycleState({state: 'active'})` on the tab's Page (`page.cdp`),
   then scroll with real wheel events (`Input.dispatchMouseEvent`,
   `type: 'mouseWheel'`, `deltaY: 3000`) as well as `scrollBy`. That reached
   ~150 ids on a real Page. Never `Page.bringToFront`.

@@ -216,3 +216,101 @@ test('Session.getActiveTargetId tracks use() and follows setActiveSession restor
   s.setActiveSession('foreign');
   assert.equal(s.getActiveTargetId(), undefined);
 });
+
+// browserTools resolution: args.targetId, else a manifest-domain tab, else the active target, else an error.
+// The fake page records every Runtime.evaluate so we can see which tab ran the expression.
+function browserToolFakes(tabs: Array<{ targetId: string; url: string }>, active?: string) {
+  const attached: Array<{ targetId: string; allowedOrigins: string[]; disposed: boolean; evaluated: string[] }> = [];
+  const browser = {
+    tabs: async () => tabs,
+    attach: async (targetId: string, options: { allowedOrigins: string[] }) => {
+      const page = { targetId, allowedOrigins: options.allowedOrigins, disposed: false, evaluated: [] as string[],
+        dispose() { page.disposed = true; },
+        cdp: async (method: string, params: any) => {
+          if (method !== 'Runtime.evaluate') return {};
+          page.evaluated.push(params.expression);
+          assert.equal(params.returnByValue, true);
+          assert.equal(params.awaitPromise, true);
+          return { result: { value: 'ran-on-' + targetId } };
+        } };
+      attached.push(page);
+      return page;
+    },
+  };
+  const session = { getActiveTargetId: () => active };
+  return { browser, session, attached };
+}
+
+const BT_TABS = [
+  { targetId: 'X1', url: 'https://other.example/home' },
+  { targetId: 'M1', url: 'https://memo.d.foundation/notes/a' },
+  { targetId: 'X2', url: 'about:blank' },
+];
+
+test('browserTool: args.targetId wins over a domain match and the active tab', async () => {
+  const f = browserToolFakes(BT_TABS, 'X2');
+  await withGlobals({ browser: f.browser, session: f.session }, async () => {
+    const out = await learnings('memo-d-foundation', 'layout_overflow', { targetId: 'X1' });
+    assert.equal(out, 'ran-on-X1');
+    assert.deepEqual(f.attached.map(p => p.targetId), ['X1']);
+    assert.ok(f.attached[0]!.disposed);
+    assert.match(f.attached[0]!.evaluated[0]!, /^\(async function\(args\)\{ .*\)\(\{"targetId":"X1"\}\)$/s, 'args still reach the page unchanged');
+  });
+});
+
+test('browserTool: no targetId picks the tab matching the manifest domains, not the active tab', async () => {
+  const f = browserToolFakes(BT_TABS, 'X2');
+  await withGlobals({ browser: f.browser, session: f.session }, async () => {
+    assert.equal(await learnings('memo-d-foundation', 'layout_overflow', {}), 'ran-on-M1');
+    assert.deepEqual(f.attached.map(p => p.targetId), ['M1']);
+    assert.ok(f.attached[0]!.disposed);
+  });
+});
+
+test('browserTool: a host that only contains a manifest domain does not match', async () => {
+  const f = browserToolFakes([{ targetId: 'N1', url: 'https://memo.d.foundation.evil.example/' }, { targetId: 'A1', url: 'https://x.example/' }], 'A1');
+  await withGlobals({ browser: f.browser, session: f.session }, async () => {
+    assert.equal(await learnings('memo-d-foundation', 'layout_overflow', {}), 'ran-on-A1');
+  });
+});
+
+test('browserTool: waits for a domain tab that is still about:blank', async () => {
+  const tabs = [{ targetId: 'N1', url: 'about:blank' }];
+  const f = browserToolFakes(tabs, undefined);
+  setTimeout(() => { tabs[0]!.url = 'https://memo.d.foundation/'; }, 250);
+  await withGlobals({ browser: f.browser, session: f.session }, async () => {
+    assert.equal(await learnings('memo-d-foundation', 'layout_overflow', {}), 'ran-on-N1');
+  });
+});
+
+test('browserTool: no domain tab falls back to the active target, even a non-http one', async () => {
+  const f = browserToolFakes(BT_TABS.filter(t => t.targetId !== 'M1'), 'X2');
+  await withGlobals({ browser: f.browser, session: f.session }, async () => {
+    assert.equal(await learnings('memo-d-foundation', 'layout_overflow', {}), 'ran-on-X2');
+    assert.equal(f.attached[0]!.targetId, 'X2', 'about:blank has no origin of its own; attach still succeeds');
+    assert.ok(f.attached[0]!.disposed);
+  });
+});
+
+test('browserTool: no targetId, no domain tab, no active tab is a clear error naming the domains', async () => {
+  const f = browserToolFakes(BT_TABS.filter(t => t.targetId !== 'M1'), undefined);
+  await withGlobals({ browser: f.browser, session: f.session }, async () => {
+    await assert.rejects(() => learnings('memo-d-foundation', 'layout_overflow', {}),
+      /browser tool "layout_overflow": no tab to run on.*memo\.d\.foundation, df-memo-pr-staging\.infras\.workers\.dev/);
+    assert.equal(f.attached.length, 0);
+  });
+});
+
+test('browserTool: a page-side exception keeps the existing error text and still disposes the Page', async () => {
+  const f = browserToolFakes(BT_TABS, undefined);
+  const attach = f.browser.attach;
+  f.browser.attach = async (id: string, o: { allowedOrigins: string[] }) => {
+    const page: any = await attach(id, o);
+    page.cdp = async () => ({ exceptionDetails: { text: 'Uncaught', exception: { description: 'ReferenceError: boom' } } });
+    return page;
+  };
+  await withGlobals({ browser: f.browser, session: f.session }, async () => {
+    await assert.rejects(() => learnings('memo-d-foundation', 'layout_overflow', {}), /learnings browser tool "layout_overflow" failed: Uncaught/);
+    assert.ok(f.attached[0]!.disposed);
+  });
+});

@@ -8,7 +8,7 @@ await learnings("retail-sc-com", "estatements")                                 
 await learnings("retail-sc-com", "estatements", { dest: "/tmp/sc-statements" }) // -> { files:[{path, bytes, isPdf}] }
 ```
 
-Log in by hand first (password plus OTP). Each call attaches to the already open `retail.sc.com` tab by explicit sessionId (`ctx.cdp`), never `session.use`, and detaches at the end. It never opens or closes a tab.
+Log in by hand first (password plus OTP). Each call attaches to the already open `retail.sc.com` tab through its own Page (`ctx.attachPage`, then `page.cdp`), and the runner disposes that Page at the end. It never opens or closes a tab.
 
 ## The rule that matters: never navigate by URL
 

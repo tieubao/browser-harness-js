@@ -10,7 +10,7 @@ await learnings("mail-proton-me", "readConversation", { slot: 1, term: "keyword"
 await learnings("mail-proton-me", "readConversation", { url: "https://mail.proton.me/u/1/almost-all-mail/<conversationId>/<messageId>#keyword=keyword" })
 ```
 
-Each call opens its own background tab, drives it by explicit sessionId (`ctx.cdp`), and closes it in `finally`. It never calls `session.use`, so other sessions sharing the REPL keep their tab.
+Each call opens its own background tab, drives it through its own Page (`ctx.attachPage`, then `page.cdp`), and closes it in `finally`. It never moves the REPL active tab, so other sessions sharing the REPL keep theirs.
 
 ## What works (verified live)
 

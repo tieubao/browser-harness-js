@@ -8,7 +8,7 @@ Recipes for posting to LinkedIn through a logged-in session, as the member or as
 
 ### Company page
 
-- Open `https://www.linkedin.com/company/<numeric id>/admin/page-posts/published/` in a background tab (`Target.createTarget({url, background: true})`, then `session.use(id)`).
+- Open `https://www.linkedin.com/company/<numeric id>/admin/page-posts/published/` in a background tab (`Target.createTarget({url, background: true})`, then `ctx.attachPage(id)`).
 - Click the button whose text is "Start a post". A `[role=dialog]` opens with the actor name ("Dwarves Foundation") and a Quill `.ql-editor`.
 - Media: click the dialog button `aria-label="Add media"`, then `DOM.setFileInputFiles` on the `input[type=file]` (pierce the document: `DOM.getDocument({depth: -1, pierce: true})`). Optional alt text: "Alternative text" button, a textarea, then "Add". Then "Next" returns to the composer.
 - The composer shows `img[alt="Image preview"]` once media is attached. The tool asserts it.
@@ -48,7 +48,7 @@ A DOM click on the composer's enabled "Post" button (exact text) worked for both
 
 ### Gotchas
 
-- Call `session.use(targetId)` again after every `Page.navigate`; the harness session can re-bind to another target.
+- The ported tool holds its own Page from `ctx.attachPage`, so `Page.navigate` no longer needs a re-bind. The legacy singleton session could re-bind to another target.
 - The feed list can lag a few seconds; the tool reloads and retries before giving up with `{posted: true, url: null}`.
 - Long bodies may render truncated ("see more") in the list, so the match uses only the first line's first 40 characters.
 

@@ -49,9 +49,8 @@ usually means the tab needs a fresh human sign-in, not a retry.
 Removed apps can be restored from Removed Apps, but the bundle ID (once a build has been uploaded)
 and the SKU cannot be reused. A removed dev or staging record also loses its TestFlight channel.
 
-The daemon is shared by every session. Open a dedicated tab, attach with
-`Target.attachToTarget({flatten: true})`, and route calls through `cdp(sid, ...)` or
-`session.use(tabId)` plus `session.<Domain>.<method>`. Never attach to the tab a human is looking
+The daemon is shared by every session. Open a dedicated tab with `Target.createTarget`, attach it with
+`ctx.attachPage(targetId)`, and route calls through `page.cdp('<Domain>.<method>', params)`. Never attach to the tab a human is looking
 at.
 
 ## Why every fetch and every evaluate carries its own timeout

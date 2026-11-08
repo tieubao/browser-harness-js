@@ -1,13 +1,14 @@
 {
   "name": "cdp-sdk",
-  "version": "0.25.0",
+  "version": "0.25.1",
   "type": "module",
   "private": true,
   "scripts": {
     "gen": "node gen.ts",
     "repl": "node repl.ts",
     "test": "node --test *.test.ts",
-    "check": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "check": "node --test *.test.ts && node --test ../learnings/*/tools/*.test.mjs && node ../learnings/check-port.mjs $(ls -d ../learnings/*/ | xargs -n1 basename)"
   },
   "devDependencies": {
     "@types/node": "latest",

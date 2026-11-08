@@ -146,6 +146,8 @@ bash skills/<name>/scripts/test         # smoke test (77 = browser unreachable)
 ./skills/<name>/scripts/<name> …        # run the repo's own script directly
 ```
 
+`npm run check` in `skills/cdp/sdk` is the pre-merge gate: it runs the SDK tests, the learnings tool tests, and `check-port` over every learning, and exits non-zero if any fails.
+
 Skills drive the **user's own system browser** via CDP remote debugging — they
 do not bundle a browser. Tests are live (they hit real sites through the
 browser), like `findata` hits real Yahoo/SEC. A browser must be running with

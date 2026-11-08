@@ -21,12 +21,10 @@ installed skills are **copies** of what lives here.
 |-------|-----------|-------------|
 | `./skills/<name>/` (this repo) | **source of truth** | **YES — always** |
 | `~/.agents/skills/<name>/` | installed copy (via `npx skills add` or manual sync) | NO |
-| `~/.pi/agent/skills/<name>` | symlink → `~/.agents/skills/<name>` (pi's discovery) | NO |
 | `~/.local/bin/<name>` | PATH symlink → this repo's `skills/<name>/scripts/<name>` | (auto) |
 
 **Develop skills in `./skills/<name>/` only.** Never write into `~/.agents/skills/`
-or `~/.pi/agent/skills/` — those are installed copies, and changes there are
-throwaway. To make a repo skill runnable on PATH, run its own `scripts/setup`
+— those are installed copies, and changes there are throwaway. To make a repo skill runnable on PATH, run its own `scripts/setup`
 (which symlinks `~/.local/bin/<name>` at the repo script); do not hand-create
 global skill dirs.
 
@@ -50,7 +48,7 @@ on disk → `browser-harness-js --restart` reloads them. Details in
 `skills/cdp/interaction-skills/connection.md` (Stale daemon).
 
 **Bump `"version"` on every change to the `cdp` skill** — SDK code (`repl.ts`,
-`session.ts`, `axview.ts`, `generated.ts`, the `browser-harness-js` launcher)
+`session.ts`, `browser.ts`, `page.ts`, `snapshot.ts`, `axview.ts`, `domview.ts`, `helpers.ts`, `generated.ts`, the `browser-harness-js` launcher)
 *or* its docs (`SKILL.md`, `interaction-skills/*`). Without a bump, an
 installed copy has no way to know it's behind. Patch for fixes/docs, minor for
 a new capability. Then restart the daemon so the running process serves the
@@ -159,5 +157,5 @@ remote debugging enabled (see the `cdp` skill) or tests skip with exit 77.
 2. Add it to the README's **Skills** table and **Files** list.
 3. Ship a `scripts/test` smoke test.
 4. Run `scripts/setup` to symlink it onto PATH for local testing — leave the
-   global `~/.agents/skills/` and `~/.pi/agent/skills/` alone; the user installs
+   global `~/.agents/skills/` alone; the user installs
    from this repo (`npx skills add`) on their own schedule.

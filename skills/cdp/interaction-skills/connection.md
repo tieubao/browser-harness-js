@@ -47,6 +47,7 @@ Use only when auto-detect picks the wrong browser or you already know the destin
 | `{ transport: 'cdp' }` | Skip the extension; remote-debugging auto-detect only. |
 | `{ profileDir }` | Target a specific running browser. Reads its `DevToolsActivePort` directly. OS-agnostic. |
 | `{ wsUrl }` | You already have `ws://…/devtools/browser/<uuid>`. |
+| `{ wsUrl, headers }` | A hosted browser whose DevTools endpoint authenticates the WebSocket upgrade (`{ 'x-api-key': … }`). Reconnects send them again. |
 
 ```js
 await session.connect({ profileDir: '/Users/<you>/Library/Application Support/Google/Chrome' })
@@ -142,7 +143,7 @@ powershell -NoProfile -Command "(New-Object -ComObject WScript.Shell).AppActivat
 
 The CDP WebSocket has a per-message size limit. A single response large enough to exceed it closes the socket — the call rejects with `CDP socket closed`. This is a property of the *connection*, not any one domain: any big-enough response can trigger it. Common culprits:
 
-- `Accessibility.getFullAXTree` on a giant page (huge tables, infinite lists, heavy SPAs) — the most common trigger; compress the result with `axView` or scope it.
+- `Accessibility.getFullAXTree` on a giant page (huge tables, infinite lists, heavy SPAs) — the most common trigger; scope the raw AX query. Snapshot projection limits output, not the initial frame transfer.
 - `Runtime.evaluate` with `returnByValue: true` returning a huge object/string (`document.body.innerHTML`, a big JSON blob).
 - `Network.getResponseBody` on a large resource.
 - `DOM.getDocument` with a deep `depth` on a big DOM.
@@ -164,7 +165,7 @@ If a call does close the socket (`CDP socket closed`), the **next call auto-heal
 
 Two tells that the daemon is stale:
 
-1. **`ReferenceError: <global> is not defined`** for a global the docs describe (e.g. `axView`, `axDiff`, `axClick`) — or `typeof axView` returning `"undefined"`. The docs you read are new; the daemon is old.
+1. **`ReferenceError: <global> is not defined`** for a global the docs describe (e.g. `browser`) — or `typeof browser` returning `"undefined"`. The docs you read are new; the daemon is old.
 
 2. **Version mismatch.** The launcher reads the on-disk version fresh; the daemon serves its boot-cached version in `/health`:
 

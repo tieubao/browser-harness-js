@@ -435,12 +435,50 @@ function ctxForTool(): Record<string, unknown> {
 const LEARNING_PAGE_TIMEOUT_MS = 60_000;
 
 /** allowedOrigins: extra exact origins (the target's own origin and the manifest domains are added).
+ *  livenessMs (findPage only): how long a candidate tab gets to answer Runtime.evaluate('1') before it counts as hung, default 1500.
  *  timeoutMs: per-call Page timeout, 1..60000. waitMs (findPage only): how long to keep polling for a
  *  matching tab, default 2000, because a tab created with a URL can sit at about:blank for a moment.
  *  rawOnly: attach even when no http(s) origin is known; only page.cdp is usable then (origin-gated helpers throw). */
-export type LearningPageOptions = { allowedOrigins?: string[]; timeoutMs?: number; waitMs?: number; rawOnly?: boolean };
+export type LearningPageOptions = { allowedOrigins?: string[]; timeoutMs?: number; waitMs?: number; rawOnly?: boolean; livenessMs?: number };
 export type ToolCtxOptions = { defaultPage?: boolean };
 export type ToolCtxHandle = { ctx: Record<string, unknown>; cleanup: () => void };
+
+const LIVENESS_MS = 1_500;
+
+/** Resolve with the promise's value, or the TIMED_OUT symbol after `ms`. The timer is always cleared. */
+const TIMED_OUT = Symbol('timed-out');
+async function raceTimeout<T>(p: Promise<T>, ms: number): Promise<T | typeof TIMED_OUT> {
+  let timer!: ReturnType<typeof setTimeout>;
+  try {
+    return await Promise.race([p, new Promise<typeof TIMED_OUT>(res => { timer = setTimeout(() => res(TIMED_OUT), ms); })]);
+  } finally { clearTimeout(timer); }
+}
+
+/** Does this tab's renderer answer? Long-open background tabs can sit frozen: Target.attachToTarget works but
+ *  Runtime.evaluate (and Page.enable, which Browser.attach sends) never answers, so a Page on it hangs for
+ *  the full call timeout. Probe on a throwaway raw attachment, before any Page exists: evaluate('1') within
+ *  `livenessMs`; if silent, wake it once with Emulation.setFocusEmulationEnabled (no focus change, no
+ *  navigation; reset when the probe detaches) and probe again. Page.setWebLifecycleState('active') does not
+ *  wake such a tab. Never throws: any failure counts as not live. */
+export async function tabAnswers(session: { _call: (method: string, params?: unknown, opts?: unknown) => Promise<any> }, targetId: string, livenessMs = LIVENESS_MS): Promise<boolean> {
+  let sessionId: string | undefined;
+  try {
+    const attached = await raceTimeout(session._call('Target.attachToTarget', { targetId, flatten: true }), livenessMs * 2);
+    if (attached === TIMED_OUT || !attached?.sessionId) return false;
+    sessionId = attached.sessionId as string;
+    const evalOne = async () => {
+      const r = await raceTimeout(session._call('Runtime.evaluate', { expression: '1', returnByValue: true }, { sessionId }), livenessMs);
+      return r !== TIMED_OUT;
+    };
+    if (await evalOne()) return true;
+    const woke = await raceTimeout(session._call('Emulation.setFocusEmulationEnabled', { enabled: true }, { sessionId }), livenessMs * 2);
+    if (woke === TIMED_OUT) return false;
+    return await evalOne();
+  } catch { return false; }
+  finally {
+    if (sessionId) { try { await session._call('Target.detachFromTarget', { sessionId }); } catch { /* already gone */ } }
+  }
+}
 
 const httpOrigin = (url: unknown): string | undefined => {
   try {
@@ -488,16 +526,24 @@ async function buildToolCtx(manifest: any, args?: unknown, options: ToolCtxOptio
     const test = (url: string) => typeof match === 'string' ? url.startsWith(match) : new RegExp(match.source, match.flags.replace(/[gy]/g, '')).test(url);
     const deadline = Date.now() + (opts.waitMs ?? 2000);
     let tabs: Array<{ targetId: string; url: string }> = await browser.tabs();
-    let hit = tabs.find(t => test(t.url));
-    while (!hit && Date.now() < deadline) {
+    let hits = tabs.filter(t => test(t.url));
+    while (!hits.length && Date.now() < deadline) {
       await new Promise(res => setTimeout(res, 100));
       tabs = await browser.tabs();
-      hit = tabs.find(t => test(t.url));
+      hits = tabs.filter(t => test(t.url));
     }
-    if (!hit) {
+    if (!hits.length) {
       throw new Error('findPage: no open page matches ' + String(match) + ' (open: ' + (tabs.map(t => t.url).slice(0, 8).join(', ') || 'none') + ')');
     }
-    return adopt(hit, opts);
+    // First match whose renderer answers. A Page already adopted in this call is live by definition.
+    const canProbe = typeof browser.session?._call === 'function';
+    const hung: string[] = [];
+    for (const hit of hits) {
+      const cached = made.get(hit.targetId);
+      if ((cached && !cached.disposed) || !canProbe || await tabAnswers(browser.session, hit.targetId, opts.livenessMs)) return adopt(hit, opts);
+      hung.push(httpOrigin(hit.url) ?? hit.url.split(/[?#]/)[0]);
+    }
+    throw new Error('findPage: ' + hung.length + ' open tab(s) match ' + String(match) + ' but none answered (hung or frozen in the background; wake attempt failed): ' + hung.slice(0, 8).join(', '));
   };
 
   ctx.attachPage = async (targetId: string, opts: LearningPageOptions = {}) => {

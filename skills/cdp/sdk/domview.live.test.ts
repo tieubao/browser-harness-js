@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test, { after, before } from 'node:test';
 import { runDomClick, runDomType, runDomView, type DomViewDriver } from './domview.ts';
+import { settleInitialNavigation } from './page.ts';
 import { Session } from './session.ts';
 
 // Real headless browser against a local fixture: the in-page reader, the
@@ -108,15 +109,8 @@ async function open(path = '/') {
   const { sessionId } = await session.domains.Target.attachToTarget({ targetId, flatten: true }) as { sessionId: string };
   const call = (method: string, params: unknown = {}) => session._call(method, params, { sessionId }) as Promise<any>;
   await call('Page.enable');
-  // createTarget returns before the navigation commits; wait for the real document.
-  for (let i = 0; i < 100; i++) {
-    const r = (await call('Runtime.evaluate', {
-      expression: 'location.href.startsWith(' + JSON.stringify(origin) + ') && document.readyState === "complete"',
-      returnByValue: true,
-    })).result?.value;
-    if (r) break;
-    await new Promise((res) => setTimeout(res, 50));
-  }
+  // createTarget returns before the navigation commits; wait for the real document, not Helium's interim about:blank.
+  await settleInitialNavigation(session, sessionId, { expectOrigin: origin });
   const driver: DomViewDriver = {
     evaluate: async (expression) => (await call('Runtime.evaluate', { expression, returnByValue: true })).result?.value,
     mouse: async (type, x, y) => { await call('Input.dispatchMouseEvent', { type, x, y, button: 'left', clickCount: 1 }); },

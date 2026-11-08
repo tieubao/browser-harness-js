@@ -35,6 +35,48 @@ const refusal = (seen: InteractionObservation) => 'not_interactable_or_unsupport
   (seen.truncated ? ': observation truncated' : seen.refusal ? `: ${seen.refusal}` : '');
 const frameKey = (frame: any) => JSON.stringify([frame.id, frame.loaderId, frame.url]);
 
+export type SettleOptions = { timeoutMs?: number; expectOrigin?: string; generation?: number; quietMs?: number };
+/**
+ * Wait until a freshly created target has finished its initial navigation. Helium parks a new tab at
+ * about:blank (readyState already "complete") before it navigates to the requested URL, sometimes in two
+ * steps, so readyState alone resolves too early and a Page.navigate in that window is aborted. Settled means:
+ * the main document is not about:blank (or, with expectOrigin, is on that origin), it is complete, and the same
+ * href has held with no main-frame navigation event for quietMs. Polls state, because a late attacher misses
+ * the events. Rejects at the deadline; a disconnect rejects at once.
+ */
+export async function settleInitialNavigation(session: Session, sessionId: string, options: SettleOptions = {}): Promise<string> {
+  const timeoutMs = options.timeoutMs ?? 10_000, quietMs = options.quietMs ?? 150, expect = options.expectOrigin;
+  const deadline = Date.now() + timeoutMs;
+  const call = (method: string, params: unknown) => session._call(method, params, { sessionId, expectedGeneration: options.generation }) as Promise<any>;
+  await call('Page.enable', {});
+  let navigations = 0;
+  const off = session.onEvent((method, p: any, sid) => {
+    if (sid !== sessionId) return;
+    if ((method === 'Page.frameNavigated' && !p.frame?.parentId) || method === 'Page.navigatedWithinDocument') navigations++;
+  });
+  const origin = (href: string) => { try { return new URL(href).origin; } catch { return ''; } };
+  let held: { href: string; navigations: number; since: number } | undefined, last = 'no document';
+  try {
+    while (Date.now() < deadline) {
+      let seen: { href: string; ready: string } | undefined;
+      try {
+        const r = await call('Runtime.evaluate', { expression: '({href:location.href,ready:document.readyState})', returnByValue: true });
+        seen = r.exceptionDetails ? undefined : r.result?.value;
+      } catch (error) {
+        // A destroyed context is the signal this wait exists for; a lost connection is not recoverable.
+        if (!session.isConnected() || /generation changed|Not connected/.test(message(error))) throw error;
+      }
+      if (seen) last = `${seen.href} (${seen.ready})`;
+      const committed = !!seen && seen.ready === 'complete' && (expect ? origin(seen.href) === expect : seen.href !== 'about:blank');
+      if (!committed) held = undefined;
+      else if (!held || held.href !== seen!.href || held.navigations !== navigations) held = { href: seen!.href, navigations, since: Date.now() };
+      else if (Date.now() - held.since >= quietMs) return held.href;
+      await new Promise(resolve => setTimeout(resolve, 25));
+    }
+  } finally { off(); }
+  throw new Error(`Initial navigation did not settle within ${timeoutMs}ms (last document ${last})`);
+}
+
 /** Scope-bound page. No method reads or changes Session's mutable active-target pointer. */
 export class Page {
   readonly scope: Readonly<{ sessionId: string }>;

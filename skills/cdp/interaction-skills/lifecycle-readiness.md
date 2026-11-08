@@ -58,6 +58,10 @@ if (!ready) throw new Error('page did not produce results in time')
 
 Pick the cheapest signal that asserts the actual outcome — a result-card count, a regex on the panel text, a meta tag, `location.href` changing to the resolved URL. It's more robust than any lifecycle event because it asserts the outcome, not a proxy for it. (For a `application/json` URL specifically, none of the load events fire at all — see [json-navigation.md](json-navigation.md).)
 
+## A new tab on Helium starts at `about:blank`
+
+`Target.createTarget({ url })` on Helium returns a tab that sits at `about:blank` (`readyState` already `complete`) for 150 ms or more, then navigates to the URL, sometimes in two steps; the second one destroys the execution context. Chrome is on the URL at once. So `readyState === "complete"` after `createTarget` is not proof the page loaded, and a `Page.navigate` in that window is aborted with `net::ERR_ABORTED`. `Browser.open(url, ...)` (0.25.0 and later) creates the tab with the real URL and waits on `settleInitialNavigation` (`sdk/page.ts`): the document is no longer `about:blank` (or is on `expectOrigin`), is `complete`, and has held the same href with no main-frame navigation for 150 ms, all inside the call's `timeoutMs`. Use it for any tab you create yourself. The origin guard is unchanged: a tab that lands off the allowed origins still fails with `origin_denied`.
+
 ## Traps
 
 - **`Page.setLifecycleEventsEnabled({ enabled: true })` is required.** Without it Chrome emits zero `Page.lifecycleEvent`, so `waitFor('…networkIdle')` hangs to the timeout. Call it once after `Page.enable`, before navigating.

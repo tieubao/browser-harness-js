@@ -57,4 +57,4 @@ until the count is unchanged for ~10 rounds (or a max-rounds bound).
   `{ids: [], reason: "logged out"}`. Zero reels returns `{ids: [], reason}` too.
 - **Close the tab** in `finally` so the user's tab count is unchanged.
 
-Ported to the Page API (see ../PORTING.md). live: unverified (logged-in).
+Ported to the Page API (see ../PORTING.md). live: verified on listPageReels; createPagePost unverified.

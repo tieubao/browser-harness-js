@@ -41,4 +41,4 @@ first as `bh-who.sh` / `bh-mint.js` / `bh-mint.sh` (ops-toolkit session scratch)
 here. Memory note: `cf-dashboard-cookie-api-via-harness`. Related:
 `[[browser-harness-js-priority]]`, `[[cf-token-permission-groups-are-allowlists]]`.
 
-Ported to the Page API (see ../PORTING.md). live: unverified (logged-in).
+Ported to the Page API (see ../PORTING.md). live: whoami verified; the api tool reached the API but the session had expired; write tools unverified.

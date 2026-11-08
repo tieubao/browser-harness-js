@@ -32,4 +32,4 @@ Tools are in `tools/discord-com.mjs`: `listDms` and `readDm`. Each opens its own
 
 Written from DOM facts proven by hand in a live session; the tools were checked statically only (`node --check`, manifest parse, SDK tests), not run end to end.
 
-Ported to the Page API (see ../PORTING.md). live: unverified (logged-in).
+Ported to the Page API (see ../PORTING.md). live: verified on listDms and readDm.

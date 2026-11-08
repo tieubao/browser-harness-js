@@ -1,0 +1,56 @@
+{
+  "id": "claude-ai",
+  "name": "Claude (claude.ai)",
+  "domains": ["claude.ai"],
+  "notes": ["notes/overview.md"],
+  "nodeTools": {
+    "status": {
+      "description": "Where the tab is: no-tab (no open claude.ai tab) | tab.",
+      "path": "tools/claude-ai.mjs",
+      "callable": "status",
+      "args": {},
+      "returns": {"type": "object", "description": "{state:\"tab\", url} or {state:\"no-tab\", hint}"}
+    },
+    "openCode": {
+      "description": "Open claude.ai/code in a background tab with a 45 s deadline (the SPA never settles inside the default 10 s; on failure the tab is closed). Side effect: creates a tab, which the caller closes. Pass the returned targetId to the other tools.",
+      "path": "tools/claude-ai.mjs",
+      "callable": "openCode",
+      "args": {"url": {"type": "string", "required": false, "description": "default https://claude.ai/code"}},
+      "returns": {"type": "object", "description": "{targetId}"}
+    },
+    "rect": {
+      "description": "Scroll the element that a JS expression evaluates to into view and return its viewport rect. Use it to place a click or a screenshot clip.",
+      "path": "tools/claude-ai.mjs",
+      "callable": "rectTool",
+      "args": {"expr": {"type": "string", "required": true, "description": "in-page expression returning an Element, e.g. document.querySelector('[role=dialog]')"}},
+      "returns": {"type": "object", "description": "{x, y, width, height, cx, cy} or null when absent"}
+    },
+    "hoverClick": {
+      "description": "Real mouse click on the element an expression evaluates to: mouseMoved, 150 ms, mousePressed, mouseReleased at its centre. Works where the guarded click answers 'blocked: not_interactable_or_unsupported' and on Radix menus. Side effect: whatever the click does.",
+      "path": "tools/claude-ai.mjs",
+      "callable": "hoverClickTool",
+      "args": {"expr": {"type": "string", "required": true, "description": "in-page expression returning an Element"}},
+      "returns": {"type": "object", "description": "{clicked:true, x, y}; throws when no element"}
+    },
+    "clickByText": {
+      "description": "hoverClick the element inside a scope whose trimmed innerText equals the text, else the first button whose innerText includes it. Side effect: whatever the click does (Archive and Delete are real).",
+      "path": "tools/claude-ai.mjs",
+      "callable": "clickByTextTool",
+      "args": {
+        "scope": {"type": "string", "required": true, "description": "CSS selector, e.g. [role=menu], [role=dialog], main"},
+        "text": {"type": "string", "required": true, "description": "visible text, e.g. Settings, Create project"}
+      },
+      "returns": {"type": "object", "description": "{clicked:true, x, y}; throws when no match"}
+    },
+    "shot": {
+      "description": "PNG of a clip of a background tab: 1280x820 at 2x override, Page.captureScreenshot with a clip, override cleared after. Default clip crops the 232 px sidebar. Side effect: writes outPath. Never publish a shot of the sidebar or Projects list of a real account.",
+      "path": "tools/claude-ai.mjs",
+      "callable": "shotTool",
+      "args": {
+        "out": {"type": "string", "required": true, "description": "absolute output path"},
+        "clip": {"type": "object", "required": false, "description": "{x, y, width, height}; default {x:232,y:0,width:1048,height:820}; for a dialog pass its rect"}
+      },
+      "returns": {"type": "object", "description": "{path, clip}"}
+    }
+  }
+}

@@ -15,17 +15,17 @@ function matches(url, domain) {
   } catch { return false; }
 }
 
-async function evaluate(ctx, expression) {
-  const { result, exceptionDetails } = await ctx.session.Runtime.evaluate({ expression, returnByValue: true, awaitPromise: true });
+async function evaluate(page, expression) {
+  const { result, exceptionDetails } = await page.cdp("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true });
   if (exceptionDetails) throw new Error(exceptionDetails.text || (exceptionDetails.exception || {}).description || "Runtime.evaluate failed");
   return result ? result.value : undefined;
 }
 
 export async function status(ctx) {
-  const tabs = await ctx.listPageTargets();
+  const tabs = await ctx.browser.tabs();
   const tab = tabs.find((t) => DOMAINS.some((d) => matches(t.url, d)));
   if (!tab) return { state: 'no-tab', hint: 'no open tab matches ' + DOMAINS.join(', ') };
-  await ctx.session.use(tab.targetId);
+  await ctx.attachPage(tab.targetId);
   return { state: 'tab', url: tab.url };
 }
 
@@ -37,12 +37,12 @@ export async function download(ctx, { fileId, authuser = 0, waitMs = 8000 } = {}
   if (!fileId) throw new Error("fileId is required");
   const url = `https://drive.usercontent.google.com/download?id=${encodeURIComponent(fileId)}&export=download&authuser=${authuser}&confirm=t`;
   const { targetId } = await ctx.session.Target.createTarget({ url, background: true });
-  await ctx.session.use(targetId);
+  const page = await ctx.attachPage(targetId, { allowedOrigins: [new URL(url).origin] });
   await wait(waitMs);
-  const text = String(await evaluate(ctx, "document.body ? document.body.innerText : ''") || "");
+  const text = String(await evaluate(page, "document.body ? document.body.innerText : ''") || "");
   if (/403\. That.s an error/i.test(text)) { await ctx.session.Target.closeTarget({ targetId }); return { stop: "403", hint: "try another authuser slot" }; }
   if (/Sign in/i.test(text) && /Google/i.test(text)) { await ctx.session.Target.closeTarget({ targetId }); return { stop: "sign-in" }; }
   // Files over ~100 MB get the "can't scan this file for viruses" interstitial; its form is the download.
-  const submitted = await evaluate(ctx, `(() => { const f = document.querySelector('form'); if (!f) return false; f.submit(); return true; })()`);
+  const submitted = await evaluate(page, `(() => { const f = document.querySelector('form'); if (!f) return false; f.submit(); return true; })()`);
   return { state: "started", interstitial: submitted, note: "file lands in the browser's download dir; the tab closes itself when the download begins" };
 }

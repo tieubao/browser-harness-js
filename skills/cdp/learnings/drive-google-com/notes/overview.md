@@ -27,3 +27,5 @@ Then watch `~/Downloads/<name>.crdownload` become `<name>`; a 668 MB file took u
 2026-09-23, the first Dwarves Dispatch recording (one 33-minute .mkv in a shared Drive folder).
 Driven by hand through `browser-harness-js` with an explicit `wsUrl` from `127.0.0.1:9222`, then
 distilled here. Pipeline that consumed the file: `foundation-ops/cli/dispatch`.
+
+Ported to the Page API (see ../PORTING.md). live: unverified (logged-in).

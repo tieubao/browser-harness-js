@@ -5,8 +5,8 @@
 // tab returns empty innerText for rows after the first few.
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
-async function evaluate(ctx, expression) {
-  const { result, exceptionDetails } = await ctx.session.Runtime.evaluate({ expression, returnByValue: true, awaitPromise: true });
+async function evaluate(page, expression) {
+  const { result, exceptionDetails } = await page.cdp("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true });
   if (exceptionDetails) throw new Error(exceptionDetails.text || (exceptionDetails.exception || {}).description || "Runtime.evaluate failed");
   return result ? result.value : undefined;
 }
@@ -76,11 +76,11 @@ export async function searchOneWay(ctx, { from, to, date, nonstopOnly = false, c
   const url = `https://www.google.com/travel/flights?q=${q}&hl=${lang}&curr=${currency}`;
   const { targetId } = await ctx.session.Target.createTarget({ url: "about:blank", background: true });
   try {
-    await ctx.session.use(targetId);
-    await ctx.session.Page.enable();
-    await ctx.session.Page.navigate({ url });
+    const page = await ctx.attachPage(targetId, { allowedOrigins: [new URL(url).origin] });
+    await page.cdp("Page.enable");
+    await page.cdp("Page.navigate", { url });
 
-    const readCount = async () => (await evaluate(ctx, READ_ROWS)).length;
+    const readCount = async () => (await evaluate(page, READ_ROWS)).length;
     // Poll until the row count is > 0 and unchanged for two consecutive polls.
     const settle = async (minCount, budgetMs) => {
       const deadline = Date.now() + budgetMs;
@@ -97,12 +97,12 @@ export async function searchOneWay(ctx, { from, to, date, nonstopOnly = false, c
     const first = await settle(0, timeoutMs);
     if (!first) return { stop: "no-results", hint: "no result rows rendered; check the codes (SHA is Hongqiao only; use PVG or a city code) and the date", url };
     let expanded = false;
-    if (expand && (await evaluate(ctx, CLICK_MORE))) {
+    if (expand && (await evaluate(page, CLICK_MORE))) {
       expanded = true;
       await settle(first, 15000);
     }
 
-    const raw = await evaluate(ctx, READ_ROWS);
+    const raw = await evaluate(page, READ_ROWS);
     const seen = new Set();
     let rows = [];
     for (const lines of raw) {

@@ -12,8 +12,18 @@ const LABELS = ["Public Bot", "Requires OAuth2 Code Grant", "Private Channel Obf
 const TOKEN_RE = "[A-Za-z0-9_-]{24,}\\.[A-Za-z0-9_-]{6}\\.[A-Za-z0-9_-]{27,}";
 let tabId;
 
+// The Page this call is driving (one ctx per tool call). A standalone call such as readToken
+// reaches the remembered tab, else the default page; a Page never outlives its call.
+const current = new WeakMap();
+async function pageOf(ctx) {
+  if (current.has(ctx)) return current.get(ctx);
+  const page = ctx.page || (tabId ? await ctx.attachPage(tabId) : ctx.requirePage());
+  current.set(ctx, page);
+  return page;
+}
+
 async function ev(ctx, expression, timeout = 20000) {
-  const { result, exceptionDetails } = await ctx.session.Runtime.evaluate({
+  const { result, exceptionDetails } = await (await pageOf(ctx)).cdp("Runtime.evaluate", {
     expression, returnByValue: true, awaitPromise: true, userGesture: true, timeout,
   });
   if (exceptionDetails) throw new Error(exceptionDetails.text || exceptionDetails.exception?.description || "evaluate failed");
@@ -22,19 +32,19 @@ async function ev(ctx, expression, timeout = 20000) {
 
 async function front(ctx) {
   await ctx.session.Target.activateTarget({ targetId: tabId });
-  await ctx.session.Emulation.setFocusEmulationEnabled({ enabled: true }).catch(() => {});
+  await (await pageOf(ctx)).cdp("Emulation.setFocusEmulationEnabled", { enabled: true }).catch(() => {});
   // ponytail: macOS-only app raise, best effort; the Helium app name is an assumption.
   await new Promise((r) => execFile("osascript", ["-e", 'tell application "Helium" to activate'], () => r()));
 }
 
 async function open(ctx, url) {
-  const alive = tabId && (await ctx.listPageTargets()).some((t) => t.targetId === tabId);
+  const alive = tabId && (await ctx.browser.tabs()).some((t) => t.targetId === tabId);
   if (!alive) {
     ({ targetId: tabId } = await ctx.session.Target.createTarget({ url }));
-    await ctx.session.use(tabId);
+    current.set(ctx, await ctx.attachPage(tabId, { allowedOrigins: [new URL(url).origin] }));
   } else {
-    await ctx.session.use(tabId);
-    await ctx.session.Page.navigate({ url });
+    current.set(ctx, await ctx.attachPage(tabId, { allowedOrigins: [new URL(url).origin] }));
+    await current.get(ctx).cdp("Page.navigate", { url });
   }
   await front(ctx);
   await wait(3500);
@@ -51,10 +61,10 @@ async function until(ctx, expr, ms = 10000) {
 }
 
 async function realClick(ctx, x, y) {
-  const I = ctx.session.Input;
-  await I.dispatchMouseEvent({ type: "mouseMoved", x, y });
-  await I.dispatchMouseEvent({ type: "mousePressed", x, y, button: "left", clickCount: 1 });
-  await I.dispatchMouseEvent({ type: "mouseReleased", x, y, button: "left", clickCount: 1 });
+  const page = await pageOf(ctx);
+  await page.cdp("Input.dispatchMouseEvent", { type: "mouseMoved", x, y });
+  await page.cdp("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", clickCount: 1 });
+  await page.cdp("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", clickCount: 1 });
 }
 
 // Page-side: smallest element whose trimmed text matches, as a centre point.
@@ -181,8 +191,9 @@ async function installLinkNone(ctx, appId) {
   // Synthetic events do not open this dropdown; it needs a real mouse click.
   if (!(await realClickText(ctx, "*", "Discord Provided Link"))) throw new Error("install link dropdown not found");
   await wait(600);
-  await ctx.session.Input.dispatchKeyEvent({ type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
-  await ctx.session.Input.dispatchKeyEvent({ type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
+  const page = await pageOf(ctx);
+  await page.cdp("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
+  await page.cdp("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
   await wait(600);
   return saveChanges(ctx);
 }

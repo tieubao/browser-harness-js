@@ -20,8 +20,11 @@ function assertTeam(args) {
   return id;
 }
 
+// The tab openTab attached for this ctx (one ctx per tool call).
+const current = new WeakMap();
+
 async function evaluate(ctx, expression) {
-  const { result, exceptionDetails } = await ctx.session.Runtime.evaluate({ expression, returnByValue: true, awaitPromise: true });
+  const { result, exceptionDetails } = await current.get(ctx).cdp("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true });
   if (exceptionDetails) throw new Error(exceptionDetails.text || (exceptionDetails.exception && exceptionDetails.exception.description) || "Runtime.evaluate failed");
   return result ? result.value : undefined;
 }
@@ -29,7 +32,7 @@ async function evaluate(ctx, expression) {
 // Open a tab, route page-level calls to it, wait for the SPA to settle.
 async function openTab(ctx, url, settleMs) {
   const { targetId } = await ctx.session.Target.createTarget({ url });
-  await ctx.session.use(targetId);
+  current.set(ctx, await ctx.attachPage(targetId, { allowedOrigins: ["https://www.figma.com"] }));
   // createTarget opens a BACKGROUND tab. The 53-row read was only ever proven on a foreground
   // tab (browser-cdp's /json/new path), so activate it for the ~15 s the tool runs; closeTab
   // returns the operator to their previous tab. (Focus emulation alone was tried and is not
@@ -52,9 +55,10 @@ async function ensureConsole(ctx, teamId) {
   const centre = await evaluate(ctx, "(()=>{const e=document.querySelector('li[class*=goToAdminRow]');if(!e)return null;const r=e.getBoundingClientRect();return [Math.round(r.x+r.width/2),Math.round(r.y+r.height/2)]})()");
   if (!centre) throw new Error("Admin row not in the sidebar: this account is not an admin of team " + teamId);
   const [x, y] = centre;
-  await ctx.session.Input.dispatchMouseEvent({ type: "mouseMoved", x, y });
-  await ctx.session.Input.dispatchMouseEvent({ type: "mousePressed", x, y, button: "left", clickCount: 1 });
-  await ctx.session.Input.dispatchMouseEvent({ type: "mouseReleased", x, y, button: "left", clickCount: 1 });
+  const page = current.get(ctx);
+  await page.cdp("Input.dispatchMouseEvent", { type: "mouseMoved", x, y });
+  await page.cdp("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", clickCount: 1 });
+  await page.cdp("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", clickCount: 1 });
   await wait(8000);
 }
 

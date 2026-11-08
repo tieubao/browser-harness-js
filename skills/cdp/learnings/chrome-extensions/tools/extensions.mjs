@@ -1,13 +1,21 @@
 // learnings/chrome-extensions/tools/extensions.mjs
 // Extension management for a Chromium browser over CDP. Called as fn(ctx, args); ctx.session
-// is the harness Session. See notes/overview.md for why each path is taken.
+// is the harness Session (browser-level calls only) and the chrome://extensions tab is driven
+// as a Page (ctx.attachPage). See notes/overview.md for why each path is taken.
 //
 //  - loadUnpacked uses the browser-level Extensions.loadUnpacked method, with NO page session
 //    attached, because the "Load unpacked" button opens a native file picker CDP cannot drive.
 //  - The other tools run chrome.developerPrivate.* inside a chrome://extensions page, which is
 //    the same API the page's own UI uses, so they skip the nested shadow-root DOM entirely.
-// Every tool restores the session that was active before it ran.
+// No tool touches the active-session pointer: browser-level calls need none, and the Page carries
+// its own sessionId.
 
+// A chrome:// page has no http(s) origin and Page requires one exact http(s) origin. The origin
+// only gates page.info/snapshot/goto/locators, none of which this file uses (page.cdp is not
+// origin-checked), so a placeholder that no page can ever match stands in for it.
+const PLACEHOLDER_ORIGIN = "https://chrome-extensions.invalid";
+
+const LOAD_UNPACKED = "Extensions.loadUnpacked";
 const EXT_ID = /^[a-p]{32}$/;
 const EXTENSIONS_URL = /^[a-z-]+:\/\/extensions(\/|$|\?|#)/;
 
@@ -24,22 +32,15 @@ function evalError(exceptionDetails) {
 export async function loadUnpacked(ctx, args) {
   const path = args && args.path;
   if (typeof path !== "string" || !path.startsWith("/")) throw new Error("loadUnpacked needs an absolute path to the extension directory");
-  const { session } = ctx;
-  const previous = session.getActiveSession();
-  session.setActiveSession(undefined);
-  try {
-    const result = await session._call("Extensions.loadUnpacked", { path });
-    return { id: result.id };
-  } finally {
-    session.setActiveSession(previous);
-  }
+  // Browser-level (Extensions.* never carries a sessionId), so it stays on ctx.session._call.
+  const result = await ctx.session._call(LOAD_UNPACKED, { path });
+  return { id: result.id };
 }
 
 // Run `body` (a JS expression string producing a value or promise) inside a chrome://extensions
 // page. Reuses an open one, else opens one in the background and closes it afterwards.
 async function inExtensionsPage(ctx, body) {
   const { session } = ctx;
-  const previous = session.getActiveSession();
   let createdTargetId;
   try {
     const { targetInfos } = await session._call("Target.getTargets");
@@ -49,8 +50,8 @@ async function inExtensionsPage(ctx, body) {
       ({ targetId } = await session._call("Target.createTarget", { url: "chrome://extensions", background: true }));
       createdTargetId = targetId;
     }
-    await session.use(targetId);
-    const { result, exceptionDetails } = await session._call("Runtime.evaluate", {
+    const page = await ctx.attachPage(targetId, { allowedOrigins: [PLACEHOLDER_ORIGIN] });
+    const { result, exceptionDetails } = await page.cdp("Runtime.evaluate", {
       expression: `(async () => { ${body} })()`,
       awaitPromise: true,
       returnByValue: true,
@@ -58,7 +59,6 @@ async function inExtensionsPage(ctx, body) {
     if (exceptionDetails) throw evalError(exceptionDetails);
     return result ? result.value : undefined;
   } finally {
-    session.setActiveSession(previous);
     if (createdTargetId) await session._call("Target.closeTarget", { targetId: createdTargetId }).catch(() => {});
   }
 }

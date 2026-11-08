@@ -31,3 +31,5 @@ URL shape: `https://www.booking.com/searchresults.html?ss=<city>&checkin=..&chec
   does not scroll for more.
 - Names can be in another script (`AYA Residence大阪城公園 ...`); keep them verbatim.
 - A bot-check or consent page shows as `{stop:"no-results"}` with the url to open by hand.
+
+Ported to the Page API (see ../PORTING.md). live: unverified (blocked headless: the search page loaded but reported 0 properties, so the tool returned its documented no-results stop through the Page API).

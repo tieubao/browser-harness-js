@@ -8,12 +8,12 @@ const HOST = "accounts.delawareregisteredagent.com";
 const HOME = `https://${HOST}/`;
 const API = "/api/v3/client/";
 
-// The REPL server is shared by every session on the machine, and session.use moves one global
-// active-tab pointer, so two callers steal each other's tab. Every call here goes through an
-// explicit sessionId instead (same rule as learnings/mail-google-com, "Concurrency").
+// The REPL server is shared by every session on the machine, so two callers must not share one
+// active-tab pointer. ctx.attachPage gives each call its own Page (own sessionId, disposed when
+// the tool returns); the tab stays open.
 async function attachTab(ctx, targetId) {
-  const { sessionId } = await ctx.session._call("Target.attachToTarget", { targetId, flatten: true });
-  return { sid: sessionId, send: (method, params = {}) => ctx.cdp(sessionId, method, params) };
+  const page = await ctx.attachPage(targetId, { allowedOrigins: [HOME.slice(0, -1)] });
+  return { page, send: (method, params = {}) => page.cdp(method, params) };
 }
 
 async function evaluate(tab, expression) {

@@ -16,7 +16,7 @@ const root = dirname(fileURLToPath(import.meta.url));
 const RESIDUE = [
   [/ctx\.session\.(?!Target\.|Browser\.|closeTab\b|_call\b)\w+/, "ctx.session.<Domain> on the active target: use page.cdp('<Domain>.<method>', params)"],
   [/\bsession\.(use|getActiveSession|setActiveSession|getActiveTargetId)\s*\(/, "session pointer: attach with ctx.findPage / ctx.attachPage instead"],
-  [/\b_call\(\s*["'`](?!Target\.|Browser\.)/, "raw _call on a non-browser-level method: use page.cdp"],
+  [/\b_call\(\s*["'`](?!Target\.|Browser\.|Extensions\.)/, "raw _call on a non-browser-level method: use page.cdp"],
   [/Target\.attachToTarget/, "hand-rolled attach: use ctx.attachPage(targetId) so the runner disposes the attachment"],
   [/\bctx\.cdp\s*\(/, "ctx.cdp(sessionId, ...): use page.cdp(method, params)"],
   [/\bctx\.listPageTargets\b/, "ctx.listPageTargets: use ctx.browser.tabs() or ctx.findPage"],

@@ -1,6 +1,6 @@
 // learnings/mail-proton-me/tools/mail-proton-me.mjs
 // Read-only Proton Mail web (https://mail.proton.me) tools. Every call opens its OWN background
-// tab and drives it through an explicit sessionId (ctx.cdp), never session.use, so the shared REPL
+// tab and drives it as its own Page (ctx.attachPage), never session.use, so the shared REPL
 // pointer is left alone. Nothing here sends, deletes, moves, labels or marks.
 //
 // Facts these tools rely on (verified live):
@@ -22,8 +22,9 @@ async function withTab(ctx, fn) {
   const { targetId } = await ctx.session.Target.createTarget({ url: "about:blank", background: true });
   let sessionId;
   try {
-    ({ sessionId } = await ctx.session.Target.attachToTarget({ targetId, flatten: true }));
-    const call = (method, params = {}) => ctx.cdp(sessionId, method, params);
+    const page = await ctx.attachPage(targetId, { allowedOrigins: [BASE] });
+    sessionId = page.scope.sessionId;
+    const call = (method, params = {}) => page.cdp(method, params);
     const evaluate = async (expression) => {
       const { result, exceptionDetails } = await call("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true });
       if (exceptionDetails) throw new Error(exceptionDetails.text || (exceptionDetails.exception || {}).description || "Runtime.evaluate failed");

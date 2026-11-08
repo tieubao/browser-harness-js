@@ -8,13 +8,14 @@
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // The REPL server is one process shared by every Claude session, and its active-session pointer
-// is global, so two sessions driving Gmail steal each other's tab. Attach with an explicit flat
-// sessionId and send every Page/DOM/Input/Runtime call to it through ctx.cdp. Target.* calls are
-// browser-level and never read the pointer, so they stay on ctx.session.Target. Never move that
-// pointer from this file.
+// is global, so two sessions driving Gmail steal each other's tab. Attach with ctx.attachPage
+// (an explicit per-call attachment, disposed by the runner) and send every Page/DOM/Input/Runtime
+// call through page.cdp. Target.* calls are browser-level and never read the pointer, so they
+// stay on ctx.session.Target. Never move that pointer from this file. Porting contract:
+// learnings/PORTING.md.
 async function attachTab(ctx, targetId) {
-  const { sessionId } = await ctx.session._call("Target.attachToTarget", { targetId, flatten: true });
-  return { sid: sessionId, send: (method, params = {}) => ctx.cdp(sessionId, method, params) };
+  const page = await ctx.attachPage(targetId);
+  return { page, send: (method, params = {}) => page.cdp(method, params) };
 }
 
 async function evaluate(tab, expression) {

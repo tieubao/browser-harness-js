@@ -1,83 +1,87 @@
 // learnings/chrome-extensions/tools/extensions.test.mjs
-// Runs the tools against a fake Session; no browser. node --test tools/extensions.test.mjs
+// Runs the tools against a fake ctx; no browser. node --test tools/extensions.test.mjs
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { loadUnpacked, extensionInfo, reloadExtension, clearExtensionErrors, setDeveloperMode } from "./extensions.mjs";
 
 const ID = "a".repeat(32);
 
-function fakeSession({ targets = [], evalResult = { result: { value: { ok: true } } } } = {}) {
-  let active = "PAGE-1";
+// Fake ctx: browser-level calls go through session._call; the extensions tab is attached as a Page
+// whose cdp() records Runtime.evaluate. `attached` lists the targets ctx.attachPage was asked for.
+function fakeCtx({ targets = [], evalResult = { result: { value: { ok: true } } } } = {}) {
   const calls = [];
+  const attached = [];
   const session = {
     calls,
-    getActiveSession: () => active,
-    setActiveSession: (s) => { active = s; },
-    use: async (targetId) => { active = `S-${targetId}`; return active; },
     _call: async (method, params = {}) => {
-      calls.push({ method, params, active });
+      calls.push({ method, params });
       if (method === "Target.getTargets") return { targetInfos: targets };
       if (method === "Target.createTarget") return { targetId: "NEW" };
       if (method === "Extensions.loadUnpacked") return { id: ID };
-      if (method === "Runtime.evaluate") return evalResult;
       return {};
     },
   };
-  return session;
+  const ctx = {
+    session,
+    calls,
+    attached,
+    attachPage: async (targetId) => {
+      attached.push(targetId);
+      return { cdp: async (method, params = {}) => { calls.push({ method, params, target: targetId }); return evalResult; } };
+    },
+  };
+  return ctx;
 }
 
-test("loadUnpacked calls with no page session and restores the previous one", async () => {
-  const session = fakeSession();
-  const out = await loadUnpacked({ session }, { path: "/tmp/ext" });
+test("loadUnpacked is one browser-level call and attaches no page", async () => {
+  const ctx = fakeCtx();
+  const out = await loadUnpacked(ctx, { path: "/tmp/ext" });
   assert.deepEqual(out, { id: ID });
-  const call = session.calls.find((c) => c.method === "Extensions.loadUnpacked");
-  assert.equal(call.active, undefined);
-  assert.equal(session.getActiveSession(), "PAGE-1");
+  assert.equal(ctx.calls.filter((c) => c.method === "Extensions.loadUnpacked").length, 1);
+  assert.deepEqual(ctx.attached, []);
 });
 
 test("loadUnpacked rejects a relative path", async () => {
-  await assert.rejects(loadUnpacked({ session: fakeSession() }, { path: "ext" }), /absolute path/);
+  await assert.rejects(loadUnpacked(fakeCtx(), { path: "ext" }), /absolute path/);
 });
 
-test("extensionInfo reuses an open chrome://extensions tab and restores the session", async () => {
-  const session = fakeSession({ targets: [{ type: "page", targetId: "EXT", url: "chrome://extensions/" }] });
-  await extensionInfo({ session }, { id: ID });
-  assert.ok(!session.calls.some((c) => c.method === "Target.createTarget"));
-  assert.ok(!session.calls.some((c) => c.method === "Target.closeTarget"));
-  const evalCall = session.calls.find((c) => c.method === "Runtime.evaluate");
-  assert.equal(evalCall.active, "S-EXT");
+test("extensionInfo reuses an open chrome://extensions tab and leaves it open", async () => {
+  const ctx = fakeCtx({ targets: [{ type: "page", targetId: "EXT", url: "chrome://extensions/" }] });
+  await extensionInfo(ctx, { id: ID });
+  assert.ok(!ctx.calls.some((c) => c.method === "Target.createTarget"));
+  assert.ok(!ctx.calls.some((c) => c.method === "Target.closeTarget"));
+  const evalCall = ctx.calls.find((c) => c.method === "Runtime.evaluate");
+  assert.equal(evalCall.target, "EXT");
   assert.equal(evalCall.params.awaitPromise, true);
   assert.equal(evalCall.params.returnByValue, true);
   assert.match(evalCall.params.expression, /getExtensionInfo\("a{32}"\)/);
-  assert.equal(session.getActiveSession(), "PAGE-1");
 });
 
 test("opens and closes a tab when none is open", async () => {
-  const session = fakeSession();
-  await reloadExtension({ session }, { id: ID });
-  const create = session.calls.find((c) => c.method === "Target.createTarget");
+  const ctx = fakeCtx();
+  await reloadExtension(ctx, { id: ID });
+  const create = ctx.calls.find((c) => c.method === "Target.createTarget");
   assert.equal(create.params.url, "chrome://extensions");
-  const close = session.calls.find((c) => c.method === "Target.closeTarget");
+  const close = ctx.calls.find((c) => c.method === "Target.closeTarget");
   assert.deepEqual(close.params, { targetId: "NEW" });
-  assert.match(session.calls.find((c) => c.method === "Runtime.evaluate").params.expression, /failQuietly: true/);
-  assert.equal(session.getActiveSession(), "PAGE-1");
+  assert.match(ctx.calls.find((c) => c.method === "Runtime.evaluate").params.expression, /failQuietly: true/);
 });
 
-test("a page-side exception becomes a thrown Error with its description, session still restored", async () => {
-  const session = fakeSession({ evalResult: { exceptionDetails: { text: "Uncaught", exception: { description: "Error: No extension with id" } } } });
-  await assert.rejects(clearExtensionErrors({ session }, { id: ID }), /No extension with id/);
-  assert.equal(session.getActiveSession(), "PAGE-1");
+test("a page-side exception becomes a thrown Error with its description, created tab still closed", async () => {
+  const ctx = fakeCtx({ evalResult: { exceptionDetails: { text: "Uncaught", exception: { description: "Error: No extension with id" } } } });
+  await assert.rejects(clearExtensionErrors(ctx, { id: ID }), /No extension with id/);
+  assert.ok(ctx.calls.some((c) => c.method === "Target.closeTarget"));
 });
 
 test("setDeveloperMode embeds the boolean and validates input", async () => {
-  const session = fakeSession();
-  await setDeveloperMode({ session }, { enabled: true });
-  assert.match(session.calls.find((c) => c.method === "Runtime.evaluate").params.expression, /inDeveloperMode: true/);
-  await assert.rejects(setDeveloperMode({ session }, { enabled: "yes" }), /enabled: boolean/);
+  const ctx = fakeCtx();
+  await setDeveloperMode(ctx, { enabled: true });
+  assert.match(ctx.calls.find((c) => c.method === "Runtime.evaluate").params.expression, /inDeveloperMode: true/);
+  await assert.rejects(setDeveloperMode(ctx, { enabled: "yes" }), /enabled: boolean/);
 });
 
 test("an id that is not 32 chars a-p is rejected before any CDP call", async () => {
-  const session = fakeSession();
-  await assert.rejects(extensionInfo({ session }, { id: "abc" }), /invalid extension id/);
-  assert.equal(session.calls.length, 0);
+  const ctx = fakeCtx();
+  await assert.rejects(extensionInfo(ctx, { id: "abc" }), /invalid extension id/);
+  assert.equal(ctx.calls.length, 0);
 });

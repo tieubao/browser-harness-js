@@ -27,8 +27,12 @@ const ENTRY = {
   TAMTRU_02: "https://dichvucong.bocongan.gov.vn/bo-cong-an/tiep-nhan-online/chon-truong-hop-ho-so?ma-thu-tuc-public=26345",
 };
 
+// The tab pickTab/open last attached for this ctx (one ctx per tool call, so no state outlives a call).
+const current = new WeakMap();
+const pageOf = (ctx) => current.get(ctx) || ctx.requirePage();
+
 async function evaluate(ctx, expression) {
-  const { result, exceptionDetails } = await ctx.session.Runtime.evaluate({ expression, returnByValue: true, awaitPromise: true });
+  const { result, exceptionDetails } = await pageOf(ctx).cdp("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true });
   if (exceptionDetails) {
     const ex = exceptionDetails.exception || {};
     throw new Error(exceptionDetails.text || ex.description || "Runtime.evaluate failed");
@@ -37,19 +41,20 @@ async function evaluate(ctx, expression) {
 }
 
 async function pickTab(ctx) {
-  const tabs = await ctx.listPageTargets();
+  const tabs = await ctx.browser.tabs();
   const tab = tabs.find((t) => FORM.test(t.url)) || tabs.find((t) => PORTAL.test(t.url));
   if (!tab) return null;
-  await ctx.session.use(tab.targetId);
+  current.set(ctx, await ctx.attachPage(tab.targetId));
   return tab;
 }
 
 async function realClick(ctx, selectorExpr) {
   const pos = await evaluate(ctx, `(()=>{const b=${selectorExpr}; if(!b) return null; b.scrollIntoView({block:"center"}); const r=b.getBoundingClientRect(); return {x:r.x+r.width/2,y:r.y+r.height/2}})()`);
   if (!pos) throw new Error("realClick: element not found");
-  await ctx.session.Input.dispatchMouseEvent({ type: "mouseMoved", x: pos.x, y: pos.y });
-  await ctx.session.Input.dispatchMouseEvent({ type: "mousePressed", x: pos.x, y: pos.y, button: "left", clickCount: 1 });
-  await ctx.session.Input.dispatchMouseEvent({ type: "mouseReleased", x: pos.x, y: pos.y, button: "left", clickCount: 1 });
+  const page = pageOf(ctx);
+  await page.cdp("Input.dispatchMouseEvent", { type: "mouseMoved", x: pos.x, y: pos.y });
+  await page.cdp("Input.dispatchMouseEvent", { type: "mousePressed", x: pos.x, y: pos.y, button: "left", clickCount: 1 });
+  await page.cdp("Input.dispatchMouseEvent", { type: "mouseReleased", x: pos.x, y: pos.y, button: "left", clickCount: 1 });
 }
 
 const HELPERS = `
@@ -128,14 +133,14 @@ export async function open(ctx, args = {}) {
     // context gets the login page instead, and the human logs in inside that window.
     const { browserContextId } = await ctx.session.Target.createBrowserContext({});
     const { targetId } = await ctx.session.Target.createTarget({ url, browserContextId });
-    await ctx.session.use(targetId);
+    current.set(ctx, await ctx.attachPage(targetId, { allowedOrigins: [new URL(url).origin] }));
     await ctx.session.Target.activateTarget({ targetId });
     await wait(6000);
     return status(ctx);
   }
   const tab = await pickTab(ctx);
-  if (tab) await ctx.session.Page.navigate({ url });
-  else { const { targetId } = await ctx.session.Target.createTarget({ url }); await ctx.session.use(targetId); }
+  if (tab) await pageOf(ctx).cdp("Page.navigate", { url });
+  else { const { targetId } = await ctx.session.Target.createTarget({ url }); current.set(ctx, await ctx.attachPage(targetId, { allowedOrigins: [new URL(url).origin] })); }
   await wait(6000);
   return status(ctx);
 }
@@ -144,7 +149,7 @@ export async function edit(ctx, args) {
   if (!args || !args.id) throw new Error("edit needs {id}: the numeric dossier id from the list page");
   const tab = await pickTab(ctx);
   if (!tab) throw new Error("no portal tab; open + log in first");
-  await ctx.session.Page.navigate({ url: "https://dichvucong.dancuquocgia.gov.vn/portal/p/home/dang-ky-tam-tru.html?id=" + args.id });
+  await pageOf(ctx).cdp("Page.navigate", { url: "https://dichvucong.dancuquocgia.gov.vn/portal/p/home/dang-ky-tam-tru.html?id=" + args.id });
   await wait(9000);
   return status(ctx);
 }
@@ -198,10 +203,10 @@ export async function attach(ctx, d) {
   })()`);
   const result = [];
   for (const p of plan) {
-    const { root } = await ctx.session.DOM.getDocument({ depth: 1 });
-    const { nodeId } = await ctx.session.DOM.querySelector({ nodeId: root.nodeId, selector: "#" + p.input });
+    const { root } = await pageOf(ctx).cdp("DOM.getDocument", { depth: 1 });
+    const { nodeId } = await pageOf(ctx).cdp("DOM.querySelector", { nodeId: root.nodeId, selector: "#" + p.input });
     if (!nodeId) throw new Error("no " + p.input);
-    await ctx.session.DOM.setFileInputFiles({ nodeId, files: p.files });
+    await pageOf(ctx).cdp("DOM.setFileInputFiles", { nodeId, files: p.files });
     await wait(1500);
     const row = await evaluate(ctx, `(()=>{const f=document.getElementById(${JSON.stringify(p.input)}); return f.closest("tr").innerText.replace(/\\s+/g," ").slice(0,160)})()`);
     result.push({ input: p.input, row });

@@ -61,3 +61,5 @@ Endpoints proven: `getSpaces`, `syncRecordValuesSpace`, `queryCollection`, `sear
 - **Navigation wipes in-page globals.** Nothing is cached on `window`; each tool rebuilds its helpers per call, so a reload mid-task is safe.
 - **Raw collection schema edits are rejected** ("Collection schema updates must use high-level schema operations"). Write into existing properties.
 - **Bring no ids into the learning.** Workspace, user and page ids are always arguments. `readCollection` finds the workspace from `pageId` when `spaceId` is omitted. A wrong `spaceId` makes Notion error ("Cross-cell memcached access is not allowed") instead of returning null.
+
+Ported to the Page API (see ../PORTING.md). live: unverified (logged-in).

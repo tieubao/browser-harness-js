@@ -3,20 +3,20 @@
 // list and one DM's history. DOM reading only. It never sends a message, never touches the
 // user token, never clicks anything. Each call opens its own NEW background target and closes
 // it afterwards. A navigation in a hidden tab can take ~15s to render, so every wait is a poll.
-// See notes/overview.md.
+// See notes/overview.md. Page API port: learnings/PORTING.md.
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
-async function evaluate(ctx, expression) {
-  const { result, exceptionDetails } = await ctx.session.Runtime.evaluate({ expression, returnByValue: true, awaitPromise: true });
+async function evaluate(page, expression) {
+  const { result, exceptionDetails } = await page.cdp("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true });
   if (exceptionDetails) throw new Error(exceptionDetails.text || (exceptionDetails.exception || {}).description || "Runtime.evaluate failed");
   return result ? result.value : undefined;
 }
 
 // Poll an in-page expression until truthy; returns the last value (falsy on timeout).
-async function until(ctx, expression, timeoutMs, stepMs = 500) {
+async function until(page, expression, timeoutMs, stepMs = 500) {
   let value;
   for (let t = 0; t < timeoutMs; t += stepMs) {
-    value = await evaluate(ctx, expression).catch(() => null);
+    value = await evaluate(page, expression).catch(() => null);
     if (value) return value;
     await wait(stepMs);
   }
@@ -25,10 +25,10 @@ async function until(ctx, expression, timeoutMs, stepMs = 500) {
 
 async function openBackground(ctx, url) {
   const { targetId } = await ctx.session.Target.createTarget({ url: "about:blank", background: true });
-  await ctx.session.use(targetId);
-  await ctx.session.Page.enable();
-  await ctx.session.Page.navigate({ url });
-  return targetId;
+  const page = await ctx.attachPage(targetId, { allowedOrigins: [new URL(url).origin] });
+  await page.cdp("Page.enable");
+  await page.cdp("Page.navigate", { url });
+  return { targetId, page };
 }
 
 const closeTarget = (ctx, targetId) => ctx.session.Target.closeTarget({ targetId }).catch(() => {});
@@ -55,15 +55,15 @@ const LIST_EXPR = `JSON.stringify((() => {
 
 // Read-only. Returns [{name, channelId, kind}] or {stop, ...}.
 export async function listDms(ctx, _args) {
-  const targetId = await openBackground(ctx, "https://discord.com/channels/@me");
+  const { targetId, page } = await openBackground(ctx, "https://discord.com/channels/@me");
   try {
-    const ready = await until(ctx, `${DM_LINKS}.length > 0`, 40000);
+    const ready = await until(page, `${DM_LINKS}.length > 0`, 40000);
     if (!ready) {
-      const href = String(await evaluate(ctx, "location.href").catch(() => ""));
+      const href = String(await evaluate(page, "location.href").catch(() => ""));
       return { stop: href.includes("/login") ? "not-signed-in" : "dm-list-not-rendered", targetId, href };
     }
     await wait(1000); // let the list settle so aria-labels are final
-    return JSON.parse(String(await evaluate(ctx, LIST_EXPR)));
+    return JSON.parse(String(await evaluate(page, LIST_EXPR)));
   } finally {
     closeTarget(ctx, targetId);
   }
@@ -90,30 +90,30 @@ const ROWS_EXPR = `JSON.stringify((() => {
 // Read-only. Returns {channelId, scrolls, reachedStart, rows:[{time, author, text, images}]} or {stop, ...}.
 export async function readDm(ctx, { channelId, maxScrolls = 25 } = {}) {
   if (!channelId || !/^\d+$/.test(String(channelId))) throw new Error("readDm: channelId (digits) is required");
-  const targetId = await openBackground(ctx, `https://discord.com/channels/@me/${channelId}`);
+  const { targetId, page } = await openBackground(ctx, `https://discord.com/channels/@me/${channelId}`);
   try {
     // A hidden-tab navigation took ~15s to render; a fixed 7s wait returned 0 rows.
-    const rendered = await until(ctx, `${MSG_COUNT} > 0`, 60000);
+    const rendered = await until(page, `${MSG_COUNT} > 0`, 60000);
     if (!rendered) {
-      const href = String(await evaluate(ctx, "location.href").catch(() => ""));
+      const href = String(await evaluate(page, "location.href").catch(() => ""));
       return { stop: href.includes("/login") ? "not-signed-in" : "messages-not-rendered", targetId, href };
     }
 
-    let count = Number(await evaluate(ctx, MSG_COUNT));
+    let count = Number(await evaluate(page, MSG_COUNT));
     let scrolls = 0;
-    let reachedStart = Boolean(await evaluate(ctx, AT_START));
+    let reachedStart = Boolean(await evaluate(page, AT_START));
     while (!reachedStart && scrolls < maxScrolls) {
-      const scrolled = await evaluate(ctx, `(() => { const s = ${SCROLLER}; if (!s) return false; s.scrollTop = 0; return true; })()`);
+      const scrolled = await evaluate(page, `(() => { const s = ${SCROLLER}; if (!s) return false; s.scrollTop = 0; return true; })()`);
       if (!scrolled) return { stop: "scroller-not-found", targetId };
       scrolls++;
       await wait(2500);
-      reachedStart = Boolean(await evaluate(ctx, AT_START));
-      const next = Number(await evaluate(ctx, MSG_COUNT));
+      reachedStart = Boolean(await evaluate(page, AT_START));
+      const next = Number(await evaluate(page, MSG_COUNT));
       if (next <= count) break; // not growing; a hidden tab may refuse to load older history, see notes
       count = next;
     }
 
-    const rows = JSON.parse(String(await evaluate(ctx, ROWS_EXPR)));
+    const rows = JSON.parse(String(await evaluate(page, ROWS_EXPR)));
     return { channelId: String(channelId), scrolls, reachedStart, rows };
   } finally {
     closeTarget(ctx, targetId);

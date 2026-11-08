@@ -12,9 +12,9 @@ function matches(url, domain) {
 }
 
 export async function status(ctx) {
-  const tabs = await ctx.listPageTargets();
+  const tabs = await ctx.browser.tabs();
   const tab = tabs.find((t) => DOMAINS.some((d) => matches(t.url, d)));
   if (!tab) return { state: 'no-tab', hint: 'no open tab matches ' + DOMAINS.join(', ') };
-  await ctx.session.use(tab.targetId);
+  await ctx.attachPage(tab.targetId);
   return { state: 'tab', url: tab.url };
 }

@@ -34,3 +34,5 @@ Call the tools by name: `await learnings("chrome-extensions", "loadUnpacked", {p
 3. **`extensionInfo` opens a background `chrome://extensions` tab if none is open** and closes it
    afterward. A tab you opened yourself is reused and left alone.
 4. **Edits to the tool file need `browser-harness-js --restart`** (see `../README.md`).
+
+Ported to the Page API (see ../PORTING.md). live: verified (headless temp profile: setDeveloperMode round trip, extensionInfo page-side error path, created tab closed; reload/clear/loadUnpacked not run).

@@ -50,3 +50,5 @@ OCR with tesseract by piping the bytes in: `tesseract stdin stdout < page.png`. 
 ## Privacy
 
 This repo is public. Keep company names, company/document ids, EINs, file numbers and emails out of notes, tests and commits. Use placeholders like `<companyId>` and `<docId>`.
+
+Ported to the Page API (see ../PORTING.md). live: unverified (logged-in).

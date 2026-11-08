@@ -32,3 +32,5 @@ Each call opens its own background tab, drives it by explicit sessionId (`ctx.cd
 - **Bare-id navigation is not offered.** Use `term` plus `index`, or a full `url`.
 - **Output is mailbox content.** Print counts and lengths when logging, not text.
 - **Edit then restart.** The REPL caches imported modules; run `browser-harness-js --restart` after editing the tool, then reconnect.
+
+Ported to the Page API (see ../PORTING.md). live: unverified (logged-in).

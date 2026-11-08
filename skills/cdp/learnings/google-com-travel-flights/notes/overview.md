@@ -34,3 +34,5 @@ URL shape: `https://www.google.com/travel/flights?q=Flights%20from%20<FROM>%20to
 - The parser expects English labels (`Nonstop`, `1 stop`), so keep `lang: "en"`.
 - Polling replaces a fixed sleep: it waits until the row count is above zero and unchanged for
   two 1s polls (first render usually 3 to 8 s).
+
+Ported to the Page API (see ../PORTING.md). live: unverified (headless run attached and read rows through the Page API, but parseRow returned 0 rows on the headless layout).

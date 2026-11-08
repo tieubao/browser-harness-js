@@ -4,8 +4,8 @@
 // textContent, which stays populated in a background tab.
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
-async function evaluate(ctx, expression) {
-  const { result, exceptionDetails } = await ctx.session.Runtime.evaluate({ expression, returnByValue: true, awaitPromise: true });
+async function evaluate(page, expression) {
+  const { result, exceptionDetails } = await page.cdp("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true });
   if (exceptionDetails) throw new Error(exceptionDetails.text || (exceptionDetails.exception || {}).description || "Runtime.evaluate failed");
   return result ? result.value : undefined;
 }
@@ -49,22 +49,22 @@ export async function searchHotels(ctx, { city, checkin, checkout, adults = 2, c
   const url = `https://www.booking.com/searchresults.html?${params.join("&")}`;
   const { targetId } = await ctx.session.Target.createTarget({ url: "about:blank", background: true });
   try {
-    await ctx.session.use(targetId);
-    await ctx.session.Page.enable();
-    await ctx.session.Page.navigate({ url });
+    const page = await ctx.attachPage(targetId, { allowedOrigins: [new URL(url).origin] });
+    await page.cdp("Page.enable");
+    await page.cdp("Page.navigate", { url });
 
     // Poll until cards exist and the count has been unchanged for two polls (lazy load adds more).
     const deadline = Date.now() + timeoutMs;
     let last = -1, stable = 0;
     while (Date.now() < deadline) {
       await wait(1000);
-      const n = await evaluate(ctx, `document.querySelectorAll("[data-testid=property-card]").length`);
+      const n = await evaluate(page, `document.querySelectorAll("[data-testid=property-card]").length`);
       if (n > 0 && n === last) { if (++stable >= 2) break; } else stable = 0;
       last = n;
     }
     if (!(last > 0)) return { stop: "no-results", hint: "no property-card rendered; check city spelling, dates, or a bot-check page", url };
 
-    const raw = JSON.parse(await evaluate(ctx, READ_CARDS(limit)));
+    const raw = JSON.parse(await evaluate(page, READ_CARDS(limit)));
     const hotels = raw.map((c) => ({
       name: c.name,
       priceTotal: lastAmount(c.priceText),

@@ -5,8 +5,8 @@
 // dance -- el.value = x is silently ignored by React inputs.
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
-async function evaluate(ctx, expression) {
-  const { result, exceptionDetails } = await ctx.session.Runtime.evaluate({ expression, returnByValue: true, awaitPromise: true });
+async function evaluate(page, expression) {
+  const { result, exceptionDetails } = await page.cdp("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true });
   if (exceptionDetails) {
     const ex = exceptionDetails.exception || {};
     throw new Error(exceptionDetails.text || ex.description || "Runtime.evaluate failed");
@@ -14,8 +14,8 @@ async function evaluate(ctx, expression) {
   return result ? result.value : undefined;
 }
 
-async function isSudoPage(ctx) {
-  return evaluate(ctx, `!!document.querySelector('#sudo_password, input[name=sudo_password], [data-testid=sudo-modal]') || /Confirm access/i.test(document.title)`);
+async function isSudoPage(page) {
+  return evaluate(page, `!!document.querySelector('#sudo_password, input[name=sudo_password], [data-testid=sudo-modal]') || /Confirm access/i.test(document.title)`);
 }
 
 // Open the prefilled form, set description + expiration, ensure scopes, click Generate, extract
@@ -28,12 +28,12 @@ export async function patForm(ctx, args) {
     (scopes.length ? "&scopes=" + scopes.map(encodeURIComponent).join(",") : "");
   const { targetId } = await ctx.session.Target.createTarget({ url, background: true });
   try {
-    await ctx.session.use(targetId);
+    const page = await ctx.attachPage(targetId, { allowedOrigins: ["https://github.com"] });
     await wait(7000);
 
-    if (await isSudoPage(ctx)) return { stop: "sudo" };
+    if (await isSudoPage(page)) return { stop: "sudo" };
 
-    await evaluate(ctx, `(() => {
+    await evaluate(page, `(() => {
       const setv = (el, v) => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(el, v); el.dispatchEvent(new Event("input", {bubbles:true})); el.dispatchEvent(new Event("change", {bubbles:true})); };
       const d = document.querySelector('input[name="oauth_access[description]"]');
       if (d && d.value !== ${JSON.stringify(description)}) setv(d, ${JSON.stringify(description)});
@@ -44,7 +44,7 @@ export async function patForm(ctx, args) {
     await wait(500);
 
     if (scopes.length) {
-      await evaluate(ctx, `(() => {
+      await evaluate(page, `(() => {
         const want = ${JSON.stringify(scopes)};
         for (const v of want) {
           const cb = document.querySelector('input[type=checkbox][name="oauth_access[scopes][]"][value="' + v + '"]');
@@ -53,26 +53,26 @@ export async function patForm(ctx, args) {
       })()`);
     }
 
-    const state = JSON.parse((await evaluate(ctx, `JSON.stringify({
+    const state = JSON.parse((await evaluate(page, `JSON.stringify({
       desc: (document.querySelector('input[name="oauth_access[description]"]')||{}).value,
       checked: [...document.querySelectorAll('input[type=checkbox][name="oauth_access[scopes][]"]:checked')].map((i) => i.value),
     })`)) || "{}");
     const missing = scopes.filter((s) => !(state.checked || []).includes(s));
     if (missing.length) return { stop: "scopes-not-checked", missing, state };
 
-    const clicked = await evaluate(ctx, `(() => { const b = [...document.querySelectorAll('button')].find((b) => /^Generate token$/i.test((b.innerText||"").trim())); if (!b) return false; b.click(); return true; })()`);
+    const clicked = await evaluate(page, `(() => { const b = [...document.querySelectorAll('button')].find((b) => /^Generate token$/i.test((b.innerText||"").trim())); if (!b) return false; b.click(); return true; })()`);
     if (!clicked) return { stop: "no-generate-button" };
     await wait(6000);
 
-    if (await isSudoPage(ctx)) return { stop: "sudo" };
+    if (await isSudoPage(page)) return { stop: "sudo" };
 
-    const token = await evaluate(ctx, `(() => {
+    const token = await evaluate(page, `(() => {
       const el = document.querySelector('#new-oauth-token, .token, code[id*=token]');
       const t = (el && el.innerText) || "";
       const m = (t + " " + document.body.innerText).match(/ghp_[A-Za-z0-9]{36,}/);
       return m ? m[0] : null;
     })()`);
-    if (!token) return { stop: "token-not-found", href: await evaluate(ctx, "location.href") };
+    if (!token) return { stop: "token-not-found", href: await evaluate(page, "location.href") };
     // Returned to the caller only -- never printed or stored here.
     return { token };
   } finally {

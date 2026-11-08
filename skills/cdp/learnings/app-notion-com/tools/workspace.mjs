@@ -1,27 +1,29 @@
 // learnings/app-notion-com/tools/workspace.mjs
 // Notion's internal web API (/api/v3), called same-origin from a logged-in app.notion.com tab.
 // Unlike the official API token, it reaches EVERY workspace the signed-in user belongs to.
-// Each call re-pins the session to the app.notion.com tab, because the REPL is shared across sessions.
+// Each call re-attaches the app.notion.com tab as its own Page, because the REPL is shared across sessions.
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 const HOME = "https://app.notion.com/";
 const TIME_ZONE = "Asia/Ho_Chi_Minh";
 
+// The app.notion.com tab pin() attached for this ctx (one ctx per tool call).
+const current = new WeakMap();
+
 export async function ev(ctx, expression) {
-  const { result, exceptionDetails } = await ctx.session.Runtime.evaluate({ expression, returnByValue: true, awaitPromise: true });
+  const { result, exceptionDetails } = await (current.get(ctx) || ctx.requirePage()).cdp("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true });
   if (exceptionDetails) throw new Error(exceptionDetails.text || (exceptionDetails.exception && exceptionDetails.exception.description) || "Runtime.evaluate failed");
   return result ? result.value : undefined;
 }
 
 // Pin the session to an app.notion.com tab (open one if none). Runs inside every API call.
 export async function pin(ctx) {
-  const { targetInfos } = await ctx.session.Target.getTargets();
-  let tab = targetInfos.find((t) => t.type === "page" && t.url.startsWith(HOME));
+  let tab = (await ctx.browser.tabs()).find((t) => t.url.startsWith(HOME));
   if (!tab) {
     const { targetId } = await ctx.session.Target.createTarget({ url: HOME });
     tab = { targetId };
     await wait(4000);
   }
-  await ctx.session.use(tab.targetId);
+  current.set(ctx, await ctx.attachPage(tab.targetId, { allowedOrigins: [HOME.slice(0, -1)] }));
 }
 
 // POST /api/v3/<endpoint> from the page. Returns the parsed JSON body.

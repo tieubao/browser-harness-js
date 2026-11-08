@@ -12,8 +12,8 @@
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 let tabId;
 
-async function evaluate(ctx, expression) {
-  const { result, exceptionDetails } = await ctx.session.Runtime.evaluate({ expression, returnByValue: true, awaitPromise: true });
+async function evaluate(page, expression) {
+  const { result, exceptionDetails } = await page.cdp("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true });
   if (exceptionDetails) {
     const ex = exceptionDetails.exception || {};
     throw new Error(exceptionDetails.text || ex.description || "Runtime.evaluate failed");
@@ -22,22 +22,23 @@ async function evaluate(ctx, expression) {
 }
 
 async function ensureTab(ctx) {
+  const allowedOrigins = ["https://dash.cloudflare.com"];
   if (tabId) {
-    const alive = (await ctx.listPageTargets()).some((t) => t.targetId === tabId);
-    if (alive) { await ctx.session.use(tabId); return tabId; }
+    const alive = (await ctx.browser.tabs()).some((t) => t.targetId === tabId);
+    if (alive) return ctx.attachPage(tabId, { allowedOrigins });
   }
   const { targetId } = await ctx.session.Target.createTarget({ url: "https://dash.cloudflare.com/profile", background: true });
   tabId = targetId;
-  await ctx.session.use(tabId);
+  const page = await ctx.attachPage(tabId, { allowedOrigins });
   await wait(6000);
-  return tabId;
+  return page;
 }
 
 // A Turnstile challenge or a re-auth ("sudo") prompt means the signed-in session cannot answer
 // an API call as-is. Neither is scriptable (Turnstile by design, sudo needs a passkey/2FA
 // device), so detect and stop rather than trying to click through.
-async function stopReason(ctx) {
-  return evaluate(ctx, `(() => {
+async function stopReason(page) {
+  return evaluate(page, `(() => {
     if (document.querySelector('iframe[src*="challenges.cloudflare.com"]')) return "turnstile";
     const t = document.body.innerText || "";
     if (/enter your password to continue|confirm your identity|re-?enter your password/i.test(t)) return "sudo";
@@ -47,10 +48,10 @@ async function stopReason(ctx) {
 
 // Signed-in user's email, read off the profile page.
 export async function whoami(ctx) {
-  await ensureTab(ctx);
-  const stop = await stopReason(ctx);
+  const page = await ensureTab(ctx);
+  const stop = await stopReason(page);
   if (stop) return { stop };
-  const text = await evaluate(ctx, "document.body.innerText");
+  const text = await evaluate(page, "document.body.innerText");
   const m = String(text || "").match(/[\w.+-]+@[\w.-]+\.\w+/);
   return m ? m[0] : { stop: "no-email-found" };
 }
@@ -62,8 +63,8 @@ export async function whoami(ctx) {
 export async function api(ctx, args) {
   const { path, method, body } = args || {};
   if (!path || !path.startsWith("/")) throw new Error('api: path must start with "/" (e.g. "/user/tokens")');
-  await ensureTab(ctx);
-  const stop = await stopReason(ctx);
+  const page = await ensureTab(ctx);
+  const stop = await stopReason(page);
   if (stop) return { stop };
   const expr = `fetch(${JSON.stringify("/api/v4" + path)}, {
     credentials: "include",
@@ -71,7 +72,7 @@ export async function api(ctx, args) {
     headers: { "content-type": "application/json" }${body !== undefined ? `,
     body: ${JSON.stringify(JSON.stringify(body))}` : ""}
   }).then(r => r.json())`;
-  return evaluate(ctx, expr);
+  return evaluate(page, expr);
 }
 
 // Mint a user API token via the dashboard session. Built on api(). The minted value is returned

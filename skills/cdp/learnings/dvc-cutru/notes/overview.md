@@ -80,3 +80,5 @@ ward officer once bounced a filing for lacking the portal-template CT01.
 
 2026-09-10 household gia hạn tạm trú at Công an Phường An Hải, Đà Nẵng: driven by hand as
 scratch snippets in an ops-toolkit session, then frozen here and as the `dvc-cu-tru` script.
+
+Ported to the Page API (see ../PORTING.md). live: unverified (logged-in).

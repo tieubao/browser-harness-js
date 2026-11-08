@@ -1,0 +1,851 @@
+{
+  "date": "2026-11-08",
+  "browser": "Chrome/157.0.8103.38",
+  "binary": "/Applications/Helium.app/Contents/MacOS/Helium",
+  "runs": 7,
+  "warmupRounds": 1,
+  "viewport": "1280x800",
+  "userAgentOverride": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/157.0.0.0 Safari/537.36",
+  "methods": {
+    "A": "A: getFullAXTree + axView({interactive:true})",
+    "B": "B: domView() viewport",
+    "Btext": "B+text: domView({text:true})",
+    "Ball": "B-all: domView({viewport:false,max:100000})"
+  },
+  "results": [
+    {
+      "id": "wikipedia",
+      "url": "https://en.wikipedia.org/wiki/Chromium_(web_browser)",
+      "finalUrl": "https://en.wikipedia.org/wiki/Chromium_(web_browser)",
+      "title": "Chromium (web browser) - Wikipedia",
+      "stats": {
+        "A": {
+          "medianMs": 82.8,
+          "p95Ms": 88.4,
+          "coldMs": 110.1,
+          "chars": 35864,
+          "tokens": 8966,
+          "elements": 790,
+          "rawMs": [
+            88.4,
+            85.4,
+            82.9,
+            80.6,
+            82.8,
+            81.6,
+            80.6
+          ],
+          "charsNoRefs": 27168
+        },
+        "B": {
+          "medianMs": 5.3,
+          "p95Ms": 5.5,
+          "coldMs": 6.4,
+          "chars": 2424,
+          "tokens": 606,
+          "elements": 92,
+          "rawMs": [
+            5.4,
+            5.5,
+            5.5,
+            5.1,
+            5.3,
+            5.3,
+            5.1
+          ]
+        },
+        "Btext": {
+          "medianMs": 12.6,
+          "p95Ms": 13,
+          "coldMs": 15,
+          "chars": 4578,
+          "tokens": 1145,
+          "elements": 92,
+          "rawMs": [
+            12.9,
+            13,
+            12.6,
+            12.4,
+            12.2,
+            12,
+            12.7
+          ]
+        },
+        "Ball": {
+          "medianMs": 7.5,
+          "p95Ms": 8.1,
+          "coldMs": 9.7,
+          "chars": 20329,
+          "tokens": 5082,
+          "elements": 762,
+          "rawMs": [
+            7.8,
+            7.3,
+            8.1,
+            7.5,
+            7.2,
+            8,
+            7.3
+          ]
+        }
+      },
+      "targets": [
+        {
+          "label": "search box",
+          "A": true,
+          "B": true,
+          "Ball": true
+        },
+        {
+          "label": "link Log in",
+          "A": true,
+          "B": true,
+          "Ball": true
+        },
+        {
+          "label": "link Donate",
+          "A": true,
+          "B": true,
+          "Ball": true
+        }
+      ],
+      "overlapViewport": {
+        "both": 57,
+        "axOnly": 432,
+        "domOnly": 29,
+        "axOnlyExamples": [
+          "jump to content",
+          "main menu",
+          "licensing",
+          "differences from google chrome",
+          "features",
+          "branding and licensing",
+          "development",
+          "contributors"
+        ],
+        "domOnlyExamples": [
+          "1 licensing",
+          "2 differences from google chrome",
+          "2.1 features",
+          "2.2 branding and licensing",
+          "3 development",
+          "3.1 contributors",
+          "3.2 architecture",
+          "3.3 programming languages"
+        ]
+      },
+      "overlapAll": {
+        "both": 360,
+        "axOnly": 129,
+        "domOnly": 120,
+        "axOnlyExamples": [
+          "main menu",
+          "licensing",
+          "differences from google chrome",
+          "features",
+          "branding and licensing",
+          "contributors",
+          "architecture",
+          "programming languages"
+        ],
+        "domOnlyExamples": [
+          "1 licensing",
+          "2 differences from google chrome",
+          "2.1 features",
+          "2.2 branding and licensing",
+          "3 development",
+          "3.1 contributors",
+          "3.2 architecture",
+          "3.3 programming languages"
+        ]
+      },
+      "sampleB": [
+        "# https://en.wikipedia.org/wiki/Chromium_(web_browser) \"Chromium (web browser) - Wikipedia\" viewport 1280x800 scroll 0/11134",
+        "[1] link \"Wikipedia The Free Encyclopedia\"",
+        "[2] searchbox \"Search Wikipedia\"",
+        "[3] button \"Search\"",
+        "[4] link \"Donate\"",
+        "[5] link \"Create account\"",
+        "[6] link \"Log in\"",
+        "[7] button \"Hide Contents\"",
+        "[8] link \"(Top)\"",
+        "[9] link \"1 Licensing\"",
+        "[10] link \"2 Differences from Google Chrome\"",
+        "[11] button \"Toggle Differences from Google Chrome subsection\" <expanded>"
+      ],
+      "sampleA": [
+        "[1] RootWebArea \"Chromium (web browser) - Wikipedia\" <focused>",
+        "  [2] link \"Jump to content\"",
+        "  banner",
+        "    [3] navigation \"Site\"",
+        "      [4] button \"Main menu\"",
+        "    [5] link \"Wikipedia The Free Encyclopedia\"",
+        "    search",
+        "      form",
+        "        [6] searchbox \"Search Wikipedia\"",
+        "        [7] button \"Search\"",
+        "    [8] navigation \"Personal tools\"",
+        "      [9] link \"Donate\""
+      ]
+    },
+    {
+      "id": "hackernews",
+      "url": "https://news.ycombinator.com/",
+      "finalUrl": "https://news.ycombinator.com/",
+      "title": "Hacker News",
+      "stats": {
+        "A": {
+          "medianMs": 17.6,
+          "p95Ms": 20.1,
+          "coldMs": 39.6,
+          "chars": 10825,
+          "tokens": 2706,
+          "elements": 230,
+          "rawMs": [
+            20.1,
+            18.1,
+            17.3,
+            17,
+            17.6,
+            18.1,
+            17.5
+          ],
+          "charsNoRefs": 8589
+        },
+        "B": {
+          "medianMs": 1.8,
+          "p95Ms": 1.9,
+          "coldMs": 3.5,
+          "chars": 4519,
+          "tokens": 1130,
+          "elements": 160,
+          "rawMs": [
+            1.9,
+            1.7,
+            1.8,
+            1.6,
+            1.8,
+            1.9,
+            1.9
+          ]
+        },
+        "Btext": {
+          "medianMs": 2.3,
+          "p95Ms": 2.7,
+          "coldMs": 3.8,
+          "chars": 7448,
+          "tokens": 1862,
+          "elements": 160,
+          "rawMs": [
+            2.7,
+            2.3,
+            2.3,
+            2.2,
+            2.3,
+            2.5,
+            2.5
+          ]
+        },
+        "Ball": {
+          "medianMs": 1.6,
+          "p95Ms": 1.9,
+          "coldMs": 2.6,
+          "chars": 6472,
+          "tokens": 1618,
+          "elements": 230,
+          "rawMs": [
+            1.8,
+            1.5,
+            1.5,
+            1.5,
+            1.6,
+            1.9,
+            1.6
+          ]
+        }
+      },
+      "targets": [
+        {
+          "label": "link new",
+          "A": true,
+          "B": true,
+          "Ball": true
+        },
+        {
+          "label": "link login",
+          "A": true,
+          "B": true,
+          "Ball": true
+        },
+        {
+          "label": "footer search box",
+          "A": true,
+          "B": false,
+          "Ball": true
+        }
+      ],
+      "overlapViewport": {
+        "both": 106,
+        "axOnly": 44,
+        "domOnly": 1,
+        "axOnlyExamples": [
+          "thunderbong",
+          "23 hours ago",
+          "304 comments",
+          "show hn: coldframe, a honeypot that poses as a supermarket fridge controller",
+          "github.com/hedgerow-dev",
+          "hedgerow-dev",
+          "59 comments",
+          "the end of microsoft research's ai frontiers group"
+        ],
+        "domOnlyExamples": [
+          "upvote"
+        ]
+      },
+      "overlapAll": {
+        "both": 150,
+        "axOnly": 0,
+        "domOnly": 1,
+        "axOnlyExamples": [],
+        "domOnlyExamples": [
+          "upvote"
+        ]
+      },
+      "sampleB": [
+        "# https://news.ycombinator.com/ \"Hacker News\" viewport 1280x800 scroll 0/1217",
+        "[1] link",
+        "[2] link \"Hacker News\"",
+        "[3] link \"new\"",
+        "[4] link \"past\"",
+        "[5] link \"comments\"",
+        "[6] link \"ask\"",
+        "[7] link \"show\"",
+        "[8] link \"jobs\"",
+        "[9] link \"submit\"",
+        "[10] link \"login\"",
+        "[11] link \"upvote\""
+      ],
+      "sampleA": [
+        "[1] RootWebArea \"Hacker News\" <focused>",
+        "  LayoutTable",
+        "    LayoutTableRow",
+        "      [2] LayoutTableCell \"Hacker Newsnew | past | comments | ask | show | jobs | submit login\"",
+        "        LayoutTable",
+        "          LayoutTableRow",
+        "            LayoutTableCell",
+        "              [3] link",
+        "            [4] LayoutTableCell \"Hacker Newsnew | past | comments | ask | show | jobs | submit\"",
+        "              [5] link \"Hacker News\"",
+        "              [6] link \"new\"",
+        "              [7] link \"past\""
+      ]
+    },
+    {
+      "id": "python-docs",
+      "url": "https://docs.python.org/3/library/json.html",
+      "finalUrl": "https://docs.python.org/3/library/json.html",
+      "title": "json — JSON encoder and decoder — Python 3.15.2 documentation",
+      "stats": {
+        "A": {
+          "medianMs": 52.3,
+          "p95Ms": 53.6,
+          "coldMs": 83.3,
+          "chars": 12219,
+          "tokens": 3055,
+          "elements": 254,
+          "rawMs": [
+            51.9,
+            51.8,
+            52.8,
+            52.3,
+            51.9,
+            52.3,
+            53.6
+          ],
+          "charsNoRefs": 9524
+        },
+        "B": {
+          "medianMs": 2,
+          "p95Ms": 2.6,
+          "coldMs": 2.7,
+          "chars": 1422,
+          "tokens": 356,
+          "elements": 41,
+          "rawMs": [
+            1.8,
+            2.4,
+            2.6,
+            2,
+            1.8,
+            2,
+            2
+          ]
+        },
+        "Btext": {
+          "medianMs": 5.5,
+          "p95Ms": 5.8,
+          "coldMs": 6.2,
+          "chars": 3322,
+          "tokens": 831,
+          "elements": 41,
+          "rawMs": [
+            5.5,
+            5.5,
+            5.6,
+            5.6,
+            5.8,
+            5.4,
+            5.3
+          ]
+        },
+        "Ball": {
+          "medianMs": 2.1,
+          "p95Ms": 2.4,
+          "coldMs": 2.4,
+          "chars": 4532,
+          "tokens": 1133,
+          "elements": 174,
+          "rawMs": [
+            2.3,
+            2.1,
+            1.9,
+            1.9,
+            2.4,
+            2.1,
+            1.8
+          ]
+        }
+      },
+      "targets": [
+        {
+          "label": "search box",
+          "A": true,
+          "B": true,
+          "Ball": true
+        },
+        {
+          "label": "link Previous topic or Index",
+          "A": true,
+          "B": true,
+          "Ball": true
+        },
+        {
+          "label": "link Python",
+          "A": true,
+          "B": true,
+          "Ball": true
+        }
+      ],
+      "overlapViewport": {
+        "both": 38,
+        "axOnly": 88,
+        "domOnly": 2,
+        "axOnlyExamples": [
+          "german | deutsch",
+          "greek | ελληνικά",
+          "english",
+          "spanish | español",
+          "persian | فارسی",
+          "french | français",
+          "italian | italiano",
+          "japanese | 日本語"
+        ],
+        "domOnlyExamples": [
+          "[ 1 ]",
+          "email.iterators : iterators"
+        ]
+      },
+      "overlapAll": {
+        "both": 85,
+        "axOnly": 41,
+        "domOnly": 3,
+        "axOnlyExamples": [
+          "german | deutsch",
+          "greek | ελληνικά",
+          "english",
+          "spanish | español",
+          "persian | فارسی",
+          "french | français",
+          "italian | italiano",
+          "japanese | 日本語"
+        ],
+        "domOnlyExamples": [
+          "[ 1 ]",
+          "1",
+          "email.iterators : iterators"
+        ]
+      },
+      "sampleB": [
+        "# https://docs.python.org/3/library/json.html \"json — JSON encoder and decoder — Python 3.15.2 documentation\" viewport 1280x800 scroll 0/14195",
+        "[1] link \"index\"",
+        "[2] link \"modules\"",
+        "[3] link \"next\"",
+        "[4] link \"previous\"",
+        "[5] link \"Python\"",
+        "[6] combobox \"Language\" =\"English\"",
+        "[7] combobox \"Python version\" =\"3.15.2\"",
+        "[8] link \"3.15.2 documentation\"",
+        "[9] link \"The Python standard library\"",
+        "[10] link \"Internet Data Handling\"",
+        "[11] link \"json — JSON encoder and decoder\""
+      ],
+      "sampleA": [
+        "[1] RootWebArea \"json — JSON encoder and decoder — Python 3.15.2 documentation\" <focused>",
+        "  [2] navigation \"Related\"",
+        "    [3] link \"index\"",
+        "    [4] link \"modules\"",
+        "    [5] link \"next\"",
+        "    [6] link \"previous\"",
+        "    [7] link \"Python\"",
+        "    [8] combobox \"Language\"",
+        "      MenuListPopup",
+        "        [9] option \"German | Deutsch\"",
+        "        [10] option \"Greek | Ελληνικά\"",
+        "        [11] option \"English\" <selected>"
+      ]
+    },
+    {
+      "id": "google-flights",
+      "url": "https://www.google.com/travel/flights?hl=en",
+      "finalUrl": "https://www.google.com/travel/flights?hl=en",
+      "title": "Find Cheap Flights Worldwide & Book Your Ticket - Google Flights",
+      "stats": {
+        "A": {
+          "medianMs": 8.8,
+          "p95Ms": 10.6,
+          "coldMs": 25.6,
+          "chars": 4642,
+          "tokens": 1161,
+          "elements": 71,
+          "rawMs": [
+            9.1,
+            8.8,
+            10.6,
+            8.9,
+            8.7,
+            8.7,
+            8.4
+          ],
+          "charsNoRefs": 3937
+        },
+        "B": {
+          "medianMs": 1.5,
+          "p95Ms": 2.4,
+          "coldMs": 3.3,
+          "chars": 922,
+          "tokens": 231,
+          "elements": 25,
+          "rawMs": [
+            1.5,
+            1.6,
+            2.4,
+            1.4,
+            1.5,
+            1.4,
+            1.5
+          ]
+        },
+        "Btext": {
+          "medianMs": 1.8,
+          "p95Ms": 2.5,
+          "coldMs": 2.3,
+          "chars": 1327,
+          "tokens": 332,
+          "elements": 25,
+          "rawMs": [
+            1.8,
+            2.5,
+            2.3,
+            1.8,
+            1.7,
+            1.7,
+            1.9
+          ]
+        },
+        "Ball": {
+          "medianMs": 1.6,
+          "p95Ms": 1.9,
+          "coldMs": 2,
+          "chars": 3413,
+          "tokens": 853,
+          "elements": 70,
+          "rawMs": [
+            1.6,
+            1.9,
+            1.6,
+            1.6,
+            1.3,
+            1.4,
+            1.4
+          ]
+        }
+      },
+      "targets": [
+        {
+          "label": "Where from",
+          "A": true,
+          "B": true,
+          "Ball": true
+        },
+        {
+          "label": "Where to",
+          "A": true,
+          "B": true,
+          "Ball": true
+        },
+        {
+          "label": "Search button",
+          "A": false,
+          "B": false,
+          "Ball": false
+        }
+      ],
+      "overlapViewport": {
+        "both": 25,
+        "axOnly": 46,
+        "domOnly": 0,
+        "axOnlyExamples": [
+          "swap origin and destination.",
+          "find flights from da nang (dad) to phú quốc (pqc) from ₫3,007,362. operated by sun phuquoc airways. nov 28 to dec 4. 1 stop",
+          "find flights from da nang (dad) to hanoi (han) from ₫1,734,042. operated by vietravel airlines. nov 26 to dec 2. nonstop",
+          "find flights from da nang (dad) to ho chi minh city (sgn) from ₫1,331,362. operated by vietnam airlines. feb 6 to feb 15. nonstop",
+          "explore more destinations from da nang",
+          "find the cheapest days to fly the date grid and price graph make it easy to find the best flight deals",
+          "know when to book with price insights price history and trend data show you the best time to book your airline ticket to get the cheapest price for your flight",
+          "track flight prices for a trip not ready to book yet? observe price changes for a route or flight and get notified when prices drop."
+        ],
+        "domOnlyExamples": []
+      },
+      "overlapAll": {
+        "both": 64,
+        "axOnly": 7,
+        "domOnly": 6,
+        "axOnlyExamples": [
+          "swap origin and destination.",
+          "find flights from da nang (dad) to phú quốc (pqc) from ₫3,007,362. operated by sun phuquoc airways. nov 28 to dec 4. 1 stop",
+          "find flights from da nang (dad) to ho chi minh city (sgn) from ₫1,331,362. operated by vietnam airlines. feb 6 to feb 15. nonstop",
+          "know when to book with price insights price history and trend data show you the best time to book your airline ticket to get the cheapest price for your flight",
+          "track flight prices for a trip not ready to book yet? observe price changes for a route or flight and get notified when prices drop.",
+          "language​·english (united states)",
+          "location​·vietnam"
+        ],
+        "domOnlyExamples": [
+          "find flights from da nang (dad) to phú quốc (pqc) from ₫3,007,362. operated by sun phuquoc airways. nov 28 to dec 4. ...",
+          "find flights from da nang (dad) to ho chi minh city (sgn) from ₫1,331,362. operated by vietnam airlines. feb 6 to feb...",
+          "know when to book with price insights price history and trend data show you the best time to book your airline ticket...",
+          "track flight prices for a trip not ready to book yet? observe price changes for a route or flight and get notified wh...",
+          "language ​ english (united states)",
+          "location ​ vietnam"
+        ]
+      },
+      "sampleB": [
+        "# https://www.google.com/travel/flights?hl=en \"Find Cheap Flights Worldwide & Book Your Ticket - Google Flights\" viewport 1280x800 scroll 0/3138",
+        "[1] button \"Main menu\"",
+        "[2] link \"Google\"",
+        "[3] button \"Skip to main content\"",
+        "[4] button \"Accessibility feedback\"",
+        "[5] link \"Explore\"",
+        "[6] link \"Flights\"",
+        "[7] link \"Hotels\"",
+        "[8] link \"Vacation rentals\"",
+        "[9] button \"Change appearance\"",
+        "[10] button \"Google apps\"",
+        "[11] link \"Sign in\""
+      ],
+      "sampleA": [
+        "[1] RootWebArea \"Find Cheap Flights Worldwide & Book Your Ticket - Google Flights\" <focused>",
+        "  banner",
+        "    [2] button \"Main menu\"",
+        "    [3] link \"Google\"",
+        "    [4] button \"Skip to main content\"",
+        "    [5] button \"Accessibility feedback\"",
+        "    navigation",
+        "      [6] link \"Explore\"",
+        "      [7] link \"Flights\"",
+        "      [8] link \"Hotels\"",
+        "      [9] link \"Vacation rentals\"",
+        "    [10] button \"Change appearance\""
+      ]
+    },
+    {
+      "id": "mdn",
+      "url": "https://developer.mozilla.org/en-US/docs/Web/API/Element/getBoundingClientRect",
+      "finalUrl": "https://developer.mozilla.org/en-US/docs/Web/API/Element/getBoundingClientRect",
+      "title": "Element: getBoundingClientRect() method - Web APIs | MDN",
+      "stats": {
+        "A": {
+          "medianMs": 35.7,
+          "p95Ms": 37.7,
+          "coldMs": 67.1,
+          "chars": 18814,
+          "tokens": 4704,
+          "elements": 389,
+          "rawMs": [
+            37.7,
+            34.9,
+            36.2,
+            35.7,
+            35.1,
+            35.4,
+            36
+          ],
+          "charsNoRefs": 14572
+        },
+        "B": {
+          "medianMs": 2.1,
+          "p95Ms": 3,
+          "coldMs": 2.9,
+          "chars": 1333,
+          "tokens": 333,
+          "elements": 43,
+          "rawMs": [
+            2.2,
+            1.9,
+            3,
+            2.3,
+            1.9,
+            2.1,
+            2.1
+          ]
+        },
+        "Btext": {
+          "medianMs": 2.8,
+          "p95Ms": 3.3,
+          "coldMs": 3.8,
+          "chars": 2446,
+          "tokens": 612,
+          "elements": 43,
+          "rawMs": [
+            2.7,
+            3.3,
+            2.8,
+            2.8,
+            2.6,
+            2.7,
+            3.2
+          ]
+        },
+        "Ball": {
+          "medianMs": 2.7,
+          "p95Ms": 3.3,
+          "coldMs": 3.7,
+          "chars": 9940,
+          "tokens": 2485,
+          "elements": 343,
+          "rawMs": [
+            2.7,
+            3,
+            2.6,
+            2.7,
+            3.3,
+            2.7,
+            3
+          ]
+        }
+      },
+      "targets": [
+        {
+          "label": "search",
+          "A": true,
+          "B": false,
+          "Ball": false
+        },
+        {
+          "label": "link Reference",
+          "A": false,
+          "B": false,
+          "Ball": false
+        },
+        {
+          "label": "link Guides",
+          "A": true,
+          "B": false,
+          "Ball": true
+        }
+      ],
+      "overlapViewport": {
+        "both": 37,
+        "axOnly": 321,
+        "domOnly": 2,
+        "axOnlyExamples": [
+          "skip to main content",
+          "skip to search",
+          "javascript",
+          "search the site",
+          "log in",
+          "switch color theme",
+          "english (us)",
+          "copy"
+        ],
+        "domOnlyExamples": [
+          "javascript js",
+          "baseline check baseline widely available chrome check edge check firefox check safari check"
+        ]
+      },
+      "overlapAll": {
+        "both": 299,
+        "axOnly": 59,
+        "domOnly": 25,
+        "axOnlyExamples": [
+          "javascript",
+          "search the site",
+          "log in",
+          "switch color theme",
+          "english (us)",
+          "play",
+          "specification",
+          "cssom view module # dom-element-getboundingclientrect (external)"
+        ],
+        "domOnlyExamples": [
+          "javascript js",
+          "baseline check baseline widely available chrome check edge check firefox check safari check",
+          "cssom view module # dom-element-getboundingclientrect",
+          "view this page on github",
+          "report a problem with this content",
+          "instance properties",
+          "instance methods",
+          "setcapture() deprecated non-standard"
+        ]
+      },
+      "sampleB": [
+        "# https://developer.mozilla.org/en-US/docs/Web/API/Element/getBoundingClientRect \"Element: getBoundingClientRect() method - Web APIs | MDN\" viewport 1280x800 scroll 0/7593",
+        "[1] link \"MDN\"",
+        "[2] button \"HTML\"",
+        "[3] button \"CSS\"",
+        "[4] button \"JavaScript JS\"",
+        "[5] button \"Web APIs\"",
+        "[6] button \"All\"",
+        "[7] button \"Learn\"",
+        "[8] button \"Tools\"",
+        "[9] button \"About\"",
+        "[10] link \"Blog\"",
+        "[11] link \"Web\""
+      ],
+      "sampleA": [
+        "[1] RootWebArea \"Element: getBoundingClientRect() method - Web APIs | MDN\" <focused>",
+        "  [2] link \"Skip to main content\"",
+        "  [3] link \"Skip to search\"",
+        "  banner",
+        "    navigation",
+        "      [4] link \"MDN\"",
+        "      navigation",
+        "        [5] button \"HTML\"",
+        "        [6] button \"CSS\"",
+        "        [7] button \"JavaScript\"",
+        "        [8] button \"Web APIs\"",
+        "        [9] button \"All\""
+      ]
+    }
+  ],
+  "dropped": [
+    {
+      "id": "github",
+      "why": "did not load in 3 attempts (last HTTP status 504)"
+    }
+  ],
+  "click": {
+    "ref": 2,
+    "navigated": true,
+    "title": "Target reached"
+  }
+}

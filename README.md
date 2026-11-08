@@ -277,6 +277,7 @@ Alongside `InteractionController`, focused helpers include:
 - `resolveWsUrl({wsUrl|port|profileDir})` — reads `DevToolsActivePort` for Chrome 144+
 - `session.use(targetId)` / `session.waitFor(method, pred, timeout)` — the two routing primitives you genuinely need
 - `axView(nodes, opts?)` + `axDiff` / `parseAxRefs` / `axClick` / `axType` — compressed accessibility-tree projection (raw `getFullAXTree` is unusable in context; drops ~96% structural noise and keeps refs you can act on; see `interaction-skills/snapshot.md`)
+- `domView` / `domClick` / `domType` — one-call DOM snapshot ported from browser-use/jev-ultrafast; faster and smaller than axView, no shadow DOM (benchmark: `skills/cdp/sdk/bench/RESULTS.md`)
 - `parseAxLocators` / `resolveLocator` / `axClick(locator)` — stable locators (`role` + `accessibleName`) that survive refMap rebuilds where `[n]` refs do not
 - `attachSignals()` / `drainSignals()` — drainable digest of dialogs / downloads / navigations / crashes (CDP fires dozens of events; this keeps the handful that change what to do next)
 - `pageInfo({ timeoutMs? })` — `url` / `title` / viewport via a timed `Runtime.evaluate`; returns `{ dialog }` when a modal blocks page JS instead of silently hanging

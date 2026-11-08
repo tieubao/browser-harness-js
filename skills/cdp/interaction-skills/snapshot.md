@@ -15,6 +15,7 @@ This stays **CDP-native**: pure projection over already-fetched AX nodes. No pag
 | `parseAxRefs(view)` | `Map<refNumber, backendDOMNodeId>` from a view string |
 | `axClick(ref, refs)` | Click center of a ref (`refs` = Map or the view string) |
 | `axType(ref, refs, text)` | Click-focus then `Input.insertText` |
+| `domView(opts?)` / `domClick(ref)` / `domType(ref, text)` | One-call DOM snapshot and its click/type (see [domView](#domview-the-one-call-dom-alternative)) |
 
 Source: `sdk/axview.ts` + thin helpers in `sdk/repl.ts`. Heuristics are transparent; for power they don't cover — exact `properties`, table grids, custom roles — drop to raw `getFullAXTree` and transform yourself.
 
@@ -140,6 +141,39 @@ Drop to raw `getFullAXTree` when:
 | Multi-step: what changed? | `axDiff(prev, next)` | only deltas |
 
 A full snapshot is **expensive in absolute terms** (7–22K tokens). For multi-step tasks: interactive first, `queryAXTree` when you know the name, re-snapshot only when the page meaningfully changes, and prefer `axDiff` over re-feeding the whole tree.
+
+## domView: the one-call DOM alternative
+
+`domView(opts?)` is a second snapshot tool, not a replacement. One `Runtime.evaluate` reads the visible, enabled controls (role, accessible name, value, state) straight from the DOM and returns a `[n] role "name" ="value"` table. The live nodes stay in `window.__domView` inside the page, so `domClick(n)` / `domType(n, text)` resolve the ref in-page, scroll it into view, hit-test its center, and click with trusted `Input.dispatchMouseEvent`. No `getFullAXTree`, no trailing refs map. Ported from browser-use/jev-ultrafast (MIT); source `sdk/domview.ts`.
+
+```js
+await domView()                          // viewport controls only
+await domView({ viewport: false })       // whole page
+await domView({ text: true })            // + visible text (viewport, 6000 chars max)
+await domClick(3); await domType(2, 'query')
+```
+
+Options: `viewport` (default true), `text` (default false), `max` (default 250 controls), `redactSensitive` (default true, password values print `="[redacted]"`). Refs are valid for the latest `domView()` only; a navigation or removed node gives a clear `unknown ref` / `stale ref` error. Unlike axView, repeated calls overwrite the ref map.
+
+Measured on five public pages, headless Helium, 7 runs each (full table in `sdk/bench/RESULTS.md`):
+
+| | axView interactive | domView | domView `viewport:false` |
+|---|---|---|---|
+| Time (median) | 9 to 83 ms | 1.5 to 5.3 ms | 1.6 to 7.5 ms |
+| Output | 4.6K to 35.9K chars | 0.9K to 4.5K chars | 3.4K to 20.3K chars |
+
+domView is 6x to 26x faster and, like for like (whole page), 1.4x to 2.7x smaller. Pick it by these rules:
+
+| Situation | Pick |
+|---|---|
+| Act-loop on a big page, repeated snapshots, find a field/link/button fast | `domView()` |
+| Need the whole page's controls, not just the viewport | `domView({ viewport: false })` |
+| Site built from web components / open shadow DOM (MDN search, Log in, theme switch were invisible to domView) | `axView` |
+| Need `<select>` options listed, landmarks, headings, structure, or table context | `axView` |
+| Need stable cross-snapshot locators (`locators: true`) or `axDiff` | `axView` |
+| Controls missing from domView, or the page is canvas/odd | `axView`, then a screenshot |
+
+Both are one CDP call, so call count is not the difference; speed and tokens on large pages are.
 
 ## Traps
 

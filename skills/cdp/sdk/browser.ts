@@ -1,6 +1,6 @@
 import { Session, listPageTargets, type ConnectOptions } from './session.ts';
-import { Page, type PageOptions } from './page.ts';
-export { Page, Locator } from './page.ts';
+import { Page, settleInitialNavigation, type PageOptions } from './page.ts';
+export { Page, Locator, settleInitialNavigation } from './page.ts';
 export type { PageOptions, CallOptions, ActionOptions, ActionResult, RoleOptions, PageSnapshot, SnapshotOptions } from './page.ts';
 export type BrowserPageOptions = Omit<PageOptions, 'sessionId' | 'targetId' | 'ownsAttachment'>;
 
@@ -53,12 +53,12 @@ export class Browser {
     const generation = this.session.getConnectionGeneration();
     let targetId: string | undefined, page: Page | undefined;
     try {
-      ({ targetId } = await this.session._call('Target.createTarget', { url: 'about:blank', background: true }, { expectedGeneration: generation }) as { targetId: string });
+      // Create with the real URL and wait the initial navigation out: a goto from about:blank races Helium's
+      // own pending initial navigation and fails with net::ERR_ABORTED.
+      ({ targetId } = await this.session._call('Target.createTarget', { url, background: true }, { expectedGeneration: generation }) as { targetId: string });
       page = await this.attached(targetId, options, generation);
-      const result = await page.goto(url);
-      if (result.status !== 'executed' || result.verificationError?.includes('origin_denied')) {
-        throw new Error(`Navigation ${result.status}: ${result.verificationError ?? result.reason}`);
-      }
+      await settleInitialNavigation(this.session, page.scope.sessionId, { timeoutMs: options.timeoutMs, generation });
+      await page.info(); // the origin guard: a redirect off the allowed origins throws origin_denied here
       return page;
     } catch (error) {
       page?.dispose();

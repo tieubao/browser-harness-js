@@ -108,7 +108,7 @@ try {
 }
 ```
 
-On Helium a tab created with a URL sits at `about:blank` for about 150 ms and then navigates, sometimes twice. That is why the contract uses `createTarget` + `attachPage` (attaching does not navigate or check the URL) and the tool's own wait, and **not** `ctx.browser.open(url, ...)`, which creates `about:blank` and then `goto`s and fails on Helium with `Navigation outcome_unknown: net::ERR_ABORTED` or `origin_denied`. Never loop on a `browser.open` failure. Attach to existing tabs with `ctx.findPage`, which waits for the URL to match instead of failing at once.
+On Helium a tab created with a URL sits at `about:blank` for about 150 ms (sometimes far longer) and then navigates, sometimes twice. SDK 0.25.0 and later handle this: `ctx.browser.open(url, ...)` creates the tab with the real URL and waits for the committed navigation, so it works on Helium and Chrome. Older SDKs created `about:blank` and then `goto`d, which failed on Helium with `Navigation outcome_unknown: net::ERR_ABORTED` or `origin_denied`. The contract still uses `createTarget` + `attachPage` (attaching does not navigate or check the URL) and the tool's own wait; to wait for a tab you created, call `settleInitialNavigation(session, sessionId, { expectOrigin })` from `sdk/page.ts` instead of reading `readyState`, which is already `complete` on Helium's interim `about:blank`. Never loop on a `browser.open` failure. Attach to existing tabs with `ctx.findPage`, which waits for the URL to match instead of failing at once.
 
 ### Before / after: local helper shim (preferred for big files)
 
@@ -215,7 +215,7 @@ Existing `tools/*.test.mjs` (app-notion-com, chrome-extensions, corp-delaware-go
    cd skills/cdp/sdk && ./browser-harness-js 'await browser.connect({port: 9341})'
    ```
 
-   Create the tab with `session.Target.createTarget`, wait until its `location.href` starts with the expected origin, then call `learnings("<domain>", "<tool>", { targetId, ...args })`. Never use port 9222 or 9876, never Han's profile, never `browser.open` (see section 2). Kill only the PIDs you started. If a public site blocks headless (captcha, consent wall), do not loop: mark `live: unverified (blocked headless)`.
+   Create the tab with `session.Target.createTarget`, wait until its `location.href` starts with the expected origin (`settleInitialNavigation`, not `readyState` alone), then call `learnings("<domain>", "<tool>", { targetId, ...args })`. Never use port 9222 or 9876, never Han's profile, `browser.open` only on SDK 0.25.0 or later (see section 2). Kill only the PIDs you started. If a public site blocks headless (captcha, consent wall), do not loop: mark `live: unverified (blocked headless)`.
 4. **Logged-in sites** (`logged-in` below): no live call. Append `live: unverified (logged-in)` to `notes/overview.md`. `annas-archive` is never driven through a browser at all.
 5. Commit inside your batch's folders only, `refactor(cdp): port <batch> learnings to the Page API`. Do not push, do not bump `package.json`.
 

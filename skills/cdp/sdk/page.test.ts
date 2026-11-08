@@ -49,7 +49,9 @@ class Transport {
       case 'Accessibility.getFullAXTree':
         if (params.frameId === 'broken') throw new Error('Frame renderer unavailable');
         return {nodes:this.axNodes ?? [{nodeId:'root',ignored:false,backendDOMNodeId:1,role:{type:'role',value:'RootWebArea'},name:{type:'string',value:'Fixture'}}]};
-      case 'Runtime.evaluate': return {result:{value:{url:this.url,title:'Fixture'}}};
+      case 'Runtime.evaluate':
+        if (String(params.expression).includes('readyState')) return {result:{value:{href:this.url,ready:'complete'}}};
+        return {result:{value:{url:this.url,title:'Fixture'}}};
       default: throw new Error(`Unexpected method ${method}`);
     }
   }
@@ -132,7 +134,7 @@ test('concurrent browser acquisitions are bounded before dispatch; invalid polic
 
 test('browser open cleans up denied redirects; late attachment cannot survive a new generation', async () => {
   const transport=new Transport(),browser=new Browser(transport as unknown as Session);
-  transport.redirect='https://denied.test/';
+  transport.url='https://denied.test/'; // the created target lands off the allowed origins
   await assert.rejects(browser.open(origin,{allowedOrigins:[origin]}),/origin_denied/);
   assert.ok(transport.calls.some(c=>c.method==='Target.closeTarget'));
   assert.equal(transport.listeners.size,0);

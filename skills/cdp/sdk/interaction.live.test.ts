@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test, { after, before } from 'node:test';
 import { InteractionController, type InteractionObservation } from './interaction.ts';
+import { settleInitialNavigation } from './page.ts';
 import { Session } from './session.ts';
 
 // Real headless Chrome against local widgets that a fake DOM cannot model:
@@ -171,10 +172,8 @@ async function open(input: 'synthetic' | 'trusted') {
   const { targetId } = await session.domains.Target.createTarget({ url: `${origin}/` }) as { targetId: string };
   const { sessionId } = await session.domains.Target.attachToTarget({ targetId, flatten: true }) as { sessionId: string };
   await session._call('Page.enable', {}, { sessionId });
-  await session._call('Runtime.evaluate', {
-    expression: 'new Promise(r => document.readyState === "complete" ? r() : addEventListener("load", r))',
-    awaitPromise: true,
-  }, { sessionId });
+  // readyState alone is not enough: Helium parks a new tab at about:blank (already complete) before it navigates.
+  await settleInitialNavigation(session, sessionId, { expectOrigin: origin });
   const controller = new InteractionController(session, { allowedOrigins: [origin], input });
   const scope = { sessionId };
   const readLog = async () => {

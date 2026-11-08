@@ -3,7 +3,7 @@ import test from 'node:test';
 import { createContext, runInContext, type Context } from 'node:vm';
 import { readFileSync } from 'node:fs';
 import { webcrypto } from 'node:crypto';
-import { InteractionController, type InteractionObservation } from './interaction.ts';
+import { InteractionController, SELECT_ALL_MODIFIER, typeKeys, type InteractionObservation } from './interaction.ts';
 
 // Minimal injected DOM, not a browser emulator. Execute the actual isolated-world
 // projection/guard source to probe its decisions without touching a live browser.
@@ -46,7 +46,11 @@ class ElementFixture {
   }
   click() { this.clicks++; if (this.type === 'checkbox') this.checked = !this.checked; }
   focuses = 0;
-  focus() { this.focuses++; }
+  focusable = true;
+  focus() { this.focuses++; if (this.focusable && this.ownerDocument) this.ownerDocument.activeElement = this; }
+  /** A closed or open shadow root this element lives in; the document otherwise. */
+  root: any = null;
+  getRootNode() { return this.root ?? this.ownerDocument; }
   dispatchEvent(_event: Event) { this.inputs++; return true; }
 }
 class InputFixture extends ElementFixture {
@@ -76,7 +80,7 @@ class PageFixture {
       document: this.document,
       location: { get href() { return page.url; }, get origin() { return new URL(page.url).origin; } },
       HTMLElement: ElementFixture, HTMLInputElement: InputFixture, HTMLTextAreaElement: TextareaFixture,
-      NodeFilter: { SHOW_ELEMENT: 1 }, innerWidth: 1200, innerHeight: 800,
+      NodeFilter: { SHOW_ELEMENT: 1 }, innerWidth: 1200, innerHeight: 800, navigator: { language: 'en-US' },
       getComputedStyle: (element: ElementFixture) => element.style, Event, crypto: webcrypto, TextEncoder,
     });
   }
@@ -117,7 +121,20 @@ class FixtureSession {
       const obj = this.objects.get(params.objectId);
       if (!obj || obj.sid !== sid) throw new Error('Native object gone');
       const fn = runInContext(`(${params.functionDeclaration})`, page.context);
-      result = { result: { value: structuredClone(fn.apply(obj.value, (params.arguments ?? []).map((a: any) => a.value))) } };
+      const value = fn.apply(obj.value, (params.arguments ?? []).map((a: any) => a.value));
+      if (params.returnByValue) result = { result: { value: structuredClone(value) } };
+      else {
+        // A single-target projection returns its guard object by reference.
+        const objectId = `object-${++this.next}`;
+        this.objects.set(objectId, { sid, value: params.awaitPromise ? await value : value });
+        result = { result: { objectId } };
+      }
+    } else if (method === 'DOM.resolveNode') {
+      const node = page.nodes[params.backendNodeId - 1];
+      if (!node) throw new Error('No node with given id found');
+      const objectId = `object-${++this.next}`;
+      this.objects.set(objectId, { sid, value: node });
+      result = { object: { objectId } };
     } else if (method === 'Runtime.releaseObject') this.objects.delete(params.objectId);
     await this.after?.(method, params, sid);
     return result;
@@ -342,7 +359,7 @@ test('cooperative close returns promptly, blocks queued effects and releases lat
   response.release(); await tick(); await tick(); assert.equal(late.session.objects.size, 0);
 });
 
-test('exports and REPL registration are additive, exact origins and explicit scope required', async () => {
+test('guard exports and scoped browser registration require exact origins and scope', async () => {
   const { session, controller } = setup();
   for (const origin of ['*', 'https://allowed.test/', 'https://allowed.test/path', 'https://u:p@allowed.test', 'null', 'file://']) {
     assert.throws(() => new InteractionController(session, { allowedOrigins: [origin] }));
@@ -352,7 +369,9 @@ test('exports and REPL registration are additive, exact origins and explicit sco
   await assert.rejects(controller.observe({ scope, maxElements: 129 }), /maxElements/);
   assert.throws(() => new InteractionController(session, { allowedOrigins: [] }), /1..32/);
   const source = readFileSync(new URL('./repl.ts', import.meta.url), 'utf8');
-  for (const name of ['InteractionController', 'createInteractionController', 'axClick', 'axType', 'cdp', 'session']) assert.ok(source.includes(`(globalThis as any).${name} =`));
+  for (const name of ['browser', 'cdp', 'session']) assert.ok(source.includes(`(globalThis as any).${name} =`));
+  // Fork compatibility layer: upstream asserted these globals are absent; here they must stay registered.
+  for (const name of ['axView', 'axClick', 'axType', 'parseAxRefs', 'learnings', 'help']) assert.ok(source.includes(`(globalThis as any).${name} =`));
   controller.close();
 });
 
@@ -602,5 +621,361 @@ test('layout shifts and cosmetic churn keep a target; its meaning and occlusion 
   const { controller, page } = setup(); const seen = await controller.observe({ scope });
   page.nodes[0]!.rect.x += 1; page.nodes[0]!.hit = false;
   assert.equal((await controller.act(action(seen))).status, 'blocked', 'a shift under an overlay is still occluded');
+  controller.close();
+});
+
+test('sensitive fields stay excluded by default; an explicit host grant makes them operable and observable', async () => {
+  const fields = () => {
+    const password = new InputFixture('password'); password.attrs['aria-label'] = 'Password';
+    const email = new InputFixture('email'); email.attrs['aria-label'] = 'Work e-mail';
+    const phone = new InputFixture('tel'); phone.attrs['aria-label'] = 'Phone';
+    const named = new InputFixture(); named.attrs.name = 'first_name';
+    const card = new InputFixture(); card.attrs.autocomplete = 'cc-number';
+    const marked = new InputFixture(); marked.attrs['data-private'] = '';
+    const nested = new InputFixture(); nested.parentElement = new ElementFixture('DIV'); nested.parentElement.attrs['data-sensitive'] = '';
+    const all = [password, email, phone, named, card, marked, nested];
+    for (const field of all) field.value = 'PRIVATE_RAW_SENTINEL';
+    return all;
+  };
+  const observe = async (options: { allowSensitive?: boolean }) => {
+    const session = new FixtureSession(); const page = session.pages.get('one')!;
+    page.nodes = [new ElementFixture(), ...fields()]; page.refreshNodes();
+    const controller = new InteractionController(session, { allowedOrigins: ['https://allowed.test'], ...options });
+    return { controller, page, seen: await controller.observe({ scope }) };
+  };
+  const plain = await observe({});
+  assert.deepEqual(plain.seen.candidates.map(c => c.label), ['Continue']);
+  assert.ok(!JSON.stringify(plain.seen).includes('PRIVATE_RAW_SENTINEL'));
+  plain.controller.close();
+
+  const granted = await observe({ allowSensitive: true });
+  assert.equal(granted.seen.candidates.length, 8);
+  assert.deepEqual(granted.seen.candidates.slice(1, 4).map(c => [c.role, c.label, c.value]),
+    [['textbox', 'Password', 'PRIVATE_RAW_SENTINEL'], ['textbox', 'Work e-mail', 'PRIVATE_RAW_SENTINEL'], ['textbox', 'Phone', 'PRIVATE_RAW_SENTINEL']]);
+  assert.equal((await granted.controller.act(action(granted.seen, 1, 'type', 'hunter2'))).status, 'executed');
+  assert.equal((granted.page.nodes[1] as InputFixture).value, 'hunter2');
+  granted.controller.close();
+
+  // Without an explicit option the host's environment decides, read at observation time; an explicit false wins.
+  const previous = process.env.BH_ALLOW_SENSITIVE;
+  try {
+    const session = new FixtureSession(); const page = session.pages.get('one')!;
+    page.nodes = [new ElementFixture(), ...fields()]; page.refreshNodes();
+    const inherit = new InteractionController(session, { allowedOrigins: ['https://allowed.test'] });
+    const refuse = new InteractionController(session, { allowedOrigins: ['https://allowed.test'], allowSensitive: false });
+    assert.equal((await inherit.observe({ scope })).candidates.length, 1);
+    process.env.BH_ALLOW_SENSITIVE = '1';
+    assert.equal((await inherit.observe({ scope })).candidates.length, 8);
+    assert.equal((await refuse.observe({ scope })).candidates.length, 1);
+    inherit.close(); refuse.close();
+  } finally {
+    if (previous === undefined) delete process.env.BH_ALLOW_SENSITIVE; else process.env.BH_ALLOW_SENSITIVE = previous;
+  }
+  assert.throws(() => new InteractionController(new FixtureSession(), { allowedOrigins: ['https://allowed.test'], allowSensitive: 'yes' as any }), /allowSensitive must be a boolean/);
+});
+
+test('a transparent native radio, checkbox or select over its drawn proxy stays operable; a transparent button does not', async () => {
+  const { controller, page } = setup();
+  const transparent = <T extends ElementFixture>(el: T, label: string) => { el.attrs['aria-label'] = label; el.style.opacity = '0'; return el; };
+  const radio = transparent(new InputFixture('radio'), 'No');
+  const checkbox = transparent(new InputFixture('checkbox'), 'Remember me');
+  const select = transparent(new ElementFixture('SELECT', ''), 'Country');
+  const button = transparent(new ElementFixture('BUTTON', 'Ghost action'), 'Ghost action');
+  // Only its own opacity is excused: covered, hidden by an ancestor or hidden another way still hides it.
+  const covered = transparent(new InputFixture('radio'), 'Covered'); covered.hit = false;
+  const inHidden = transparent(new InputFixture('radio'), 'In hidden group');
+  inHidden.parentElement = new ElementFixture('DIV'); inHidden.parentElement.style.opacity = '0';
+  const ariaHidden = transparent(new InputFixture('checkbox'), 'Aria hidden'); ariaHidden.attrs['aria-hidden'] = 'true';
+  const invisible = transparent(new InputFixture('checkbox'), 'Invisible'); invisible.style.visibility = 'hidden';
+  page.nodes = [radio, checkbox, select, button, covered, inHidden, ariaHidden, invisible]; page.refreshNodes();
+  const seen = await controller.observe({ scope });
+  assert.deepEqual(seen.candidates.map(c => [c.role, c.label]), [['radio', 'No'], ['checkbox', 'Remember me'], ['combobox', 'Country']]);
+  assert.equal((await controller.act(action(seen, 0))).status, 'executed');
+  assert.equal(radio.clicks, 1);
+  // The proxy now intercepts the pointer: the effect boundary rechecks the hit and refuses.
+  const again = await controller.observe({ scope }); radio.hit = false;
+  assert.equal((await controller.act(action(again, 0))).status, 'blocked');
+  assert.equal(radio.clicks, 1);
+  controller.close();
+});
+
+test('a refused single target says why, with the next move, and is still refused', async () => {
+  const { controller, page } = setup();
+  const button = (text: string) => new ElementFixture('BUTTON', text);
+  const locked = button('Locked action'); locked.disabled = true;
+  const ghost = button('Ghost action'); ghost.style.opacity = '0';
+  const inMenu = button('New project'); inMenu.parentElement = new ElementFixture('DIV', 'New project'); inMenu.parentElement.attrs.id = 'menu';
+  inMenu.parentElement.style.display = 'none';
+  const caret = new ElementFixture('DIV', ''); caret.attrs.id = 'caret'; caret.attrs['aria-hidden'] = 'true';
+  const empty = button('Empty');
+  const below = new ElementFixture('DIV', 'Footer note');
+  const covered = button('Apply now'); covered.hit = false;
+  const overlay = new ElementFixture('DIV', 'Notice'); overlay.attrs.id = 'notice';
+  const secret = new InputFixture(); secret.attrs.name = 'password';
+  const plain = new ElementFixture('DIV', 'Plain text');
+  const readonly = new InputFixture(); readonly.readOnly = true;
+  const radio = new InputFixture('radio'); radio.attrs['aria-label'] = 'No'; radio.style.opacity = '0'; radio.hit = false;
+  const ring = new ElementFixture('SPAN', '');
+  const fine = button('Continue');
+  page.nodes = [locked, ghost, inMenu, caret, empty, below, covered, overlay, secret, plain, readonly, radio, ring, fine];
+  page.refreshNodes();
+  empty.rect = { x: 10, y: empty.rect.y, width: 0, height: 0 };
+  below.rect = { ...below.rect, y: 2000 };
+  overlay.rect = { ...covered.rect };
+  ring.rect = { ...radio.rect };
+  const why = async (el: ElementFixture) => (await controller.observe({ scope, backendNodeId: page.nodes.indexOf(el) + 1 }));
+  const expected: [ElementFixture, RegExp][] = [
+    [locked, /^disabled; check that this is the expected state, or do what enables it first$/],
+    [ghost, /^hidden \(itself\); open or reveal/],
+    [inMenu, /^hidden \(by ancestor div#menu "New project"\)/],
+    [caret, /^pointer-only: visible, but hidden from the accessibility tree \(aria-hidden on itself\).*\{x:60,y:145\}/],
+    [empty, /^it has no size on the page$/],
+    [below, /^outside the viewport; scroll it into view, then retry$/],
+    [covered, /^covered at its centre by div#notice "Notice"; close or move what covers it/],
+    [secret, /^sensitive: .*allowSensitive grant$/],
+    [plain, /^not an operable control \(div\); act on the control itself/],
+    [readonly, /^read-only/],
+    // A transparent radio is excused its opacity, so what blocks it is the ring over it.
+    [radio, /^covered at its centre by span/],
+  ];
+  for (const [el, reason] of expected) {
+    const seen = await why(el);
+    assert.equal(seen.candidates.length, 0, el.textContent);
+    assert.match(seen.refusal ?? '', reason);
+  }
+  const offered = await why(fine);
+  assert.equal(offered.candidates.length, 1); assert.equal(offered.refusal, undefined);
+  assert.equal((await controller.observe({ scope })).refusal, undefined, 'only single-target observations explain');
+  controller.close();
+});
+
+// What a person's typing sends: one key per character a US key types, the rest committed whole.
+const sent = async (text: string) => {
+  const calls: [string, any][] = [];
+  await typeKeys(async (method, params) => { calls.push([method, params]); }, text);
+  return calls;
+};
+const typedText = (calls: [string, any][]) =>
+  calls.map(([method, params]) => method === 'Input.insertText' ? params.text : params.type === 'keyDown' ? params.text : '').join('');
+
+test('typeKeys sends a key down and up per keyable character, with Shift for shifted ones', async () => {
+  assert.equal(SELECT_ALL_MODIFIER, process.platform === 'darwin' ? 4 : 2);
+  assert.deepEqual(await sent('aB1!'), [
+    ['Input.dispatchKeyEvent', { type: 'keyDown', key: 'a', code: 'KeyA', windowsVirtualKeyCode: 65, text: 'a', unmodifiedText: 'a' }],
+    ['Input.dispatchKeyEvent', { type: 'keyUp', key: 'a', code: 'KeyA', windowsVirtualKeyCode: 65 }],
+    ['Input.dispatchKeyEvent', { type: 'keyDown', key: 'B', code: 'KeyB', windowsVirtualKeyCode: 66, modifiers: 8, text: 'B', unmodifiedText: 'B' }],
+    ['Input.dispatchKeyEvent', { type: 'keyUp', key: 'B', code: 'KeyB', windowsVirtualKeyCode: 66, modifiers: 8 }],
+    ['Input.dispatchKeyEvent', { type: 'keyDown', key: '1', code: 'Digit1', windowsVirtualKeyCode: 49, text: '1', unmodifiedText: '1' }],
+    ['Input.dispatchKeyEvent', { type: 'keyUp', key: '1', code: 'Digit1', windowsVirtualKeyCode: 49 }],
+    ['Input.dispatchKeyEvent', { type: 'keyDown', key: '!', code: 'Digit1', windowsVirtualKeyCode: 49, modifiers: 8, text: '!', unmodifiedText: '!' }],
+    ['Input.dispatchKeyEvent', { type: 'keyUp', key: '!', code: 'Digit1', windowsVirtualKeyCode: 49, modifiers: 8 }],
+  ]);
+  const punctuation = await sent('a-b ?');
+  assert.deepEqual(punctuation.filter(([, p]) => p.type === 'keyDown').map(([, p]) => [p.code, p.modifiers ?? 0]),
+    [['KeyA', 0], ['Minus', 0], ['KeyB', 0], ['Space', 0], ['Slash', 8]]);
+});
+
+test('typeKeys commits characters no key types whole: Japanese, Vietnamese, Arabic, emoji', async () => {
+  const japanese = await sent('東京タワー');
+  assert.deepEqual(japanese, ['東', '京', 'タ', 'ワ', 'ー'].map(text => ['Input.insertText', { text }]));
+
+  // Vietnamese mixes keyable letters with letters carrying tone marks, which arrive as one character each.
+  const vietnamese = await sent('Việt Nam');
+  assert.equal(typedText(vietnamese), 'Việt Nam');
+  assert.deepEqual(vietnamese.filter(([method]) => method === 'Input.insertText'), [['Input.insertText', { text: 'ệ' }]]);
+  // Decomposed (NFD) text: the base letter and its combining marks are one user-perceived character, sent together.
+  const decomposed = 'Việt';
+  const nfd = await sent(decomposed);
+  assert.equal(typedText(nfd), decomposed);
+  assert.deepEqual(nfd.filter(([method]) => method === 'Input.insertText'), [['Input.insertText', { text: 'ệ' }]]);
+
+  const arabic = await sent('مرحبا');
+  assert.deepEqual(arabic.map(([method]) => method), Array(5).fill('Input.insertText'));
+  assert.equal(typedText(arabic), 'مرحبا');
+  const family = '👩‍👩‍👧';
+  assert.deepEqual(await sent(`a${family}`).then(calls => calls.filter(([m]) => m === 'Input.insertText')), [['Input.insertText', { text: family }]]);
+});
+
+function trustedSetup(nodes?: ElementFixture[]) {
+  const session = new FixtureSession();
+  const page = session.pages.get('one')!;
+  if (nodes) { page.nodes = nodes; page.refreshNodes(); }
+  const controller = new InteractionController(session, { allowedOrigins: ['https://allowed.test'], input: 'trusted' });
+  const inputCalls = () => session.calls.filter(c => c.method.startsWith('Input.')).map(c => [c.method, c.params] as [string, any]);
+  return { session, page, controller, inputCalls };
+}
+const selectAll = [
+  ['Input.dispatchKeyEvent', { type: 'rawKeyDown', key: 'a', code: 'KeyA', windowsVirtualKeyCode: 65, modifiers: SELECT_ALL_MODIFIER, commands: ['selectAll'] }],
+  ['Input.dispatchKeyEvent', { type: 'keyUp', key: 'a', code: 'KeyA', windowsVirtualKeyCode: 65, modifiers: SELECT_ALL_MODIFIER }],
+];
+
+test('trusted type: click into the field, select what it holds, then type key by key like a person', async () => {
+  const { session, page, controller, inputCalls } = trustedSetup();
+  const field = page.nodes[1] as InputFixture;
+  // The click focuses the field, as it does in a browser.
+  session.before = (method, params) => {
+    if (method === 'Input.dispatchMouseEvent' && params.type === 'mousePressed') page.document.activeElement = field;
+  };
+  let seen = await controller.observe({ scope });
+  const receipt = await controller.act(action(seen, 1, 'type', 'Hà Nội'));
+  assert.deepEqual(receipt, { status: 'executed', reason: 'typed_keys' });
+  const calls = inputCalls();
+  const point = { x: 60, y: 65 };
+  assert.deepEqual(calls.slice(0, 5), [
+    ['Input.dispatchMouseEvent', { type: 'mouseMoved', ...point }],
+    ['Input.dispatchMouseEvent', { type: 'mousePressed', ...point, button: 'left', buttons: 1, clickCount: 1 }],
+    ['Input.dispatchMouseEvent', { type: 'mouseReleased', ...point, button: 'left', buttons: 0, clickCount: 1 }],
+    ...selectAll,
+  ]);
+  assert.equal(typedText(calls.slice(5)), 'Hà Nội');
+  assert.equal(field.focuses, 0, 'the click focused it; no scripted focus');
+  // The page itself never selects or inserts: the host's keys do that.
+  assert.equal(field.inputs, 0);
+
+  // Empty text clears with Delete after select-all.
+  session.calls.length = 0;
+  seen = await controller.observe({ scope });
+  assert.equal((await controller.act(action(seen, 1, 'type', ''))).reason, 'typed_keys');
+  assert.deepEqual(inputCalls().slice(3), [...selectAll,
+    ['Input.dispatchKeyEvent', { type: 'rawKeyDown', key: 'Delete', code: 'Delete', windowsVirtualKeyCode: 46 }],
+    ['Input.dispatchKeyEvent', { type: 'keyUp', key: 'Delete', code: 'Delete', windowsVirtualKeyCode: 46 }]]);
+
+  // A long text is pasted in one piece, as a person would paste it.
+  session.calls.length = 0;
+  const long = 'こんにちは、'.repeat(50);
+  seen = await controller.observe({ scope });
+  assert.equal((await controller.act(action(seen, 1, 'type', long))).reason, 'pasted');
+  assert.deepEqual(inputCalls().slice(3), [...selectAll, ['Input.insertText', { text: long }]]);
+  controller.close();
+});
+
+test('trusted type: a click that does not focus is reported, focus is set by script, and no focus at all stops', async () => {
+  const { session, page, controller, inputCalls } = trustedSetup();
+  const field = page.nodes[1] as InputFixture;
+  let seen = await controller.observe({ scope });
+  assert.deepEqual(await controller.act(action(seen, 1, 'type', 'xin chào')), { status: 'executed', reason: 'typed_keys: focus_set_by_script' });
+  assert.equal(field.focuses, 1);
+  assert.equal(typedText(inputCalls().slice(5)), 'xin chào');
+
+  // A field that refuses focus gets no keys: they would land elsewhere.
+  field.focusable = false;
+  page.document.activeElement = null;
+  session.calls.length = 0;
+  seen = await controller.observe({ scope });
+  assert.equal((await controller.act(action(seen, 1, 'type', 'lost'))).status, 'outcome_unknown');
+  assert.deepEqual(inputCalls().map(([, p]) => p.type), ['mouseMoved', 'mousePressed', 'mouseReleased']);
+  controller.close();
+});
+
+test('native date controls: typed segment by segment in the locale order, confirmed, else set with events', async () => {
+  const date = new InputFixture('date'); date.attrs['aria-label'] = 'Departure';
+  const { session, page, controller, inputCalls } = trustedSetup([date]);
+  let seen = await controller.observe({ scope });
+  assert.deepEqual([seen.candidates[0]!.role, seen.candidates[0]!.operations], ['textbox', ['type', 'press']]);
+
+  // The browser accepts the typed segments.
+  session.after = (method, params) => {
+    if (method === 'Input.dispatchKeyEvent' && params.type === 'keyUp' && inputCalls().filter(([, p]) => p.type === 'keyUp').length === 8) date.value = '2026-05-14';
+  };
+  assert.deepEqual(await controller.act(action(seen, 0, 'type', '05/14/2026')),
+    { status: 'executed', reason: 'typed_keys', expected: '2026-05-14' });
+  assert.equal(typedText(inputCalls()), '05142026', 'month, day, year for en-US');
+  assert.equal(date.focuses, 1, 'the page focused its first segment');
+
+  // Typed segments that do not take: the value is set with input and change events, and that is said.
+  session.after = undefined; session.calls.length = 0; date.value = '';
+  page.context.navigator.language = 'vi-VN';
+  seen = await controller.observe({ scope });
+  assert.deepEqual(await controller.act(action(seen, 0, 'type', '3/4/2026')),
+    { status: 'executed', reason: 'typed_segments_not_accepted: value_set_synthetically', expected: '2026-04-03' });
+  assert.equal(typedText(inputCalls()), '03042026', 'day, month, year for vi-VN');
+  assert.equal(date.value, '2026-04-03');
+  // A day past 12 decides the order whatever the locale; ISO is taken as written.
+  for (const [text, value] of [['14.05.2026', '2026-05-14'], ['2026-5-4', '2026-05-04']] as const) {
+    date.value = ''; seen = await controller.observe({ scope });
+    assert.equal((await controller.act(action(seen, 0, 'type', text))).expected, value);
+  }
+  // Not a date: refused before anything is typed, with the format the control takes.
+  session.calls.length = 0; seen = await controller.observe({ scope });
+  assert.deepEqual(await controller.act(action(seen, 0, 'type', 'ngày mai')),
+    { status: 'blocked', reason: 'unsupported_value: this date control takes a date such as 2026-05-14' });
+  assert.deepEqual(inputCalls(), []);
+  controller.close();
+});
+
+test('native time, month, week and datetime controls take their own format, set with events', async () => {
+  const field = (type: string) => { const el = new InputFixture(type); el.attrs['aria-label'] = type; return el; };
+  const [time, month, week, local] = ['time', 'month', 'week', 'datetime-local'].map(field) as InputFixture[];
+  const { controller, inputCalls } = trustedSetup([time!, month!, week!, local!]);
+  const cases: [number, string, string][] = [[0, '2:30 pm', '14:30'], [0, '09:05', '09:05'], [1, '5/2026', '2026-05'],
+    [2, '2026-W20', '2026-W20'], [3, '2026-05-14 14:30', '2026-05-14T14:30']];
+  for (const [index, text, value] of cases) {
+    const seen = await controller.observe({ scope });
+    assert.deepEqual(await controller.act(action(seen, index, 'type', text)),
+      { status: 'executed', reason: `value_set_synthetically: native ${seen.candidates[index]!.label} control`, expected: value });
+  }
+  assert.equal(time!.value, '09:05'); assert.equal(local!.value, '2026-05-14T14:30');
+  assert.deepEqual(inputCalls(), [], 'no keys: these controls are set, not typed');
+  // Synthetic controllers convert the same way.
+  const synthetic = new InteractionController(new FixtureSession(), { allowedOrigins: ['https://allowed.test'] });
+  const page = (synthetic as any).session.pages.get('one') as PageFixture;
+  const date = field('date'); page.nodes = [date]; page.refreshNodes();
+  const seen = await synthetic.observe({ scope });
+  assert.equal((await synthetic.act(action(seen, 0, 'type', '2026-05-14'))).expected, '2026-05-14');
+  assert.equal(date.value, '2026-05-14');
+  controller.close(); synthetic.close();
+});
+
+test('maskSensitive: under the grant, sensitive values stay in the page as [masked]; empty stays empty', async () => {
+  const password = new InputFixture('password'); password.attrs['aria-label'] = 'Password'; password.value = 'PRIVATE_RAW_SENTINEL';
+  const named = new InputFixture(); named.attrs.name = 'first_name'; named.value = 'PRIVATE_RAW_SENTINEL';
+  const marked = new InputFixture(); marked.parentElement = new ElementFixture('DIV'); marked.parentElement.attrs['data-private'] = '';
+  const plain = new InputFixture(); plain.value = 'visible';
+  const observe = async (options: Record<string, boolean>) => {
+    const session = new FixtureSession(); const page = session.pages.get('one')!;
+    page.nodes = [password, named, marked, plain]; page.refreshNodes();
+    const controller = new InteractionController(session, { allowedOrigins: ['https://allowed.test'], ...options });
+    return { controller, seen: await controller.observe({ scope }) };
+  };
+  const masked = await observe({ allowSensitive: true, maskSensitive: true });
+  assert.deepEqual(masked.seen.candidates.map(c => c.value), ['[masked]', '[masked]', '', 'visible']);
+  assert.ok(!JSON.stringify(masked.seen).includes('PRIVATE_RAW_SENTINEL'));
+  assert.equal((await masked.controller.act(action(masked.seen, 0, 'type', 'hunter2'))).status, 'executed');
+  assert.equal(password.value, 'hunter2');
+  masked.controller.close();
+  // Masking only applies under the grant: without it the fields are not offered at all.
+  const refused = await observe({ maskSensitive: true, allowSensitive: false });
+  assert.deepEqual(refused.seen.candidates.map(c => c.value), ['visible']);
+  refused.controller.close();
+  assert.throws(() => new InteractionController(new FixtureSession(), { allowedOrigins: ['https://allowed.test'], maskSensitive: 1 as any }), /maskSensitive must be a boolean/);
+});
+
+test('a transparent native file input over its drawn button stays operable', async () => {
+  const { controller, page } = setup();
+  const upload = new InputFixture('file'); upload.attrs.role = 'button'; upload.attrs['aria-label'] = 'Upload receipt'; upload.style.opacity = '0';
+  page.nodes = [upload]; page.refreshNodes();
+  const seen = await controller.observe({ scope });
+  assert.deepEqual(seen.candidates.map(c => [c.role, c.label]), [['button', 'Upload receipt']]);
+  controller.close();
+});
+
+test('a hit that stops at the host of the closed shadow root holding the target is not a cover', async () => {
+  const { controller, page } = setup();
+  const host = new ElementFixture('SIGN-IN', ''); host.hit = false;
+  const inner = new ElementFixture('BUTTON', 'Sign in'); inner.hit = false;
+  inner.root = { host };
+  const stranger = new ElementFixture('DIV', 'Banner'); stranger.hit = false;
+  const covered = new ElementFixture('BUTTON', 'Covered');
+  covered.hit = false;
+  page.nodes = [inner, covered]; page.refreshNodes();
+  // The closed root cannot be entered, so every point on the button hits its host; the other button is under a banner.
+  page.document.elementFromPoint = (x: number, y: number) => {
+    const node = page.nodes.find(n => x >= n.rect.x && x <= n.rect.x + n.rect.width && y >= n.rect.y && y <= n.rect.y + n.rect.height);
+    return node === inner ? host : node === covered ? stranger : null;
+  };
+  const seen = await controller.observe({ scope });
+  assert.deepEqual(seen.candidates.map(c => c.label), ['Sign in']);
+  assert.equal((await controller.act(action(seen, 0))).status, 'executed');
+  assert.equal(inner.clicks, 1);
   controller.close();
 });

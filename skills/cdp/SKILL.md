@@ -1,564 +1,243 @@
 ---
 name: cdp
 description: >-
-  Drive any Chromium-based browser via the DevTools Protocol from JavaScript.
-  Run JS snippets through the `browser-harness-js` CLI — it auto-spawns a
-  long-lived Node HTTP server holding a fully-typed CDP `Session`, and every call
-  (`browser-harness-js 'await session.Page.navigate(...)'`) executes against the
-  same persistent connection. Session, active target, and globals survive across
-  calls. Use when the user wants to automate, script, or inspect a
-  Chromium-based browser via CDP — single tab or multi-tab. Prefers the unpacked
-  Chrome extension relay; falls back to remote debugging (chrome://inspect or
-  --remote-debugging-port).
+  Drive Chromium through a persistent JavaScript browser/page/locator API. Read
+  scoped accessibility snapshots with managed refs and diffs; perform guarded,
+  verified interactions with trusted input. Raw typed CDP remains available for
+  deterministic operations and unsupported mechanics. Use to automate, inspect,
+  or script single or multiple browser tabs. Requires browser-harness-js on PATH
+  and a Chromium connection through the extension relay or remote debugging.
 setup: bash /Users/monotykamary/VCS/working-remote/open-source/browser-harness-js/skills/cdp/scripts/setup
 compatibility: >-
-  Requires `node` on PATH (the REPL server is Node-native — TypeScript type stripping from Node 23.6) and a Chromium-based browser. Preferred: load the unpacked extension at `<skill-dir>/extension`. Fallback: remote debugging (chrome://inspect or --remote-debugging-port).
+  browser-harness-js and Node 23.6+ on PATH, plus Chromium with the extension
+  relay or remote debugging (chrome://inspect or --remote-debugging-port).
 ---
 
-# CDP — `browser-harness-js` skill
+# Browser / Page / Locator
 
-Custom codegen'd CDP SDK (every method from browser_protocol.json + js_protocol.json gets a typed wrapper) plus a tiny HTTP server that holds one persistent CDP `Session`. The `browser-harness-js` CLI auto-starts the server on first use and forwards JS snippets to it.
+`browser-harness-js` executes JavaScript in a persistent Node daemon. Use a quoted
+heredoc for coherent work. Top-level `await` works; multi-statement snippets need
+`return`. Store cross-call state on `globalThis`; local `const` bindings do not
+survive. Returned strings print directly; objects print JSON. Console output goes
+to the daemon log, not the CLI response.
 
-The SDK lives in the skill's `sdk/` directory. In the rest of this doc, `/Users/monotykamary/VCS/working-remote/open-source/browser-harness-js/skills/cdp` refers to wherever `npx skills add` installed the skill (Claude Code: `~/.claude/skills/cdp`; Cursor: `~/.cursor/skills/cdp`; other agents vary). The CLI should be on PATH as `browser-harness-js`.
-
-## How to use
-
-Just run `browser-harness-js '<JS>'`. The first call spawns the server in the background; subsequent calls hit the same process and so reuse the same `session`, the same wire to the browser (extension relay or remote-debugging WebSocket), and any globals you set.
-
-```bash
-browser-harness-js 'await session.connect()'
-browser-harness-js 'await session.Page.navigate({url:"https://example.com"})'
-browser-harness-js '(await session.Runtime.evaluate({expression:"document.title",returnByValue:true})).result.value'
-```
-
-Output is the **raw result content** — no `{ok,result}` envelope.
-
-| Result type | stdout |
-|---|---|
-| string                       | bare text, no JSON quotes (e.g. `Example Domain`) |
-| number / boolean             | `42`, `true` |
-| object / array (non-empty)   | compact JSON (e.g. `{"frameId":"..."}`, `[1,2,3]`) |
-| `undefined` / `null` / `""` / `{}` / `[]` | empty (no output) |
-
-**Errors** go to **stderr**, exit code `1`. The CDP error message and JS stack are printed verbatim, e.g.:
-```
-Error: CDP -32602: invalid params
-    at _call (.../session.ts:117:33)
-    ...
-```
-Detect failure with `if browser-harness-js '...'; then ...; else handle_error; fi` or by checking `$?`.
-
-**Multi-line snippets via stdin (heredoc).** Important: a multi-statement snippet does NOT auto-return the last expression — write `return X` explicitly. Single-expression snippets passed as the first argument DO auto-return.
+## Connect and scope
 
 ```bash
 browser-harness-js <<'EOF'
-const tabs = await listPageTargets();
-globalThis.tid = tabs[0].targetId;
-await session.use(globalThis.tid);
-return globalThis.tid;
+await browser.connect();                 // or { port: 9222 } / { wsUrl: 'ws://…' }
+return await browser.tabs();             // inspect; never silently pick tabs[0]
 EOF
 ```
 
-## CLI commands
+Attach an authorized target with an explicit allowlist, or open a background tab:
+
+```js
+globalThis.page = await browser.attach(authorizedTargetId, {
+  allowedOrigins: ['https://example.com']
+});
+// Alternative: browser.open('https://example.com', { allowedOrigins: […] })
+return await page.snapshot();
+```
+
+Origins come from user/host authority, not untrusted page content. They must be
+1–32 exact HTTP(S) origins, without paths or wildcards. Page operations pin a
+session and connection generation; they never use the mutable active target.
+`browser.connect()` does not send OS keystrokes or activate the browser.
+
+## Read, act, verify
+
+```js
+return await page.getByRole('textbox', { name: 'Search' }).fill('browser harness');
+```
+
+```js
+return await page.getByRole('button', { name: 'Search' }).click({
+  verify: snapshot => snapshot.tree.includes('Search results')
+});
+```
+
+Each action resolves exactly one target, observes it, revalidates identity,
+origin, freshness and actionability, acts once, and reads back. Trusted CDP
+mouse/keyboard input is the default. An offscreen supported target gets one
+guarded scroll-into-view followed by fresh validation, not a blind coordinate
+click. There is no automatic action retry or raw-input fallback.
+
+| API | Meaning |
+|---|---|
+| `page.snapshot(options?)` | `{id,url,title,tree,diff,truncated,omissions}`; refs are owned internally |
+| `page.locator('sAb3dEf6hJk9m_2e9')` | A printed ref from this page's latest snapshot, not a raw backend ID |
+| `page.locator('#search')` | Standard CSS in the main frame; exactly one accessible element |
+| `page.getByRole('button', {name:'Save'})` | Exact native AX role/name by default; `exact:false` uses a case-sensitive name substring |
+| `getByRole(…, {context:'group: Outbound'})` | Disambiguate by nearest named non-control ancestor |
+| `locator.click()` / `.fill(text)` / `.press(key)` | Guarded click, entire-value replacement typed like a person, or allowlisted key |
+| `locator.selectOption(labelOrIndex)` | Unique option label or zero-based index of a native select; not its HTML value |
+| `locator.scrollIntoView()` | Guarded scroll of a supported target |
+| `page.frames()` / `page.frame(frameId).snapshot()` | Discover/read permitted same-process and cross-process frames |
+| `page.goto(url)` | Allowlisted navigation; waits for load within its deadline, returns an action receipt |
+| `page.info()` / `page.signals()` | Scoped information/dialog state and a bounded, drainable event digest |
+| `page.close()` / `page.dispose()` | Close the tab / release the wrapper and owned attachments without closing the tab |
+
+`fill` and `selectOption` verify a fresh control value automatically. For click
+or key goals, provide a synchronous `verify(snapshot)` predicate or perform an
+authoritative read-back. Results include `status`, `reason`, `verified`
+(`true`, `false`, or `null`), and usually a new `snapshot`; read failures appear
+as `verificationError`. **`executed` only means dispatched, not task success.**
+
+- `stale`: take fresh evidence and reconsider.
+- `blocked` / origin denial: stop or obtain authority; never bypass via raw CDP.
+  A refused target's reason says why and what to do next, e.g.
+  `not_interactable_or_unsupported: disabled; …`, `hidden (by ancestor …)`,
+  `covered at its centre by …`, or `pointer-only` with the point a user would
+  click. It is a diagnosis; the target stays refused.
+- `outcome_unknown`: inspect first; never automatically replay the effect.
+
+`{timeoutMs, signal}` are accepted by page operations and locator actions. The
+default deadline is 10 seconds, maximum 60 seconds, including queue time. An
+expired call stops later dispatches but cannot retract input already sent. A
+pending transport call keeps its queue quarantined until settlement.
+
+## Snapshots and limits
+
+```js
+return await page.snapshot({ interactive: true });
+// Or { selector: '#results' }, { ref: 'sAb3dEf6hJk9m_2e9' }, { frameId }, { maxDepth: 4 }
+```
+
+Full snapshots preserve table/row/cell relations, values, named context and
+content. Interactive mode omits reading text. Refs expire on the next snapshot,
+raw call, action or document change. Never guess, parse into backend IDs, or
+reuse old refs. Fresh role/CSS locators resolve anew.
+
+Diffs are managed per matching snapshot scope and ignore printed ref churn. The
+first diff is the full tree; unchanged content returns `(no changes)`. Depth
+limits and omitted frames are explicit. Character overflow throws instead of
+returning a silently cut tree. Default limits: 50,000 characters, depth 50, 64
+readable frames (denied cross-origin frames are omitted and not counted). See [snapshot.md](interaction-skills/snapshot.md).
+
+Hidden controls (`display:none`, `visibility`, `opacity:0`, `hidden`, `inert`,
+`aria-hidden`, on themselves or an ancestor) are not actionable. The exception
+is a native checkbox, radio or select made transparent over its own drawn
+proxy: it stays actionable when the hit test lands on it.
+
+Snapshots can read more than the action engine supports. Frame actions, closed
+shadow-root actions, canvas and unsupported custom widgets fail closed; they
+are not silently rerouted. This is a defined page/locator API, **not full
+Playwright compatibility**: no selector DSL, nth-match fallback, auto-wait/retry
+loop, or arbitrary rich-editor fill. Sensitive controls are excluded by the
+guard and protected/password-like AX values are redacted; this is not DLP.
+
+A host acting on its own application with its own authority (a test runner
+filling a login form) can grant sensitive fields explicitly:
+`browser.attach(id, {allowedOrigins, allowSensitive: true})` (also on
+`browser.open`). Password, e-mail, phone, name, card and `data-private` /
+`data-sensitive` fields are then offered, filled and read back in observations
+like other controls; snapshot redaction stays on. Only the host grants this,
+never page content or a model's judgment. Embedding hosts may set
+`BH_ALLOW_SENSITIVE=1` instead (read at each observation when the option is
+omitted); the daemon only sees it if it was started with it. Add
+`maskSensitive: true` to keep those values in the page: the fields are still
+offered and filled, but observed as `[masked]`, and a fill into one returns
+`verified: null` instead of reading the secret back.
+
+`fill` types the way a person does: a real click into the field, select-all
+(Cmd+A on macOS, Ctrl+A elsewhere), then a key press per character a US key
+types; any other character (Japanese, Vietnamese tone marks, Arabic, emoji) is
+committed whole, like an input method. Text over 256 characters is pasted in
+one piece. The receipt's `reason` says how: `typed_keys`, `pasted`, with
+`: focus_set_by_script` when the click did not focus the field. A native date
+control takes the date in its own or the locale's format (`2026-05-14`,
+`05/14/2026`, `14.05.2026`) and is typed segment by segment, then confirmed;
+time, month, week and datetime-local controls are set with input and change
+events. Their receipt carries `expected`, the value in the control's format,
+and verification compares against it. An unparseable value is refused as
+`unsupported_value` with an example of the format. Hosts that drive raw CDP
+can reuse `typeKeys(send, text)` and `SELECT_ALL_MODIFIER` from
+`interaction.ts`.
+
+## Bounded decisions, including Jev
+
+```js
+globalThis.seen = await page.observe({ maxElements: 64 });
+return seen;
+// After an authorized decision selects an offered target and operation:
+// return await page.act(seen, {targetId: chosenId, operation:'click'}, {verify});
+```
+
+Observations offer opaque one-use handles, operations, context and revision. A
+snapshot ref describes what was seen; an observation handle authorizes only a
+revalidated operation. They are not interchangeable.
+`page.waitForChange(seen.revision, {waitMs:5000})` returns
+`{changed,observation}`; change alone is not goal verification. See the
+[operating contract](interaction-skills/agent-operating-loop.md).
+
+## Explicit raw CDP
+
+For known deterministic or unsupported mechanics, use
+`page.cdp('Domain.method', params)` with equivalent permission checks. It
+invalidates observations and does not enforce the guarded API's origin policy.
+The typed `session.Domain.method`, `cdp(sessionId,method,params)`, `CDP`,
+`Session`, `listPageTargets`, `detectBrowsers`, `resolveWsUrl` and `ext` remain
+available for existing raw scripts. Do not call `session.use()` in concurrent
+work; route by explicit session ID.
+
+Recipes: [connection](interaction-skills/connection.md),
+[lifecycle](interaction-skills/lifecycle-readiness.md),
+[signals](interaction-skills/agent-signals.md),
+[AX internals](interaction-skills/accessibility-tree.md),
+[rich editors](interaction-skills/rich-editors.md),
+[screenshots](interaction-skills/screenshots.md),
+[recording](interaction-skills/record-cross-tab.md). Recording globals remain
+`startRecording`, `stopRecording`, `recordingStatus`; request consent first.
+
+Check `browser-harness-js --version` against `--status` after an update.
+`--restart` reloads SDK files but drops daemon globals and attachments; reconnect
+and reattach. See [stale daemon](interaction-skills/connection.md#stale-daemon--the-running-repl-lags-the-installed-files).
+
+## Compatibility layer (deprecated, still working)
+
+Upstream removed these globals when it adopted the Page API. This fork keeps them registered in `repl.ts` so existing skills, learnings and scripts keep running. No name collides with the Page API: `browser` is the only new global, and the old names stay free-standing. New work should use `browser` / `page` above.
+
+| Old global | Use instead |
+|---|---|
+| `axView(nodes, opts?)`, `axDiff(prev, next)` | `page.snapshot()` and its `diff` |
+| `parseAxRefs(view)`, `parseAxLocators(view)`, `resolveLocator(loc)`, `isLocatorString(s)` | `page.locator(ref)`, `page.getByRole(role, {name})` |
+| `axClick(ref, refs?)`, `axType(ref, refs, text)` | `locator.click()`, `locator.fill(text)` (guarded, with receipts) |
+| `attachSignals()`, `drainSignals()`, `detachSignals()` | `page.signals()` |
+| `pageInfo({timeoutMs?})` | `page.info()` |
+| `domView(opts?)`, `domClick(ref)`, `domType(ref, text)` | kept as the fast first read, see below |
+| `listLearnings()`, `learnings(domain, tool?, args?)`, `help(name?)` | no replacement; the per-site registry is `learnings/README.md` |
+| `attachTab`, `evalFile`, `waitForUrl`, `deepQuery` | no replacement; all take an explicit `sessionId` and never touch `session.use` |
+| `InteractionController`, `createInteractionController({allowedOrigins, input?})` | `page.observe` / `page.act` / `page.waitForChange` |
+
+The old globals act on the REPL's singleton `session` and its mutable active target. They do not apply the Page API's origin allowlist or per-action receipts. Page reads and guarded actions through `browser` / `page` do not rely on them.
+
+### domView: first read for speed
+
+`domView()` is one `Runtime.evaluate` that returns `[n] role "name" ="value"` for the visible, enabled controls, with refs resolved in the page. It beats `getFullAXTree`-based snapshots by 5x to 22x on the benchmark pages (`sdk/bench/RESULTS.md`), walks open shadow roots, and `{ options: true }` lists `<select>` choices. Use it to explore an unfamiliar page fast; switch to `page.snapshot()` when you need headings, tables, landmarks, named context, scoped diffs, frames, or to act with an origin guard and a verified receipt. `domClick` / `domType` use trusted input but skip the guard and return no receipt. Details: [snapshot.md](interaction-skills/snapshot.md#domview-the-fast-first-read).
+
+```js
+await session.use(targetId);          // old globals use the active target
+return await domView();               // then: await domClick(3); await domType(2, 'query')
+```
+
+### CLI commands and environment
 
 | Command | Behavior |
 |---|---|
-| `browser-harness-js '<js>'`     | Auto-start server if needed, eval the JS, print result. |
-| `browser-harness-js <<EOF…EOF`  | Same, code from stdin. |
-| `browser-harness-js --status`   | Print health JSON (version, uptime, connected, transport, extension, sessionId) or exit 1 if down. |
-| `browser-harness-js --version`  | Print the SDK version from the on-disk files (no daemon needed). |
-| `browser-harness-js --start`    | Explicit start (no-op if already running). |
-| `browser-harness-js --stop`     | Graceful shutdown. Drops session state. |
-| `browser-harness-js --restart`  | Stop + start fresh. |
-| `browser-harness-js --logs`     | `tail -f` the server log (`/tmp/browser-harness-js.log`). |
-| `browser-harness-js recordings [--latest\|enable\|disable\|replay [dir]]` | Show recording status, persist local consent, or replay an rrweb recording. |
-| `browser-harness-js --no-auto-allow '<js>'` | Set `session.autoAllow = false` on the daemon, then eval the JS. Opts out of auto-dismissing Dia's "Allow debugging connection?" prompt (on by default, macOS). |
-| `browser-cdp open <url> [waitMs]` / `read <targetId>` / `eval <targetId> <js>` (`-` as `<js>` reads it from stdin, no shell escaping) / `click <targetId> <x> <y>` / `pdf <targetId> <out.pdf>` / `shot <url-substring-or-targetId> <out.png> [--full-page]` / `close <targetId>` / `list` | The ONE-SHOT sibling (`sdk/browser-cdp`, Node built-ins only): no daemon, one page websocket per command over the browser's `/json` endpoints, plain stdout. For a five-command job (open a page, read it, click once) or a caller that cannot live with the REPL's single-bare-expression print rule. Multi-step, stateful work stays on the REPL. `pdf <targetId> <out.pdf> [--force]` prints the tab at print-service options: a CSS `@page` size or margin wins when the page declares one, else US Letter with zero margins, backgrounds on; a `--print-to-pdf` launch flag keeps default margins and spilled a one-page invoice onto two. The path must end in `.pdf` and an existing file needs `--force`. `shot` writes a PNG (mode 0644) of one tab via `Page.captureScreenshot` and prints `<out.png> <bytes> bytes`; the tab is an exact target id or a URL substring over page targets (several matches list them and exit 2); `--full-page` captures the whole document; it never brings the tab to front. |
+| `browser-harness-js '<js>'` / `<<'EOF'` | Auto-start the daemon, eval, print the result. |
+| `--status` / `--version` | Health JSON of the running daemon / SDK version from disk. |
+| `--start` / `--stop` / `--restart` | Daemon lifecycle. `--restart` drops globals and attachments. |
+| `--logs` | `tail -f` the daemon log (`/tmp/browser-harness-js.log`). |
+| `recordings [--latest\|enable\|disable\|replay [dir]]` | Recording status, consent, rrweb replay. |
+| `--no-auto-allow '<js>'` | Disable Dia's "Allow debugging connection?" auto-dismiss for this daemon. |
+| `browser-cdp open\|read\|eval\|click\|pdf\|shot\|close\|list` | One-shot sibling (`sdk/browser-cdp`, Node built-ins only): no daemon, one page websocket per command, plain stdout. `eval <targetId> -` reads the JS from stdin; `shot <url-substring-or-targetId> <out.png> [--full-page]` writes a PNG without bringing the tab to front; `pdf <targetId> <out.pdf> [--force]`. Multi-step stateful work stays on the REPL. |
+| `browser-cdp learn new <short-id> --domains a.example[,b.example] [--name "Human name"]` / `learn list` | Scaffold or list per-site learnings (`manifest.json`, `notes/overview.md`, `tools/<short-id>.mjs`). Restart the daemon before calling a fresh tool. |
 
-The REPL prints ONLY when the whole snippet is one bare expression. `const t = await listPageTargets(); t.length` executes silently and looks like a hang; `(await listPageTargets()).length` prints. For multi-statement work, store the result on `globalThis` and read it back with a second bare-expression call, or use `browser-cdp`.
+The REPL prints only when the whole snippet is one bare expression; for multi-statement work use a heredoc with `return`, or stash on `globalThis`.
 
-Env vars: `CDP_REPL_PORT` (default `9876`; the extension worker hardcodes 9876 — keep them in sync), `CDP_REPL_LOG` (default `/tmp/browser-harness-js.log`), `CDP_RECORD` (`1`/`0` preference override), `CDP_RECORDINGS_DIR` (storage override), `BROWSER_HARNESS_JS_HOME` (state root, default `~/.browser-harness-js`).
+Env vars: `CDP_REPL_PORT` (default `9876`; the extension worker hardcodes 9876), `CDP_REPL_LOG`, `CDP_REPL_PID_FILE`, `CDP_RECORD` (`1`/`0`), `CDP_RECORDINGS_DIR`, `BROWSER_HARNESS_JS_HOME` (default `~/.browser-harness-js`).
 
-## Guarded interaction at unknown UI boundaries
+### Per-site learnings
 
-Prefer the exact deterministic API/CDP route when known. At an **unknown UI decision
-boundary**, default to guarded **observe → act → verify**. Raw CDP, AX and vision
-helpers remain intentional escape hatches for unsupported mechanics, never a way
-to bypass a denial or required approval. The controller is model-neutral; Jev is
-optional, and model confidence is **not** permission.
-
-`InteractionController` is importable from `sdk/interaction.ts`. REPL globals:
-`InteractionController` and `createInteractionController({allowedOrigins, input?})` (uses
-the persistent transport, **never** its mutable active-target pointer).
-`input: 'trusted'` opts into real CDP mouse/keyboard input (see below).
-
-```bash
-browser-harness-js <<'EOF'
-// session must already be connected to the authorized browser.
-// Choose the target from an authorized tab listing, not tab-strip position.
-const { sessionId } = await session.Target.attachToTarget({ targetId: globalThis.authorizedTargetId, flatten: true });
-globalThis.guard = createInteractionController({ allowedOrigins: ['https://example.com'] });
-globalThis.guardScope = { sessionId };
-globalThis.seen = await guard.observe({ scope: guardScope, maxElements: 64 });
-return seen;
-EOF
-```
-
-Choose only an offered candidate/operation consistent with the user's authority;
-never choose the first candidate just because it exists. Then, in a later snippet:
-
-```js
-const receipt = await guard.act({
-  scope: guardScope, observationId: seen.observationId,
-  action: { targetId: chosenCandidateId, operation: 'click' }
-});
-// Only after an executed receipt, inspect the changed state (not proof of success):
-if (receipt.status !== 'executed') return receipt;
-return await guard.waitForChange({ scope: guardScope, revision: seen.revision, timeoutMs: 5000 });
-```
-
-- `observe({scope:{sessionId},maxElements?}, {signal?}?)` returns `{scope,
-  observationId,revision,candidates:[{id,role,label,operations,value?,checked?,selected?,expanded?,options?,context?}],
-  url,title,truncated,truncation:{elements,scan,text}}`. Default 64 candidates, maximum 128; scan cap
-  4096 light-DOM elements. Labels/title/URL are bounded to 256/512/2048 characters.
-  IDs are opaque, observation-scoped handles, not backend node IDs or locators.
-- `act({scope,observationId,action:{targetId,operation,text?,option?,key?}}, {signal?}?)`
-  returns `{status,reason?}`. **One attempted action consumes the observation**;
-  observe again before any next attempt. New observations invalidate previous
-  handles in the same scope. Scope mutations are serialized across controllers
-  sharing a Session; separate aliases/attachments are not a global browser lock.
-- Candidates come from native controls (buttons, links, text/search/url/number
-  inputs, textareas, checkboxes, radios, single `<select>`) and allowlisted ARIA
-  roles on any element: `button link checkbox radio switch tab menuitem
-  menuitemcheckbox menuitemradio option treeitem combobox textbox searchbox`.
-  Unknown roles are not guessed at. Names follow ARIA precedence:
-  `aria-labelledby` (up to 8 ids), `aria-label`, `<label>`, then title/placeholder
-  for fields or name-from-content for clickable roles: descendants contribute
-  their own `aria-label`/`aria-labelledby`/`alt`, hidden subtrees contribute
-  nothing (bounded to 256 nodes), so a calendar day showing "20" is named
-  "Tuesday, October 20, 2026". States: `checked` (native or `aria-checked`),
-  `selected` (`aria-selected` on options/tabs), `expanded` (`aria-expanded`),
-  `value`, and `options` (a `<select>`'s first 64 option labels). `context` is the
-  nearest *named* dialog, grid, group, listbox, menu, form, region... around the
-  target (e.g. `dialog: Departure date`), which disambiguates repeated labels.
-- Controls inside open shadow roots are observed; hidden/inert/disabled ancestors,
-  hit tests and containment cross shadow boundaries.
-- A control is actionable at the first unobstructed point among nine samples
-  (center first), so partly covered controls work; trusted input clicks that
-  point. A `pointer-events: none` control (an accessibility overlay over its row)
-  counts as clear when the hit lands inside its own parent component; a foreign
-  overlay (e.g. a modal) still blocks.
-- Scrolling: when the page scrolls, a `page` candidate (last slot, labelled by
-  the title, `value` like `35% scrolled`) offers `scroll_down`/`scroll_up`;
-  visible scroll containers that are named or have a list/dialog/grid/region/menu/
-  tree/tabpanel/feed/log role are candidates too. Each scroll moves 80% of the
-  visible height; clipped or offscreen controls appear in the next observation.
-- Operations are offered per candidate; use only those listed:
-  - `click`: synthetic DOM `click()` by default; a real mouse move/press/release
-    at the freshly rechecked center with `input: 'trusted'`.
-  - `type` (`text`): **replaces the entire value**, maximum **4096** characters.
-    Synthetic mode uses the native setter and one bubbling `input` event (no focus,
-    keys, `change` or submit). Trusted mode focuses the target, selects its whole
-    content and inserts the text as real input, which also works for
-    contenteditable textboxes (offered only in trusted mode).
-  - `select` (`option`): sets a native `<select>` to `options[option]` and emits
-    `input` and `change`.
-  - `scroll_down`/`scroll_up`: page and scroll-container candidates only.
-  - `press` (`key`, trusted only): focuses the target, then sends one key from
-    `Enter Escape Tab Backspace Delete ArrowUp ArrowDown ArrowLeft ArrowRight Home
-    End PageUp PageDown Space`. Use it for autocomplete lists (type, ArrowDown,
-    Enter) and form submission.
-- Trusted input is the only way to drive widgets that ignore synthetic events
-  (pointerdown handlers, keyboard-driven comboboxes). The page rechecks the target
-  immediately before reporting its point; a script may still move content during
-  the one CDP round trip before the input lands. Trusted mode also enables focus
-  emulation so background tabs accept focus and keys.
-  Password, sensitive autocomplete and marked-private controls are excluded, as
-  are conservative sensitive name/id/label/title/placeholder matches (e.g. token,
-  PIN, payment, account, email/address). These heuristics can overexclude and are
-  not general DLP: ordinary page text, URL/title and unrecognized secrets may remain.
-  Oversized values/identities are omitted with `truncation.text`, never acted on
-  using a partial fingerprint. Exact fingerprints stay in-page (8192 characters
-  per target); only SHA-256 digests cross CDP (at most 8192 digest characters).
-  Hashing requires in-page SubtleCrypto, normally HTTPS or localhost; unavailable
-  crypto rejects observation rather than weakening identity checks.
-- `waitForChange({scope,revision,timeoutMs?}, {signal?}?)` returns
-  `{changed,observation}` with the same observation shape, including on timeout.
-  Default 5000 ms, range 0–60000. Samples at most every 500 ms plus snapshot cost;
-  it detects projected state, not arbitrary network/application success. Calls
-  can await browser responses beyond this interval; use `signal` for a deadline.
-- `invalidate(scope?)` expires one/all scopes; `close()` expires everything and
-  removes listeners, **without** closing the Session or browser. Close is
-  cooperative: queued callers cancel promptly, but already-dispatched effects
-  may finish later. The shared scope queue stays quarantined until outstanding
-  transport settles; late snapshot objects are released, and effects never replay.
-- Bounds: 32 retained scopes and 32 concurrent waits per controller; 32 active
-  queue scopes per Session and 32 pending operations per scope across controllers
-  (including in-flight/cancelled-but-unsettled work). Capacity rejects reads/waits
-  or returns `blocked` for actions. Invalidate unused scopes to free retained
-  observations. Stalled releases also backpressure observations; close does not
-  force-unlock unresolved transport calls.
-
-Receipts: `executed` = dispatched, **not goal achieved**; verify by fresh state or
-an authoritative read-back. `stale` → reobserve. `blocked` (especially
-`origin_denied`) → approval/stop, not raw-API evasion. `outcome_unknown` → inspect,
-**never blind retry**. Cancelling before dispatch prevents later effects;
-cancelling after dispatch returns unknown and cannot retract browser-side work.
-`observe`/`waitForChange` reject on denial, cancellation or unavailable context.
-
-Require **1–32** exact HTTP(S) `allowedOrigins`, each at most **2048** characters
-(length checked before deduplication), and a nonempty `scope.sessionId` of at most
-**256** characters. Empty origin lists reject construction. No paths,
-wildcards, credentials or implicit current-origin grant. Origin, document,
-connection generation, native node identity, semantics/value, enabled/visible
-state and center-point occlusion are rechecked before effects. Identity is what a
-target means (role, full untruncated name and content, operations, options,
-value/checked, and `id`/`name`/`type`/`href`/`role`/`for`/`form`/`action`);
-cosmetic churn (class, style, tooltip titles, `data-*`) and layout shifts keep a
-target valid, and trusted input always uses the freshly rechecked center.
-Navigation, disconnect/reconnect, invalidation and replay expire handles.
-Reconnect retains the selected endpoint/transport/options; reattach after a
-connection change. Injected adapters should expose Session-compatible `onEvent`,
-`getConnectionGeneration` and the `expectedGeneration` dispatch fence for lifecycle
-invalidation; remote-object/document checks still apply to `_call`-only adapters.
-
-Scope is still bounded: the main frame and its open shadow roots; no iframes,
-closed shadow roots, canvas, multi-selects, drag or file inputs. Controls must be
-visible in the viewport at some unobstructed point.
-Unsupported/hidden/occluded controls are omitted. This is not a complete AX tree,
-a sandbox around raw CDP, a navigation/network firewall, or an atomic GUI transaction.
-The page/user may race effects and scripts may navigate after activation; every
-subsequent guarded call rechecks authority. Never infer success from a receipt.
-See [agent-operating-loop.md](interaction-skills/agent-operating-loop.md).
-
-## Optional Fabric browser provider
-
-When the optional harness-owned Pi extension is loaded (see the repository
-README's **Optional Pi / Fabric connector** section), `browser-harness` provides
-`browser` through Fabric's normal component protocol. It is not built into Fabric
-and needs no Jev/model. If the definition is unknown, request extension loading;
-configuration may remain `waiting` for `component:browser-harness` until then.
-Do not try to repair this with a browser connection or a Fabric-private import.
-
-Inspect `components.describe({component:"browser-harness"})`, then
-`components.plan({entries:[{id:"browser",component:"browser-harness",config}]})`.
-Inspect the plan and obtain any required approval before
-`components.apply({...plan.request,expectedRevision:plan.revision})`.
-Configuration requires trusted `modulePath` (SDK `session.ts`), explicit `wsUrl`
-and exact `allowedMethods`; guarded use additionally requires trusted
-`interactionModulePath` (SDK `interaction.ts`) and exact `allowedOrigins`.
-Paths resolve relative to invocation cwd; `callTimeoutMs` defaults to 10000
-(range 100–60000). No implicit endpoint, origin, prompt approval or grants.
-
-Registration/activation do not connect. Explicit `browser.connect` acquires the
-session with `autoAllow:false`. Separately grant `Target.attachToTarget` if needed
-to attach a known authorized target on that connection; use its returned
-`sessionId` for every guarded `scope`. `allowedMethods:[]` removes `browser.cdp`;
-raw grants, when present, are **not origin-limited** and invalidate observations.
-`browser.observe`, `browser.act`, `browser.waitForChange` use the guarded shapes
-and receipt rules above. Close is owned by the component's provider lifecycle.
-
-## API surface inside snippets
-
-These globals are pre-loaded — no imports needed:
-
-- `session` — the persistent `Session`. Has every CDP domain mounted: `session.Page`, `session.DOM`, `session.Runtime`, `session.Network`, … 56 domains, 652 methods total.
-- `listPageTargets()` — list real page targets via CDP's `Target.getTargets` (works on Chrome 144+ too), with `chrome://` and `devtools://` URLs filtered out. No args — uses the connected session. Over the extension, entries also include strip `index`, `windowId`, `groupId`, `pinned`, `muted`, `active`.
-- `ext` — Chrome-extension commands (extension transport only): tab groups, pin/mute/move/discard/reload/duplicate, windows. See [connection.md](interaction-skills/connection.md). `session.Browser.getWindowForTarget` / `getWindowBounds` / `setWindowBounds` / `grantPermissions` work over the extension too. OOPIF and worker targets use UUID `targetId`s from `Target.getTargets`.
-- `detectBrowsers()` — scan OS-specific profile dirs for running Chromium-based browsers with remote debugging on. Returns `[{name, profileDir, port, wsPath, wsUrl, mtimeMs}]`, sorted by most recently launched.
-- `resolveWsUrl(opts)` — resolve a WS URL from `{wsUrl}` | `{port, host?}` | `{profileDir}`. For the no-args auto-detect flow, call `session.connect()` directly instead.
-- `CDP` — the generated namespaces (`CDP.Page`, `CDP.Runtime`, …) for type-name reference.
-- `axView(nodes, opts?)` — compressed accessibility-tree view: a pure projection over a raw `Accessibility.getFullAXTree`/`queryAXTree` result. Drops ~96% structural noise, assigns `[n]` refs → `backendDOMNodeId`. Options: `{ interactive, refs, maxDepth, redactSensitive, locators }` (`locators: true` emits a stable `loc=role:R["N"]` per ref usable across re-snapshots — see `interaction-skills/snapshot.md`).
-- `axDiff(prev, next)` / `parseAxRefs(view)` / `axClick(ref, refs?)` / `axType(ref, refs, text)` — multi-step snapshot helpers (diff, ref map, click/type by ref). See `interaction-skills/snapshot.md`.
-- `domView(opts?)` / `domClick(ref)` / `domType(ref, text)`: **the first read**: one-`Runtime.evaluate` DOM snapshot (`[n] role "name"`) with in-page ref resolution; 5x to 22x faster than `getFullAXTree + axView` on the benchmark pages. Walks open shadow roots; `{ options: true }` lists `<select>` options. Drop to `axView` for structure (headings, landmarks, tables), closed shadow roots, cross-origin iframes, canvas, or when it finds nothing. See `interaction-skills/snapshot.md`.
-- `parseAxLocators(view)` / `resolveLocator(loc)` / `isLocatorString(s)` — locator helpers. `axClick` accepts a locator string in its first arg `axClick('role:button["Submit"]')` and resolves it; `resolveLocator` returns the `backendDOMNodeId` (tries `queryAXTree` then falls back to a full-tree scan when the served Chromium hangs the former). Locators survive refMap rebuilds; `[n]` refs do not.
-- `attachSignals()` / `drainSignals()` / `detachSignals()` — drainable async event queue. `drainSignals()` returns + clears a compact digest of dialogs / downloads / navigations / crashes (auto-attaches on first call; call `attachSignals()` BEFORE an action whose events you want to capture). See `interaction-skills/agent-signals.md`.
-- `pageInfo({ timeoutMs? })` — `{ url, title, w, h, sx, sy, pw, ph }` via a timed `Runtime.evaluate`; returns `{ dialog }` when a native modal blocks page JS, or `{ unresponsive }` if the eval hung with no dialog.
-- `help(name?)` — usage string for a helper; pass no name for the list.
-- `listLearnings()` / `learnings(domain, tool?, args?)`, per-site recipe registry over `skills/cdp/learnings/<domain>/manifest.json` (`nodeTools` and `browserTools` declared per manifest). See `learnings/README.md`. Start a new one with `browser-cdp learn new <short-id> --domains a.example,b.example [--name "Human name"]`, which scaffolds `manifest.json` + `notes/overview.md` + `tools/<short-id>.mjs` (a `status` node-tool that finds the first matching tab) so an agent begins from the registry's own shape instead of a scratch script; `browser-cdp learn list` prints existing ids. Restart the daemon (`browser-harness-js --restart`) before calling a freshly scaffolded tool.
-- `cdp(sessionId, method, params)` — call any CDP method on an **explicit** `sessionId` without touching the active-session pointer: `cdp(sid, 'Page.enable', {})`. The multi-tab primitive: the one-tab-per-call skills route every call this way so concurrent tabs never race `session.use`. Equivalent to `session._call(method, params, { sessionId })`.
-- `session.closeTab(targetId, sessionId?)` — close a tab and detach: `window.close()` on the session, then `Target.closeTarget`. Fire-and-forget in a `finally` (`.catch(() => {})`) so cleanup is guaranteed and never blocks the return. Closes are serialized.
-- `startRecording(name?, title?)` / `stopRecording()` / `recordingStatus()`, consent-based rrweb DOM recording (not screenshots). Snake-case `start_recording` / `stop_recording` aliases are also available. See `interaction-skills/make-video.md`.
-- `attachTab(match)` : find one page target by an uppercase hex targetId prefix (6-32 chars, only used when a target actually starts with it) or RegExp/substring against the URL, attach, return `{sessionId, targetId, url}`. Throws on zero or multiple matches.
-- `evalFile(sessionId, file, opts?)` : run a local JS file via `Runtime.evaluate` on an explicit session, evaluated as-is (never wrapped), so the file must be an expression or script, typically `(async()=>{ ... })()`, since a top-level `return` is a page-side SyntaxError. Bounded by a required timeout (default 30s). `opts.out` writes the result to a file (as `String(value)` when JSON cannot serialize it) and returns its byte count instead.
-- `waitForUrl(sessionId, test, opts?)` : poll `location.href` on an explicit session until `test` (RegExp or predicate) passes; each poll is itself bounded so one hung poll cannot defeat the overall deadline; default 5min bound, 5s interval.
-- `deepQuery(sessionId, selector, opts?)` : page-side walker crossing open shadow roots, returns visible `{text,x,y,w,h,disabled,inViewport}` matches (`inViewport` is informational, not filtered on); `opts.text` filters by text/aria-label, `opts.timeoutMs` bounds the evaluate (default 15s). Read-only.
-
-### Recordings
-
-Fresh installs do **not** record. A natural request to record, show, demo, or replay opts in for that task; ordinary browser work does not. Connect first, start before the work, retain the exact returned directory, and stop after the outcome:
-
-```js
-await session.connect()
-const recordingDir = await startRecording('demo', 'Verify the account settings')
-// Drive the page (or let the user). rrweb records DOM mutations in-page.
-await stopRecording()
-return recordingDir
-```
-
-There is no screenshot / edit-brief / MP4 pipeline. Replay with `browser-harness-js recordings replay <dir>`. Input values are masked during capture; the rest of the DOM is stored as-is under `~/.browser-harness-js` and requires consent. Never reenact a completed task to manufacture missing footage. See [`make-video.md`](interaction-skills/make-video.md).
-
-### Calling a CDP method
-
-Every method takes a single object argument matching the CDP wire params; it resolves to the typed return value (no `result` envelope, no `id` correlation — handled for you).
-
-```js
-// no params
-await session.DOM.enable()
-
-// required params
-await session.Page.navigate({ url: 'https://example.com' })
-
-// all-optional params (object also optional)
-await session.Page.captureScreenshot()
-await session.Page.captureScreenshot({ format: 'png', quality: 80 })
-
-// returns are stripped to the typed shape
-const { root } = await session.DOM.getDocument()
-const { nodeId } = await session.DOM.querySelector({ nodeId: root.nodeId, selector: 'h1' })
-```
-
-### Interaction skills (recipes) — explore the folder
-
-`interaction-skills/` holds pure-CDP recipes for mechanics that aren't obvious from the method list alone — dropdowns, drag-and-drop, OOPIFs, network waits, screenshots, recording cross-tab user actions, navigating + waiting for load, reading a JSON URL, recording media. The set grows, so **look, don't recall**: when a task isn't a straight method call (a framework that swallows clicks, a shadow-DOM trap, a wait-with-timeout, multi-tab anything), browse before improvising.
-
-Start here for the patterns every skill shares: [`lifecycle-readiness.md`](interaction-skills/lifecycle-readiness.md) (navigate + wait for load, the one-tab-per-call shape), [`json-navigation.md`](interaction-skills/json-navigation.md) (read a JSON URL), [`media-capture.md`](interaction-skills/media-capture.md) (record `MediaSource` / hook a native API before navigate), [`make-video.md`](interaction-skills/make-video.md) (consent-based rrweb recording + replay). For a layout bug that varies with screen size, [`viewport.md`](interaction-skills/viewport.md) has the width-sweep loop: probe one element's rects at every width into a table before touching CSS.
-
-```bash
-ls /Users/monotykamary/VCS/working-remote/open-source/browser-harness-js/skills/cdp/interaction-skills/
-grep -l <keyword> /Users/monotykamary/VCS/working-remote/open-source/browser-harness-js/skills/cdp/interaction-skills/*.md
-```
-
-Each recipe leads with the shortest CDP call that works, then the trap — in `session.Domain.method(...)` form, no wrapped helpers — so it drops straight into a snippet. If the mechanic you need isn't there, that's a gap worth filing as a new recipe.
-
-### Finding elements: accessibility tree over selectors
-
-For a named element (a button, link, textbox, heading), prefer the accessibility tree over CSS selectors — it finds by semantic role + accessible name (Playwright's `getByRole`/`getByText` model) and crosses shadow boundaries. Two tools, by task:
-
-- **Targeted find** (you know the role/name): `session.Accessibility.queryAXTree` — ~30 tokens. Needs a DOM `nodeId` (from `session.DOM.getDocument`) and the active session (`session.use` first; the bare `{role, accessibleName}` form errors, and the `cdp(sessionId, …)` route hangs). No `Accessibility.enable` needed.
-- **Explore an unfamiliar page** (don't know what to ask for, pick from many, act on it): `domView()` first (1.5 to 6 ms on the benchmark pages vs 8 to 80 ms for the AX route; act with `domClick(n)` / `domType(n, text)`). Drop to `axView(nodes, { interactive: true })` over `session.Accessibility.getFullAXTree({})` when the page needs structure (headings, landmarks, tables), closed shadow roots, cross-origin iframes or canvas, or when `domView` finds nothing; full `axView(nodes)` if you need content too. Multi-step with axView: keep the previous string and use `axDiff(prev, next)`.
-
-```js
-await session.use(targetId)
-const { root } = await session.DOM.getDocument({})
-// Targeted: find a button labeled "Submit"
-const { nodes } = await session.Accessibility.queryAXTree({ nodeId: root.nodeId, role: 'button', accessibleName: 'Submit' })
-const node = nodes.find(n => !n.ignored)   // node.backendDOMNodeId → DOM.getBoxModel → Input.dispatchMouseEvent
-
-// Explore: interactive-first compressed snapshot
-const { nodes: ax } = await session.Accessibility.getFullAXTree({})
-return axView(ax, { interactive: true })
-```
-
-Use DOM queries (`DOM.querySelector`, `Runtime.evaluate` with `querySelector`) for structural context, when the tree returns nothing (canvas, non-semantic divs), or when you already have a stable selector. Full guides: [`accessibility-tree.md`](interaction-skills/accessibility-tree.md) (queryAXTree) and [`snapshot.md`](interaction-skills/snapshot.md) (axView).
-
-### Connecting
-
-**Preferred: just call `session.connect()` with no args.** It uses the unpacked browser-harness-js extension if that worker is connected to the daemon (`ws://127.0.0.1:9876/extension`), otherwise it auto-detects a remote-debugging browser. Always try this first:
-
-```js
-await session.connect()   // extension first, then remote-debugging auto-detect
-await session.connect({ transport: 'extension' }) // fail if the extension is absent
-await session.connect({ transport: 'cdp' })       // skip the extension
-```
-
-`/health` reports `transport: "extension" | "cdp" | null` and `extension: true` when the worker is attached. Pin remote debugging with `{ wsUrl | profileDir | port }`.
-
-Auto-detect (fallback) scans OS-specific browser-data dirs for running Chromium-based browsers (Chrome, Chromium, Edge, Brave, Arc, Vivaldi, Opera, Comet, Canary, Dia, Helium, Aside, and any other Chromium fork) by looking for a `DevToolsActivePort` file. Each browser picks its own debug port (Chrome often 9222, but Aside uses an ephemeral one like 52860, etc.) — auto-detect reads the actual port from that file instead of assuming 9222. The host is always loopback (`127.0.0.1`) for a locally-running browser. Candidates are ordered by most-recently-launched, and the first one whose WebSocket accepts wins. OS-agnostic — works on macOS, Linux, Windows.
-
-Use `detectBrowsers()` first if you want to see what's available (or let the user pick) before connecting:
-
-```js
-const found = await detectBrowsers()
-// [{ name: 'Dia', profileDir, port, wsPath, wsUrl, mtimeMs }, ...]
-```
-
-**Explicit forms** — use these only when auto-detect picks the wrong browser, or when you already know where to connect:
-
-| Form | When to use |
-|---|---|
-| `{ port, host? }` | You launched the browser with a known `--remote-debugging-port`. Default host `127.0.0.1`. |
-| `{ profileDir }` | Target a specific browser when several are running. Reads `<profileDir>/DevToolsActivePort` directly. |
-| `{ wsUrl }` | You already have `ws://…/devtools/browser/<uuid>` (e.g. a remote browser over SSH). |
-
-```js
-await session.connect({ port: 9222 })                                        // a specific port you set
-await session.connect({ profileDir: '/Users/<you>/Library/Application Support/Dia' })
-await session.connect({ wsUrl: 'ws://127.0.0.1:9222/devtools/browser/<uuid>' })
-```
-
-Profile paths by OS — use these with `{ profileDir }`:
-- macOS: `~/Library/Application Support/<Browser>` (e.g. `Dia/User Data`, `Google/Chrome`, `Comet`, `BraveSoftware/Brave-Browser`, `Arc/User Data`, `net.imput.helium`, `Aside`)
-- Linux: `~/.config/<browser>` (e.g. `dia`, `google-chrome`, `chromium`, `BraveSoftware/Brave-Browser`, `net.imput.helium`, `aside`)
-- Windows: `%LOCALAPPDATA%\<Browser>\User Data` (e.g. `Dia\User Data`, `Google\Chrome`, `Microsoft\Edge`, `BraveSoftware\Brave-Browser`, `imput\Helium\User Data`, `Aside`)
-
-Per-candidate WS-open timeout defaults to **5s** — live browsers answer with open/close within ~100ms, so 5s is already generous. The only case where 5s is too short is when the browser is showing the **Allow** popup and waiting for the user to click. If you expect that, pass `timeoutMs: 30000`:
-
-```js
-await session.connect({ timeoutMs: 30_000 })
-```
-
-**Dia's Allow prompt is auto-dismissed (macOS, on by default).** Dia gates the debugging connection behind an `Allow debugging connection?` prompt (Return = Allow) — the only Chromium browser that does. The SDK auto-dismisses it: when the WS-open stalls, it fires a Return at the Dia process via `osascript`, so `connect()` needs no manual click — a no-op for every other browser. Opt out with `autoAllow: false` or `browser-harness-js --no-auto-allow`. If `connect()` stalls past `timeoutMs` against a Dia browser, the user likely needs to grant macOS Accessibility to `node` (see the README). Tunable via `autoAllowDelayMs` (default 600ms).
-
-**If you see `No detected browser accepted a connection`** — the browsers have `DevToolsActivePort` files but none are currently serving WS. Most common cause: remote-debugging is enabled but the user hasn't clicked **Allow** on the prompt yet. Tell them to click Allow, then retry (or bump `timeoutMs`).
-
-### Picking a target (tab)
-
-After `connect()`, call `session.use(targetId)` once; subsequent page-level calls (Page/DOM/Runtime/Network/etc.) auto-route to that target's sessionId. `Browser.*` and `Target.*` calls always hit the browser endpoint.
-
-```js
-const tabs = await listPageTargets()                     // no args; uses the connected session
-const sid  = await session.use(tabs[0].targetId)
-await session.Page.enable()
-await session.Page.navigate({ url: 'https://example.com' })
-```
-
-`listPageTargets()` uses CDP's `Target.getTargets` (not `/json`), so it works on Chrome 144+ too. It already filters out `chrome://` and `devtools://` URLs. Equivalent raw call:
-
-```js
-const { targetInfos } = await session.Target.getTargets({})
-const tabs = targetInfos.filter(t => t.type === 'page' && !t.url.startsWith('chrome://') && !t.url.startsWith('devtools://'))
-```
-
-To switch tabs: `session.use(otherTargetId)`. To detach: `session.setActiveSession(undefined)`.
-
-For a fresh tab per call (the skill pattern, safe to run in parallel), route each call to an explicit `sessionId` with the `cdp(sessionId, method, params)` global and clean up with `session.closeTab(...)` in `finally`, without ever calling `session.use`. See [`lifecycle-readiness.md`](interaction-skills/lifecycle-readiness.md) (One tab per call). `attachTab`, `evalFile`, `waitForUrl`, and `deepQuery` follow the same rule: all four take an explicit sessionId and never touch `session.use`, so they compose with concurrent snippets on other tabs.
-
-### Events
-
-```js
-// Subscribe (returns an unsubscribe fn)
-const off = session.onEvent((method, params, sessionId) => { ... })
-
-// Or wait for a single matching event with optional predicate + timeout
-await session.Network.enable()
-const ev = await session.waitFor(
-  'Page.frameNavigated',
-  (p) => p.frame.url.includes('example.com'),
-  10_000
-)
-```
-
-### Persisting state across calls
-
-Each snippet runs inside its own async wrapper, so its `let`/`const` declarations vanish when it returns. To carry data forward, attach to `globalThis`:
-
-```bash
-browser-harness-js '(await listPageTargets()).forEach((t,i)=>globalThis["tab"+i]=t.targetId)'
-browser-harness-js 'await session.use(globalThis.tab0)'
-browser-harness-js 'await session.Page.navigate({url:"https://example.com"})'
-```
-
-`session` itself, the active sessionId, and event subscribers are already preserved by the server — globals are only needed for ad-hoc data.
-
-## Connecting to a running browser (inspect flow)
-
-When attaching to the user's already-running browser:
-
-1. **Try `await session.connect()` first** (see [Connecting](#connecting)). If it fails with `No running browser with remote debugging detected`, turn remote debugging on — open the inspect page in a running Chromium browser:
-   ```bash
-   # macOS — `open location "chrome://..."` alone fails (-10814) when the default
-   # browser isn't a Chromium that registers the chrome:// scheme, and `open -a
-   # <browser>` triggers the profile picker. So target a running Chromium by name
-   # via AppleScript: it picks the frontmost one (the browser you're in) or the
-   # first running candidate, and reuses the active profile. No browser hardcoded.
-   osascript \
-     -e 'set inspectURL to "chrome://inspect/#remote-debugging"' \
-     -e 'set apps to {"Dia","Google Chrome","Chromium","Microsoft Edge","Brave Browser","Arc","Vivaldi","Opera","Comet","Helium","Aside","Google Chrome Canary"}' \
-     -e 'set target to ""' \
-     -e 'tell application "System Events"' \
-     -e 'set frontApp to name of first application process whose frontmost is true' \
-     -e 'if frontApp is in apps then' \
-     -e 'set target to frontApp' \
-     -e 'else' \
-     -e 'repeat with appName in apps' \
-     -e 'if exists process appName then' \
-     -e 'set target to appName' \
-     -e 'exit repeat' \
-     -e 'end if' \
-     -e 'end repeat' \
-     -e 'end if' \
-     -e 'end tell' \
-     -e 'if target is not "" then' \
-     -e 'tell application target to open location inspectURL' \
-     -e 'end if'
-
-   # Linux — replace with the detected browser binary name
-   # e.g. dia, google-chrome, chromium, brave-browser
-   <browser-binary> 'chrome://inspect/#remote-debugging'
-
-   # Windows (PowerShell)
-   Start-Process <browser-binary> 'chrome://inspect/#remote-debugging'
-   ```
-   Only macOS's AppleScript path auto-detects the running browser and avoids the profile picker; Linux/Windows need the binary name and may prompt the user to pick a profile first.
-2. **Tick "Discover network targets"** in the browser's inspect page, then click **Allow** when the browser prompts.
-3. Retry `await session.connect()`. If it picks the wrong browser, use `detectBrowsers()` + `{ profileDir }`; if it's still waiting on the Allow click, pass `timeoutMs: 30000` — see [Connecting](#connecting).
-
-## Working with targets (tabs)
-
-- **CDP target order ≠ visible tab-strip order.** When the user says "the first tab I can see", use a screenshot or page title to identify it, `Target.activateTarget` only switches to a known targetId.
-
-### List or close tabs without the REPL
-
-When the browser exposes its debug port (Helium on 9222), the CDP HTTP endpoints answer directly, no `session.connect()`, no REPL round-trip:
-
-```bash
-# list open pages: id, title, url
-curl -s http://127.0.0.1:9222/json/list | jq -r '.[] | select(.type=="page") | "\(.id)\t\(.title)\t\(.url)"'
-
-# close one tab by id
-curl -s http://127.0.0.1:9222/json/close/<id>   # prints "Target is closing"
-
-# open a new tab
-curl -s "http://127.0.0.1:9222/json/new?https://example.com"
-```
-
-To close every tab whose URL matches a pattern, dry-run first (print id + url, close nothing):
-
-```bash
-curl -s http://127.0.0.1:9222/json/list | jq -r '.[] | select(.type=="page" and (.url | test("example\\.com"))) | "\(.id)\t\(.url)"'
-```
-
-Then close for real:
-
-```bash
-curl -s http://127.0.0.1:9222/json/list | jq -r '.[] | select(.type=="page" and (.url | test("example\\.com"))) | .id' \
-  | while read -r id; do curl -s "http://127.0.0.1:9222/json/close/$id"; done
-```
-
-Close only after the page's content is already captured elsewhere, closing is one-way. This path bypasses the shared REPL's active-tab pointer entirely, so it never disturbs another session's `session.use`.
-
-## Looking up a method
-
-The full typed surface is in `/Users/monotykamary/VCS/working-remote/open-source/browser-harness-js/skills/cdp/sdk/generated.ts` (~655 KB, only loaded if you read it). Each method has its CDP description as a JSDoc comment plus typed `*Params` / `*Return` interfaces in per-domain namespaces.
-
-```bash
-grep -n "navigate" /Users/monotykamary/VCS/working-remote/open-source/browser-harness-js/skills/cdp/sdk/generated.ts | head
-```
-
-## Regenerating the SDK
-
-When the upstream protocol JSONs change, replace `sdk/browser_protocol.json` and/or `sdk/js_protocol.json` and re-run:
-
-```bash
-cd /Users/monotykamary/VCS/working-remote/open-source/browser-harness-js/skills/cdp/sdk && node gen.ts
-browser-harness-js --restart   # pick up the new bindings
-```
-
-Reinstalling (`npx skills add`) updates the files on disk but not the long-lived daemon — a newly-documented global then throws `ReferenceError: <global> is not defined` until you `--restart`. Compare `browser-harness-js --version` (disk) to the `version` in `--status` (daemon memory) to detect it; see [Connection: Stale daemon](interaction-skills/connection.md).
-
-## Files
-
-All paths are relative to `/Users/monotykamary/VCS/working-remote/open-source/browser-harness-js/skills/cdp` (the install path — see top of this doc).
-
-- `/usr/local/bin/browser-harness-js` → `/Users/monotykamary/VCS/working-remote/open-source/browser-harness-js/skills/cdp/sdk/browser-harness-js` (the CLI)
-- `sdk/repl.ts` — HTTP server (`node:http` on `127.0.0.1:9876`)
-- `sdk/session.ts` — `Session` class (transport, pinned reconnect, generation tracking, target routing, events)
-- `sdk/interaction.ts` — model-neutral `InteractionController`: guarded explicit-scope observe/act/wait
-- `sdk/axview.ts` — `axView` / `axDiff` / `parseAxRefs`: compressed accessibility-tree projection + helpers, injected as globals (see `interaction-skills/snapshot.md`)
-- `sdk/recording.ts` — consent preferences, pinned rrweb fetch/cache, injection, event storage, local replay server
-- `sdk/rrweb-replay.html` — local player UI served by `recordings replay`
-- `sdk/generated.ts` — codegen output: every CDP method as a typed wrapper
-- `sdk/gen.ts` — codegen script
-- `sdk/{browser,js}_protocol.json` — upstream protocol (vendored)
-- `interaction-skills/` — CDP how-to guides (screenshots, tabs, network requests, lifecycle readiness, JSON navigation, media capture, etc.)
+`learnings/<domain>/` holds per-site recipes (`manifest.json`, `notes/overview.md`, `tools/*.mjs`) that call the old globals above through `learnings(domain, tool, args)`. Read [learnings/README.md](learnings/README.md) before adding one. They keep working unchanged while the compatibility layer is registered.

@@ -138,6 +138,15 @@ test('real Session exposes a synchronous generation fence without reconnecting o
   assert.equal(wire.sent.length, 1); assert.equal(replacement.sent.length, 0); session.close();
 });
 
+test('page commands keep the active target session while extension commands route through the browser session', async () => {
+  const session = new Session(); const wire = new FakeWire(); session.adoptExtension(wire);
+  session.setActiveSession('page-session');
+  await session._call('Page.navigate', {});
+  await session._call('Extensions.getExtensions', {});
+  assert.equal(JSON.parse(wire.sent[0]!).sessionId, 'page-session');
+  assert.equal(JSON.parse(wire.sent[1]!).sessionId, undefined); session.close();
+});
+
 test('connect({ transport: "extension" }) fails closed when the extension is absent', async () => {
   resetExtensionHub();
   const session = new Session();
@@ -145,4 +154,19 @@ test('connect({ transport: "extension" }) fails closed when the extension is abs
     session.connect({ transport: 'extension', timeoutMs: 30 }),
     /timed out after 30ms waiting for the browser-harness-js extension/,
   );
+});
+
+test('a hosted browser authenticates the DevTools WebSocket upgrade with the headers given to connect', async () => {
+  const { createServer } = await import('node:http');
+  const seen: (string | undefined)[] = [];
+  const server = createServer();
+  // Record the upgrade and refuse it: the headers are what this checks, not the CDP session.
+  server.on('upgrade', (req, socket) => { seen.push(req.headers['x-api-key'] as string | undefined); socket.destroy(); });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  const wsUrl = `ws://127.0.0.1:${(server.address() as { port: number }).port}/devtools/browser/hosted`;
+  try {
+    await assert.rejects(new Session().connect({ wsUrl, transport: 'cdp', timeoutMs: 2000, headers: { 'x-api-key': 'k-123' } }));
+    await assert.rejects(new Session().connect({ wsUrl, transport: 'cdp', timeoutMs: 2000 }));
+    assert.deepEqual(seen, ['k-123', undefined]);
+  } finally { server.close(); }
 });

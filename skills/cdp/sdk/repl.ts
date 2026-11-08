@@ -18,10 +18,11 @@ import { bindChrome } from './chrome.ts';
 import { Session, listPageTargets, resolveWsUrl, detectBrowsers } from './session.ts';
 import { asWire, extensionConnected, setExtensionClient } from './extension-hub.ts';
 import { acceptExtensionUpgrade, isExtensionUpgrade } from './ws-server.ts';
+import { Browser } from './browser.ts';
+import { InteractionController, type InteractionOptions } from './interaction.ts';
 import { axView, axDiff, parseAxRefs, parseAxLocators } from './axview.ts';
 import { runDomView, runDomClick, runDomType, type DomViewDriver, type DomViewOptions } from './domview.ts';
 import { RecordingManager } from './recording.ts';
-import { InteractionController, type InteractionOptions } from './interaction.ts';
 import * as Generated from './generated.ts';
 import { createServer, type IncomingMessage } from 'node:http';
 import { readFileSync, unlinkSync, writeFileSync } from 'node:fs';
@@ -37,6 +38,9 @@ const session = new Session();
 const recording = new RecordingManager(session);
 (globalThis as any).session = session;
 (globalThis as any).Session = Session;
+(globalThis as any).browser = new Browser(session);
+// Compatibility layer (upstream removed these globals in favour of browser/page): kept so
+// existing skills and learnings keep working. See SKILL.md "Compatibility layer".
 (globalThis as any).InteractionController = InteractionController;
 (globalThis as any).createInteractionController = (options: InteractionOptions) => new InteractionController(session, options);
 // Bind helpers to the singleton session so the agent calls `listPageTargets()`
@@ -45,10 +49,10 @@ const recording = new RecordingManager(session);
 (globalThis as any).ext = bindChrome(session);
 (globalThis as any).resolveWsUrl = resolveWsUrl;
 (globalThis as any).detectBrowsers = detectBrowsers;
+(globalThis as any).CDP = Generated;
 (globalThis as any).axView = axView;
 (globalThis as any).axDiff = axDiff;
 (globalThis as any).parseAxRefs = parseAxRefs;
-(globalThis as any).CDP = Generated;
 (globalThis as any).cdp = (sid: string, method: string, params: unknown) => session._call(method, params, { sessionId: sid });
 
 /** Resolve an axView ref number (or `[n]` string) to backendDOMNodeId via a refs Map or parseAxRefs(view). */

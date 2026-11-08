@@ -18,6 +18,10 @@
  * are not needed when the model re-snapshots after each action. Added: password
  * redaction, state flags, an optional full-page mode.
  *
+ * Open shadow roots are walked (`element.shadowRoot`); closed roots are
+ * unreachable from page script, so controls inside them are invisible here:
+ * use `axView` for those. `text: true` reads the light DOM only.
+ *
  * Pure apart from the `DomViewDriver` it is handed, so it unit-tests offline.
  * Injected as `domView` / `domClick` / `domType` in the REPL (see `repl.ts`).
  * For when to pick it over `axView`, see `interaction-skills/snapshot.md`.
@@ -32,6 +36,8 @@ export type DomViewOptions = {
   max?: number;
   /** Redact password-ish values (`="[redacted]"`). Default true. */
   redactSensitive?: boolean;
+  /** List a `<select>`'s option labels on its line (first 20, then `+N more`). Default false. */
+  options?: boolean;
 };
 
 export type DomAction = {
@@ -40,6 +46,9 @@ export type DomAction = {
   value: string;
   flags: string[];
   redacted: boolean;
+  /** Present only with `options: true` on a `<select>`. */
+  options?: string[];
+  optionsMore?: number;
 };
 
 export type DomSnapshot = {
@@ -70,18 +79,27 @@ export const DOM_SNAPSHOT_SRC = String.raw`(opts => {
   if (!document.body) return null;
   const SENS = /\b(password|passwd|passcode|pin|secret|token|ssn|cvv|cvc|card\s*number|account\s*number)\b/i;
   const redact = opts.redactSensitive !== false, vp = opts.viewport !== false;
-  const visible = e => !e.closest('[aria-hidden="true"],[inert]') &&
+  const visible = e => !closestDeep(e, '[aria-hidden="true"],[inert]') &&
     e.checkVisibility({checkOpacity:true,checkVisibilityCSS:true});
+  const closestDeep = (e, sel) => {
+    for (; e; e = e.getRootNode().host) { const c = e.closest(sel); if (c) return c; }
+    return null;
+  };
+  const kids = e => {
+    if (e.tagName === 'SLOT') { const a = e.assignedNodes({flatten:true}); if (a.length) return a; }
+    return e.shadowRoot ? e.shadowRoot.childNodes : e.childNodes;
+  };
   const name = (e, seen = new Set()) => {
     if (!e || seen.has(e)) return '';
     seen.add(e);
+    const root = e.getRootNode();
     const referenced = (e.getAttribute('aria-labelledby')||'').split(/\s+/)
-      .map(id => name(document.getElementById(id), seen)).filter(Boolean).join(' ');
+      .map(id => name(root.getElementById ? root.getElementById(id) : null, seen)).filter(Boolean).join(' ');
     return referenced || e.getAttribute('aria-label') ||
       [...(e.labels||[])].map(l => name(l, seen)).filter(Boolean).join(' ') ||
       (['button','submit','reset'].includes(e.type) ? e.value : '') || e.getAttribute('alt') ||
-      (e.tagName === 'INPUT' ? '' : [...e.childNodes].map(n => n.nodeType === 3 ? n.textContent :
-        n.nodeType === 1 && n.getAttribute('aria-hidden') !== 'true' ? name(n, seen) : '').join(' ').trim()) ||
+      (e.tagName === 'INPUT' ? '' : [...kids(e)].map(n => n.nodeType === 3 ? n.textContent :
+        n.nodeType === 1 && !['STYLE','SCRIPT'].includes(n.tagName) && n.getAttribute('aria-hidden') !== 'true' ? name(n, seen) : '').join(' ').trim()) ||
       e.getAttribute('title') || e.getAttribute('placeholder') || '';
   };
   const roles = ['button','link','checkbox','radio','switch','tab','menuitem','menuitemradio',
@@ -106,9 +124,20 @@ export const DOM_SNAPSHOT_SRC = String.raw`(opts => {
   };
   const refs = [], actions = [];
   let omitted = 0;
-  for (const e of document.querySelectorAll(selector)) {
+  let active = document.activeElement;
+  while (active && active.shadowRoot && active.shadowRoot.activeElement) active = active.shadowRoot.activeElement;
+  const candidates = [];
+  const walk = root => {
+    const hits = new Set(root.querySelectorAll(selector));
+    for (const e of root.querySelectorAll('*')) {
+      if (hits.has(e)) candidates.push(e);
+      if (e.shadowRoot) walk(e.shadowRoot);
+    }
+  };
+  walk(document);
+  for (const e of candidates) {
     if (['file','hidden'].includes(e.type) || !visible(e) || e.matches(':disabled') ||
-        e.closest('[aria-disabled="true"]')) continue;
+        closestDeep(e, '[aria-disabled="true"]')) continue;
     const rname = role(e), r = e.getBoundingClientRect(), x = r.x + r.width/2, y = r.y + r.height/2;
     if (!rname || r.width <= 0 || r.height <= 0) continue;
     if (vp && (x < 0 || y < 0 || x >= innerWidth || y >= innerHeight)) continue;
@@ -116,7 +145,7 @@ export const DOM_SNAPSHOT_SRC = String.raw`(opts => {
     if (actions.length >= (opts.max || 250)) { omitted++; continue; }
     const label = name(e).replace(/\s+/g, ' ').trim();
     const flags = [];
-    if (e === document.activeElement) flags.push('focused');
+    if (e === active) flags.push('focused');
     for (const key of ['checked','selected','expanded','pressed']) {
       const v = e.getAttribute('aria-' + key);
       if (v === 'true' || (v === 'mixed' && key === 'checked')) flags.push(v === 'mixed' ? 'mixed' : key);
@@ -130,8 +159,13 @@ export const DOM_SNAPSHOT_SRC = String.raw`(opts => {
     const sensitive = redact && (e.type === 'password' ||
       (['textbox','searchbox','spinbutton'].includes(rname) && SENS.test(label + ' ' + (e.getAttribute('autocomplete')||''))));
     refs.push(e);
-    actions.push({role: rname, name: label, value: sensitive ? '' : value.slice(0, 40), flags,
-      redacted: sensitive});
+    const action = {role: rname, name: label, value: sensitive ? '' : value.slice(0, 40), flags,
+      redacted: sensitive};
+    if (opts.options && e.tagName === 'SELECT') {
+      action.options = [...e.options].slice(0, 20).map(o => o.label.replace(/\s+/g, ' ').trim().slice(0, 40));
+      action.optionsMore = Math.max(0, e.options.length - 20);
+    }
+    actions.push(action);
   }
   let text = '';
   if (opts.text) {
@@ -168,8 +202,17 @@ export function buildResolveExpr(ref: number, fill = false): string {
     e.scrollIntoView({block: 'center', inline: 'nearest', behavior: 'instant'});
     const r = e.getBoundingClientRect(), x = r.x + r.width/2, y = r.y + r.height/2;
     if (!r.width || !r.height) return {error: 'ref ' + ref + ' has no box'};
-    const hit = document.elementFromPoint(x, y);
-    if (!hit || !(e.contains(hit) || hit.contains(e))) {
+    let hit = document.elementFromPoint(x, y);
+    while (hit && hit.shadowRoot) {
+      const inner = hit.shadowRoot.elementFromPoint(x, y);
+      if (!inner || inner === hit) break;
+      hit = inner;
+    }
+    const within = (outer, node) => {
+      for (; node; node = node.parentElement || node.getRootNode().host) if (node === outer) return true;
+      return false;
+    };
+    if (!hit || !(within(e, hit) || within(hit, e))) {
       return {error: 'ref ' + ref + ' is covered by <' + (hit ? hit.tagName.toLowerCase() : 'nothing') + '>'};
     }
     return {x, y};
@@ -177,7 +220,8 @@ export function buildResolveExpr(ref: number, fill = false): string {
 }
 
 const SELECT_ACTIVE_EXPR = String.raw`(() => {
-  const a = document.activeElement;
+  let a = document.activeElement;
+  while (a && a.shadowRoot && a.shadowRoot.activeElement) a = a.shadowRoot.activeElement;
   if (a && typeof a.select === 'function') a.select();
   else if (a && a.isContentEditable) getSelection().selectAllChildren(a);
 })()`;
@@ -189,6 +233,10 @@ function fmt(a: DomAction, n: number): string {
   if (a.flags.length) line += ` <${a.flags.join(' ')}>`;
   if (a.redacted) line += ' ="[redacted]"';
   else if (a.value) line += ` ="${a.value}"`;
+  if (a.options) {
+    line += ` options: ${a.options.map((o) => `"${o}"`).join(' | ')}`;
+    if (a.optionsMore) line += ` | +${a.optionsMore} more`;
+  }
   return line;
 }
 

@@ -1,6 +1,6 @@
 # Compressed a11y snapshot
 
-When you need to *see* the whole page at once — to explore an unfamiliar UI, pick from many options, or summarize layout — snapshot the accessibility tree, compressed. This is the **exploration** tool; for finding one named thing, [`Accessibility.queryAXTree`](accessibility-tree.md) is cheaper and more precise. Use the snapshot when you don't yet know what to ask for.
+When you need to *see* the whole page at once (to explore an unfamiliar UI, pick from many options, or summarize layout), snapshot the accessibility tree, compressed. This is the **structure** tool (for plain explore-and-act, start with [`domView`](#domview-the-one-call-dom-alternative)); for finding one named thing, [`Accessibility.queryAXTree`](accessibility-tree.md) is cheaper and more precise. Use the snapshot when you don't yet know what to ask for.
 
 `Accessibility.getFullAXTree` returns every node verbatim — `sources`, `chromeRole`, ignored wrappers, `InlineTextBox` fragments. On a real page that's **hundreds of thousands of tokens** (a Wikipedia article: 886K). The raw dump is unusable in context. `axView` drops the ~96% that is structural noise and keeps interactive elements + text, assigning `[n]` refs you can act on. Measured on a live Wikipedia article: **886K → 22K tokens**; on an app page: **210K → 7K**. All interactive nodes and content preserved.
 
@@ -40,12 +40,13 @@ axView(nodes, { locators: true })     // emit loc=role:R["N"] per ref — surviv
 
 ## Reading escalation (default agent workflow)
 
-Don't dump the full tree first. Escalate only as needed:
+Don't dump the full tree first. `domView()` is the first read; escalate only as needed:
 
-1. **`axView(nodes, { interactive: true })`** — buttons, links, fields, landmarks. Usually enough to act.
-2. **`axView(nodes)`** — full compressed tree when you need surrounding text / headings / content.
-3. **Wait briefly and re-fetch** only if the page is still changing (SPA hydration, live lists).
-4. **Visual check** — `Page.captureScreenshot` when the tree is empty, contradictory, or canvas/non-semantic.
+1. **`domView()`**: to explore and act. One call, 5x to 22x faster than the AX route on the benchmark pages, walks open shadow roots. `domClick` / `domType` act on its refs.
+2. **`axView(nodes, { interactive: true })`**: when the page needs structure (landmarks, headings, tables), has closed shadow roots, cross-origin iframes or canvas, or `domView` found nothing.
+3. **`axView(nodes)`**: full compressed tree when you need surrounding text / headings / content.
+4. **Wait briefly and re-fetch** only if the page is still changing (SPA hydration, live lists).
+5. **Visual check**: `Page.captureScreenshot` when every read is empty, contradictory, or canvas/non-semantic.
 
 After an action in a multi-step loop, prefer **`axDiff(prev, next)`** over re-reading the whole next tree in the model context. Keep `prev`/`next` as strings in the REPL; print only the diff.
 
@@ -144,34 +145,36 @@ A full snapshot is **expensive in absolute terms** (7–22K tokens). For multi-s
 
 ## domView: the one-call DOM alternative
 
-`domView(opts?)` is a second snapshot tool, not a replacement. One `Runtime.evaluate` reads the visible, enabled controls (role, accessible name, value, state) straight from the DOM and returns a `[n] role "name" ="value"` table. The live nodes stay in `window.__domView` inside the page, so `domClick(n)` / `domType(n, text)` resolve the ref in-page, scroll it into view, hit-test its center, and click with trusted `Input.dispatchMouseEvent`. No `getFullAXTree`, no trailing refs map. Ported from browser-use/jev-ultrafast (MIT); source `sdk/domview.ts`.
+`domView(opts?)` is the first read, not a replacement for `axView`. One `Runtime.evaluate` reads the visible, enabled controls (role, accessible name, value, state) straight from the DOM and returns a `[n] role "name" ="value"` table. The live nodes stay in `window.__domView` inside the page, so `domClick(n)` / `domType(n, text)` resolve the ref in-page, scroll it into view, hit-test its center, and click with trusted `Input.dispatchMouseEvent`. No `getFullAXTree`, no trailing refs map. Ported from browser-use/jev-ultrafast (MIT); source `sdk/domview.ts`.
 
 ```js
 await domView()                          // viewport controls only
 await domView({ viewport: false })       // whole page
-await domView({ text: true })            // + visible text (viewport, 6000 chars max)
+await domView({ text: true })            // + visible text (viewport, light DOM, 6000 chars max)
+await domView({ options: true })         // + <select> option labels (first 20, then "+N more")
 await domClick(3); await domType(2, 'query')
 ```
 
-Options: `viewport` (default true), `text` (default false), `max` (default 250 controls), `redactSensitive` (default true, password values print `="[redacted]"`). Refs are valid for the latest `domView()` only; a navigation or removed node gives a clear `unknown ref` / `stale ref` error. Unlike axView, repeated calls overwrite the ref map.
+Options: `viewport` (default true), `text` (default false), `max` (default 250 controls), `options` (default false), `redactSensitive` (default true, password values print `="[redacted]"`). Open shadow roots are walked, including nested ones, and names resolve inside them; closed roots are unreachable from page script, so use `axView` there. Refs are valid for the latest `domView()` only; a navigation or removed node gives a clear `unknown ref` / `stale ref` error. Unlike axView, repeated calls overwrite the ref map.
 
 Measured on five public pages, headless Helium, 7 runs each (full table in `sdk/bench/RESULTS.md`):
 
 | | axView interactive | domView | domView `viewport:false` |
 |---|---|---|---|
-| Time (median) | 9 to 83 ms | 1.5 to 5.3 ms | 1.6 to 7.5 ms |
+| Time (median) | 8 to 80 ms | 1.5 to 6.2 ms | 1.5 to 8.2 ms |
 | Output | 4.6K to 35.9K chars | 0.9K to 4.5K chars | 3.4K to 20.3K chars |
 
-domView is 6x to 26x faster and, like for like (whole page), 1.4x to 2.7x smaller. Pick it by these rules:
+domView is 5x to 22x faster and, like for like (whole page), 1.4x to 2.7x smaller. The shadow walk costs under 1 ms on these pages and made MDN's search, Log in and theme switch appear. Pick by these rules:
 
 | Situation | Pick |
 |---|---|
 | Act-loop on a big page, repeated snapshots, find a field/link/button fast | `domView()` |
 | Need the whole page's controls, not just the viewport | `domView({ viewport: false })` |
-| Site built from web components / open shadow DOM (MDN search, Log in, theme switch were invisible to domView) | `axView` |
-| Need `<select>` options listed, landmarks, headings, structure, or table context | `axView` |
+| Need a `<select>`'s choices | `domView({ options: true })` |
+| Need landmarks, headings, structure, or table context | `axView` |
+| Closed shadow roots, cross-origin iframes, canvas | `axView`, then a screenshot |
 | Need stable cross-snapshot locators (`locators: true`) or `axDiff` | `axView` |
-| Controls missing from domView, or the page is canvas/odd | `axView`, then a screenshot |
+| `domView` found nothing or misses a control | `axView`, then a screenshot |
 
 Both are one CDP call, so call count is not the difference; speed and tokens on large pages are.
 

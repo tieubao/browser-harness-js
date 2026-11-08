@@ -20,72 +20,72 @@
       "title": "Chromium (web browser) - Wikipedia",
       "stats": {
         "A": {
-          "medianMs": 82.8,
-          "p95Ms": 88.4,
-          "coldMs": 110.1,
-          "chars": 35864,
-          "tokens": 8966,
+          "medianMs": 80,
+          "p95Ms": 82.5,
+          "coldMs": 108.8,
+          "chars": 35881,
+          "tokens": 8970,
           "elements": 790,
           "rawMs": [
-            88.4,
-            85.4,
-            82.9,
-            80.6,
-            82.8,
-            81.6,
-            80.6
+            82.5,
+            79.4,
+            80,
+            79.2,
+            78.9,
+            80.5,
+            80.9
           ],
           "charsNoRefs": 27168
         },
         "B": {
-          "medianMs": 5.3,
-          "p95Ms": 5.5,
-          "coldMs": 6.4,
+          "medianMs": 6.2,
+          "p95Ms": 6.7,
+          "coldMs": 7.6,
           "chars": 2424,
           "tokens": 606,
           "elements": 92,
           "rawMs": [
-            5.4,
-            5.5,
-            5.5,
-            5.1,
-            5.3,
-            5.3,
-            5.1
+            6.6,
+            6,
+            6.2,
+            6.3,
+            5.9,
+            6.7,
+            6
           ]
         },
         "Btext": {
-          "medianMs": 12.6,
-          "p95Ms": 13,
-          "coldMs": 15,
+          "medianMs": 13.4,
+          "p95Ms": 14.3,
+          "coldMs": 14.1,
           "chars": 4578,
           "tokens": 1145,
           "elements": 92,
           "rawMs": [
-            12.9,
+            14.3,
+            13.4,
+            13.4,
+            12.8,
             13,
-            12.6,
-            12.4,
-            12.2,
-            12,
-            12.7
+            13.1,
+            13.8
           ]
         },
         "Ball": {
-          "medianMs": 7.5,
-          "p95Ms": 8.1,
-          "coldMs": 9.7,
+          "medianMs": 8.2,
+          "p95Ms": 9.4,
+          "coldMs": 9.4,
           "chars": 20329,
           "tokens": 5082,
           "elements": 762,
           "rawMs": [
-            7.8,
-            7.3,
+            9.4,
             8.1,
-            7.5,
-            7.2,
-            8,
-            7.3
+            8.2,
+            8.2,
+            8.2,
+            8.3,
+            8.9
           ]
         }
       },
@@ -195,71 +195,71 @@
       "title": "Hacker News",
       "stats": {
         "A": {
-          "medianMs": 17.6,
-          "p95Ms": 20.1,
-          "coldMs": 39.6,
-          "chars": 10825,
-          "tokens": 2706,
+          "medianMs": 16.9,
+          "p95Ms": 17.8,
+          "coldMs": 20.2,
+          "chars": 10848,
+          "tokens": 2712,
           "elements": 230,
           "rawMs": [
-            20.1,
-            18.1,
+            17.8,
+            17.4,
+            16.7,
             17.3,
-            17,
-            17.6,
-            18.1,
-            17.5
+            16.8,
+            16.9,
+            16.6
           ],
-          "charsNoRefs": 8589
+          "charsNoRefs": 8610
         },
         "B": {
-          "medianMs": 1.8,
-          "p95Ms": 1.9,
-          "coldMs": 3.5,
+          "medianMs": 1.7,
+          "p95Ms": 2.1,
+          "coldMs": 3.1,
           "chars": 4519,
           "tokens": 1130,
           "elements": 160,
           "rawMs": [
-            1.9,
+            2,
+            2.1,
             1.7,
-            1.8,
-            1.6,
-            1.8,
-            1.9,
-            1.9
+            1.7,
+            2.1,
+            1.7,
+            1.7
           ]
         },
         "Btext": {
-          "medianMs": 2.3,
+          "medianMs": 2.5,
           "p95Ms": 2.7,
-          "coldMs": 3.8,
-          "chars": 7448,
+          "coldMs": 3.4,
+          "chars": 7449,
           "tokens": 1862,
           "elements": 160,
           "rawMs": [
-            2.7,
-            2.3,
-            2.3,
-            2.2,
+            2.6,
+            2.5,
             2.3,
             2.5,
+            2.7,
+            2.4,
             2.5
           ]
         },
         "Ball": {
-          "medianMs": 1.6,
-          "p95Ms": 1.9,
-          "coldMs": 2.6,
-          "chars": 6472,
-          "tokens": 1618,
+          "medianMs": 1.7,
+          "p95Ms": 2,
+          "coldMs": 2.3,
+          "chars": 6493,
+          "tokens": 1623,
           "elements": 230,
           "rawMs": [
             1.8,
-            1.5,
-            1.5,
-            1.5,
             1.6,
-            1.9,
+            1.7,
+            2,
+            1.8,
+            1.7,
             1.6
           ]
         }
@@ -285,13 +285,13 @@
         }
       ],
       "overlapViewport": {
-        "both": 106,
+        "both": 107,
         "axOnly": 44,
         "domOnly": 1,
         "axOnlyExamples": [
           "thunderbong",
           "23 hours ago",
-          "304 comments",
+          "306 comments",
           "show hn: coldframe, a honeypot that poses as a supermarket fridge controller",
           "github.com/hedgerow-dev",
           "hedgerow-dev",
@@ -303,7 +303,7 @@
         ]
       },
       "overlapAll": {
-        "both": 150,
+        "both": 151,
         "axOnly": 0,
         "domOnly": 1,
         "axOnlyExamples": [],
@@ -347,72 +347,72 @@
       "title": "json — JSON encoder and decoder — Python 3.15.2 documentation",
       "stats": {
         "A": {
-          "medianMs": 52.3,
-          "p95Ms": 53.6,
-          "coldMs": 83.3,
-          "chars": 12219,
-          "tokens": 3055,
+          "medianMs": 49.7,
+          "p95Ms": 53.8,
+          "coldMs": 83.7,
+          "chars": 12224,
+          "tokens": 3056,
           "elements": 254,
           "rawMs": [
-            51.9,
-            51.8,
-            52.8,
-            52.3,
-            51.9,
-            52.3,
-            53.6
+            49.8,
+            49.1,
+            50.6,
+            49.7,
+            53.8,
+            49.2,
+            48.7
           ],
           "charsNoRefs": 9524
         },
         "B": {
-          "medianMs": 2,
-          "p95Ms": 2.6,
-          "coldMs": 2.7,
+          "medianMs": 2.3,
+          "p95Ms": 2.3,
+          "coldMs": 3.7,
           "chars": 1422,
           "tokens": 356,
           "elements": 41,
           "rawMs": [
-            1.8,
-            2.4,
-            2.6,
-            2,
-            1.8,
-            2,
-            2
+            2.1,
+            2.3,
+            2.3,
+            2.2,
+            2.3,
+            2.3,
+            2.1
           ]
         },
         "Btext": {
-          "medianMs": 5.5,
-          "p95Ms": 5.8,
-          "coldMs": 6.2,
+          "medianMs": 5.9,
+          "p95Ms": 6.7,
+          "coldMs": 6.7,
           "chars": 3322,
           "tokens": 831,
           "elements": 41,
           "rawMs": [
-            5.5,
-            5.5,
-            5.6,
-            5.6,
+            5.9,
+            5.9,
             5.8,
-            5.4,
-            5.3
+            6,
+            6.7,
+            5.8,
+            5.5
           ]
         },
         "Ball": {
-          "medianMs": 2.1,
-          "p95Ms": 2.4,
-          "coldMs": 2.4,
+          "medianMs": 2.3,
+          "p95Ms": 2.7,
+          "coldMs": 3,
           "chars": 4532,
           "tokens": 1133,
           "elements": 174,
           "rawMs": [
             2.3,
-            2.1,
-            1.9,
-            1.9,
-            2.4,
-            2.1,
-            1.8
+            2.3,
+            2.3,
+            2.5,
+            2.7,
+            2.3,
+            2.2
           ]
         }
       },
@@ -511,72 +511,72 @@
       "title": "Find Cheap Flights Worldwide & Book Your Ticket - Google Flights",
       "stats": {
         "A": {
-          "medianMs": 8.8,
-          "p95Ms": 10.6,
-          "coldMs": 25.6,
-          "chars": 4642,
-          "tokens": 1161,
+          "medianMs": 8.2,
+          "p95Ms": 8.3,
+          "coldMs": 14.9,
+          "chars": 4640,
+          "tokens": 1160,
           "elements": 71,
           "rawMs": [
-            9.1,
-            8.8,
-            10.6,
-            8.9,
-            8.7,
-            8.7,
-            8.4
+            8.2,
+            8.2,
+            8.3,
+            7.8,
+            8,
+            8.3,
+            8
           ],
           "charsNoRefs": 3937
         },
         "B": {
           "medianMs": 1.5,
-          "p95Ms": 2.4,
-          "coldMs": 3.3,
+          "p95Ms": 1.6,
+          "coldMs": 2.6,
           "chars": 922,
           "tokens": 231,
           "elements": 25,
           "rawMs": [
+            1.6,
+            1.6,
+            1.4,
+            1.3,
             1.5,
             1.6,
-            2.4,
-            1.4,
-            1.5,
-            1.4,
-            1.5
+            1.3
           ]
         },
         "Btext": {
           "medianMs": 1.8,
-          "p95Ms": 2.5,
-          "coldMs": 2.3,
+          "p95Ms": 1.9,
+          "coldMs": 2.4,
           "chars": 1327,
           "tokens": 332,
           "elements": 25,
           "rawMs": [
+            1.9,
             1.8,
-            2.5,
-            2.3,
             1.8,
             1.7,
-            1.7,
-            1.9
+            1.8,
+            1.8,
+            1.8
           ]
         },
         "Ball": {
-          "medianMs": 1.6,
-          "p95Ms": 1.9,
-          "coldMs": 2,
+          "medianMs": 1.5,
+          "p95Ms": 1.7,
+          "coldMs": 2.1,
           "chars": 3413,
           "tokens": 853,
           "elements": 70,
           "rawMs": [
             1.6,
-            1.9,
+            1.7,
+            1.5,
             1.6,
-            1.6,
-            1.3,
-            1.4,
-            1.4
+            1.5,
+            1.5,
+            1.5
           ]
         }
       },
@@ -674,72 +674,72 @@
       "title": "Element: getBoundingClientRect() method - Web APIs | MDN",
       "stats": {
         "A": {
-          "medianMs": 35.7,
-          "p95Ms": 37.7,
-          "coldMs": 67.1,
-          "chars": 18814,
-          "tokens": 4704,
+          "medianMs": 34.3,
+          "p95Ms": 35.7,
+          "coldMs": 55.9,
+          "chars": 18701,
+          "tokens": 4675,
           "elements": 389,
           "rawMs": [
-            37.7,
-            34.9,
-            36.2,
             35.7,
-            35.1,
-            35.4,
-            36
+            34.3,
+            33.8,
+            33.5,
+            35,
+            34.7,
+            33.9
           ],
           "charsNoRefs": 14572
         },
         "B": {
-          "medianMs": 2.1,
-          "p95Ms": 3,
-          "coldMs": 2.9,
-          "chars": 1333,
-          "tokens": 333,
-          "elements": 43,
+          "medianMs": 2.8,
+          "p95Ms": 3.9,
+          "coldMs": 4.1,
+          "chars": 1527,
+          "tokens": 382,
+          "elements": 50,
           "rawMs": [
-            2.2,
-            1.9,
-            3,
-            2.3,
-            1.9,
-            2.1,
-            2.1
+            2.9,
+            3.9,
+            2.6,
+            2.8,
+            2.7,
+            2.9,
+            2.6
           ]
         },
         "Btext": {
-          "medianMs": 2.8,
-          "p95Ms": 3.3,
-          "coldMs": 3.8,
-          "chars": 2446,
-          "tokens": 612,
-          "elements": 43,
+          "medianMs": 3.4,
+          "p95Ms": 3.7,
+          "coldMs": 4.2,
+          "chars": 2630,
+          "tokens": 658,
+          "elements": 50,
           "rawMs": [
-            2.7,
+            3.7,
+            3.5,
+            3.2,
+            3.4,
+            3.4,
             3.3,
-            2.8,
-            2.8,
-            2.6,
-            2.7,
             3.2
           ]
         },
         "Ball": {
-          "medianMs": 2.7,
-          "p95Ms": 3.3,
-          "coldMs": 3.7,
-          "chars": 9940,
-          "tokens": 2485,
-          "elements": 343,
+          "medianMs": 3.7,
+          "p95Ms": 4.4,
+          "coldMs": 4.8,
+          "chars": 11219,
+          "tokens": 2805,
+          "elements": 380,
           "rawMs": [
-            2.7,
-            3,
-            2.6,
-            2.7,
-            3.3,
-            2.7,
-            3
+            4.4,
+            3.7,
+            3.7,
+            3.8,
+            3.5,
+            3.7,
+            3.6
           ]
         }
       },
@@ -747,8 +747,8 @@
         {
           "label": "search",
           "A": true,
-          "B": false,
-          "Ball": false
+          "B": true,
+          "Ball": true
         },
         {
           "label": "link Reference",
@@ -761,21 +761,33 @@
           "A": true,
           "B": false,
           "Ball": true
+        },
+        {
+          "label": "shadow: Log in",
+          "A": true,
+          "B": true,
+          "Ball": true
+        },
+        {
+          "label": "shadow: theme switch",
+          "A": true,
+          "B": true,
+          "Ball": true
         }
       ],
       "overlapViewport": {
-        "both": 37,
-        "axOnly": 321,
+        "both": 44,
+        "axOnly": 314,
         "domOnly": 2,
         "axOnlyExamples": [
           "skip to main content",
           "skip to search",
           "javascript",
-          "search the site",
-          "log in",
-          "switch color theme",
-          "english (us)",
-          "copy"
+          "box-sizing: border-box",
+          "window.scrolly",
+          "window.scrollx",
+          "basic",
+          "play"
         ],
         "domOnlyExamples": [
           "javascript js",
@@ -783,28 +795,28 @@
         ]
       },
       "overlapAll": {
-        "both": 299,
-        "axOnly": 59,
-        "domOnly": 25,
+        "both": 308,
+        "axOnly": 50,
+        "domOnly": 39,
         "axOnlyExamples": [
           "javascript",
-          "search the site",
-          "log in",
-          "switch color theme",
-          "english (us)",
-          "play",
           "specification",
-          "cssom view module # dom-element-getboundingclientrect (external)"
+          "cssom view module # dom-element-getboundingclientrect (external)",
+          "report problems with this compatibility data (external)",
+          "view data on github (external)",
+          "desktop",
+          "mobile",
+          "chrome"
         ],
         "domOnlyExamples": [
           "javascript js",
           "baseline check baseline widely available chrome check edge check firefox check safari check",
           "cssom view module # dom-element-getboundingclientrect",
-          "view this page on github",
-          "report a problem with this content",
-          "instance properties",
-          "instance methods",
-          "setcapture() deprecated non-standard"
+          "report problems with this compatibility data",
+          "view data on github",
+          "chrome – full support chrome 2",
+          "edge – full support edge 12",
+          "firefox – full support firefox 3"
         ]
       },
       "sampleB": [
@@ -819,7 +831,7 @@
         "[8] button \"Tools\"",
         "[9] button \"About\"",
         "[10] link \"Blog\"",
-        "[11] link \"Web\""
+        "[11] button \"Search the site\""
       ],
       "sampleA": [
         "[1] RootWebArea \"Element: getBoundingClientRect() method - Web APIs | MDN\" <focused>",

@@ -1,5 +1,7 @@
 # domView vs axView benchmark
 
+The numbers from the first run are below. The "Shadow walk" section at the end re-runs the same pages after domView learned to walk open shadow roots. `results.json` holds the latest (shadow walk) run; the first-run numbers live in the tables here.
+
 Date: 2026-11-08. Browser: Chrome/157.0.8103.38 (headless, /Applications/Helium.app/Contents/MacOS/Helium). Viewport 1280x800. 7 measured runs per method per page after 1 discarded warmup round (the warmup is the `cold` column). Runs are interleaved A, B, B+text, B-all on an already loaded, idle page. User agent overridden to a non-Headless Chrome string. Regenerate with `node skills/cdp/sdk/bench/domview-bench.ts`; raw data in `results.json`.
 
 ## Verdict
@@ -12,8 +14,8 @@ domView is much faster and smaller than `getFullAXTree + axView({interactive:tru
 
 Where domView misses things axView finds (visible in the overlap table; some "A only" names are naming differences, not misses: wikipedia TOC entries carry a number prefix in the DOM name, google-flights names are cut at 120 chars):
 
-- **Shadow DOM.** `querySelectorAll` does not cross open shadow roots. MDN's search button, Log in, theme switch and nav dropdown items live in custom elements and are absent from B and B-all (spot check "search": A yes, B no). This is the biggest real miss on modern component-library sites. axView sees through shadow roots.
-- **`<select>` options.** domView lists a select as one `combobox ="current value"`. axView lists every option (python-docs: 41 A-only names, mostly language and version options).
+- **Shadow DOM.** `querySelectorAll` does not cross open shadow roots. MDN's search button, Log in, theme switch and nav dropdown items live in custom elements and are absent from B and B-all (spot check "search": A yes, B no). This is the biggest real miss on modern component-library sites. axView sees through shadow roots. **Fixed after this run: see "Shadow walk" below.**
+- **`<select>` options.** domView lists a select as one `combobox ="current value"`. axView lists every option (python-docs: 41 A-only names, mostly language and version options). **Opt-in `options: true` added after this run.**
 - **Off-screen by default.** Viewport mode drops everything below the fold (hackernews footer search box: A yes, B no, B-all yes). Use `viewport:false` for exploration.
 - **Unexplained wikipedia misses.** "Main menu" and the TOC toggle appear in A but not in B-all; the cause was not investigated (a visually hidden checkbox toggle is the likely suspect).
 - **No structure.** No landmarks, headings or grouping, so a reader cannot tell the nav from the main content, and there is no table/list context.
@@ -129,3 +131,39 @@ Local fixture page, `domView()` then `domClick(2)` on link "Known link": navigat
 | mdn | B domView (viewport) | 2.2, 1.9, 3, 2.3, 1.9, 2.1, 2.1 |
 | mdn | B+text domView({text:true}) | 2.7, 3.3, 2.8, 2.8, 2.6, 2.7, 3.2 |
 | mdn | B-all domView({viewport:false}) | 2.7, 3, 2.6, 2.7, 3.3, 2.7, 3 |
+
+## Shadow walk (2026-11-08, after domView descends into open shadow roots)
+
+Same script, same five pages, same settings (7 runs, 1 warmup, headless Helium on port 9333). Two MDN targets were added to the correctness check: the Log in control and the theme switch, both inside open shadow roots. `results.json` is from this run. "Before" columns are the first run above; hackernews chars moved by 21 because the live page changed between runs, not because of the walk.
+
+| Page | Method | median ms (before) | median ms (now) | chars (before) | chars (now) | elements (before) | elements (now) |
+|---|---|---:|---:|---:|---:|---:|---:|
+| wikipedia | B domView (viewport) | 5.3 | 6.2 | 2424 | 2424 | 92 | 92 |
+| wikipedia | B+text domView({text:true}) | 12.6 | 13.4 | 4578 | 4578 | 92 | 92 |
+| wikipedia | B-all domView({viewport:false}) | 7.5 | 8.2 | 20329 | 20329 | 762 | 762 |
+| hackernews | B domView (viewport) | 1.8 | 1.7 | 4519 | 4519 | 160 | 160 |
+| hackernews | B+text domView({text:true}) | 2.3 | 2.5 | 7448 | 7449 | 160 | 160 |
+| hackernews | B-all domView({viewport:false}) | 1.6 | 1.7 | 6472 | 6493 | 230 | 230 |
+| python-docs | B domView (viewport) | 2 | 2.3 | 1422 | 1422 | 41 | 41 |
+| python-docs | B+text domView({text:true}) | 5.5 | 5.9 | 3322 | 3322 | 41 | 41 |
+| python-docs | B-all domView({viewport:false}) | 2.1 | 2.3 | 4532 | 4532 | 174 | 174 |
+| google-flights | B domView (viewport) | 1.5 | 1.5 | 922 | 922 | 25 | 25 |
+| google-flights | B+text domView({text:true}) | 1.8 | 1.8 | 1327 | 1327 | 25 | 25 |
+| google-flights | B-all domView({viewport:false}) | 1.6 | 1.5 | 3413 | 3413 | 70 | 70 |
+| mdn | B domView (viewport) | 2.1 | 2.8 | 1333 | 1527 | 43 | 50 |
+| mdn | B+text domView({text:true}) | 2.8 | 3.4 | 2446 | 2630 | 43 | 50 |
+| mdn | B-all domView({viewport:false}) | 2.7 | 3.7 | 9940 | 11219 | 343 | 380 |
+
+Cost of the walk: the in-page work is one extra `querySelectorAll('*')` per root plus a `shadowRoot` read per element. It adds 0 to 0.9 ms on viewport mode (wikipedia +0.9, mdn +0.7, the rest within noise) and 0.7 to 1.0 ms on full-page mode for the two big pages. Table-only modes stay under 9 ms on every page, so the 6x to 26x speed lead over axView now reads 5.5x to 21.6x (median ms A/B: wikipedia 12.9x, hackernews 9.9x, python-docs 21.6x, google-flights 5.5x, mdn 12.3x). Pages without shadow roots produce identical output.
+
+MDN correctness, before and now (A = axView, B = viewport, B-all = `viewport:false`):
+
+| Target | A | B before | B now | B-all before | B-all now |
+|---|:-:|:-:|:-:|:-:|:-:|
+| search | yes | no | yes | no | yes |
+| shadow: Log in | yes | not measured | yes | not measured | yes |
+| shadow: theme switch | yes | not measured | yes | not measured | yes |
+| link Guides | yes | no | no | yes | yes |
+| link Reference | no | no | no | no | no |
+
+MDN viewport mode went from 43 to 50 elements and full-page from 343 to 380; the new names are the search button ("Search the site"), Log in, and the theme switch. Name overlap on MDN full-page is now 308 both, 50 A-only, 39 domView-only (was 299, 59, 25). Closed shadow roots stay invisible by design; use `axView` for those. `text: true` still reads the light DOM only.

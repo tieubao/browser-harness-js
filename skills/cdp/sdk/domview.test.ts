@@ -69,6 +69,33 @@ test('in-page source and expressions compile (parse only, never run here)', () =
   assert.match(buildSnapshotExpr({ max: 5 }), /\{"max":5\}\)$/);
 });
 
+test('select options render on the line, capped with +N more', () => {
+  const sel = (options: string[], optionsMore = 0) => ({
+    ...SNAP,
+    actions: [{ role: 'combobox', name: 'Lang', value: 'en', flags: [], redacted: false, options, optionsMore }],
+  });
+  assert.equal(
+    formatDomView(sel(['en', 'fr'])).split('\n')[1],
+    '[1] combobox "Lang" ="en" options: "en" | "fr"',
+  );
+  assert.match(formatDomView(sel(['en', 'fr'], 7)).split('\n')[1]!, /"fr" \| \+7 more$/);
+  // Default off: an action without options prints no options suffix.
+  assert.doesNotMatch(formatDomView(SNAP), /options:/);
+});
+
+test('in-page reader descends into open shadow roots and resolves names there', () => {
+  assert.match(DOM_SNAPSHOT_SRC, /\.shadowRoot/);
+  assert.match(DOM_SNAPSHOT_SRC, /getRootNode\(\)/);
+  assert.match(buildSnapshotExpr({ options: true }), /"options":true/);
+});
+
+test('click hit-test accepts a hit inside the target shadow tree', () => {
+  const expr = buildResolveExpr(1);
+  assert.match(expr, /shadowRoot\.elementFromPoint/);
+  assert.match(expr, /getRootNode\(\)\.host/);
+  assert.doesNotThrow(() => new Script(expr));
+});
+
 test('upstream attribution is kept in the module header', async () => {
   const { readFileSync } = await import('node:fs');
   const src = readFileSync(new URL('./domview.ts', import.meta.url), 'utf8');

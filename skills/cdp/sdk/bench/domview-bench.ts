@@ -74,6 +74,9 @@ const PAGES: PageSpec[] = [
     { label: 'search', role: /^(button|textbox|searchbox|combobox)$/, name: /search/i },
     { label: 'link Reference', role: /^link$/, name: /^references?$/i },
     { label: 'link Guides', role: /^link$/, name: /^guides?$/i },
+    // Shadow-DOM controls (invisible to domView before the shadow walk).
+    { label: 'shadow: Log in', role: /^(link|button)$/, name: /^log in$/i },
+    { label: 'shadow: theme switch', role: /./, name: /theme/i },
   ] },
 ];
 

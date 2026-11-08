@@ -9,8 +9,8 @@ import { isAbsolute, extname } from "node:path";
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
-async function evaluate(ctx, expression) {
-  const { result, exceptionDetails } = await ctx.session.Runtime.evaluate({ expression, returnByValue: true, awaitPromise: true });
+async function evaluate(page, expression) {
+  const { result, exceptionDetails } = await page.cdp("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true });
   if (exceptionDetails) {
     const ex = exceptionDetails.exception || {};
     throw new Error(exceptionDetails.text || ex.description || "Runtime.evaluate failed");
@@ -19,11 +19,11 @@ async function evaluate(ctx, expression) {
 }
 
 // Poll an in-page expression until it returns a truthy value or the timeout elapses.
-async function waitFor(ctx, expression, ms) {
+async function waitFor(page, expression, ms) {
   const end = Date.now() + ms;
   for (;;) {
     let v;
-    try { v = await evaluate(ctx, expression); } catch { v = undefined; }
+    try { v = await evaluate(page, expression); } catch { v = undefined; }
     if (v) return v;
     if (Date.now() > end) return v;
     await wait(500);
@@ -44,8 +44,8 @@ const clickButtonExpr = (scope, label) => `(() => {
   return true;
 })()`;
 
-async function readMe(ctx) {
-  return await evaluate(ctx, `(async () => {
+async function readMe(page) {
+  return await evaluate(page, `(async () => {
     const m = document.cookie.match(/JSESSIONID="?([^";]+)/);
     const r = await fetch('/voyager/api/me', { credentials: 'include', headers: { 'csrf-token': m ? m[1] : '', accept: 'application/vnd.linkedin.normalized+json+2.1' } });
     if (!r.ok) return { error: 'HTTP ' + r.status };
@@ -81,14 +81,13 @@ export async function createPost(ctx, args) {
 
   const { targetId } = await ctx.session.Target.createTarget({ url: "about:blank", background: true });
   try {
-    await ctx.session.use(targetId);
-    await ctx.session.Page.enable();
-    await ctx.session.Emulation.setFocusEmulationEnabled({ enabled: true });
-    await ctx.session.Page.navigate({ url: startUrl });
-    await ctx.session.use(targetId);
+    const page = await ctx.attachPage(targetId, { allowedOrigins: ["https://www.linkedin.com"] });
+    await page.cdp("Page.enable", {});
+    await page.cdp("Emulation.setFocusEmulationEnabled", { enabled: true });
+    await page.cdp("Page.navigate", { url: startUrl });
 
     // Wait for "Start a post"; a logged-out session redirects to a login / authwall page.
-    const ready = await waitFor(ctx, `(() => {
+    const ready = await waitFor(page, `(() => {
       if (/\\/(login|authwall|checkpoint|uas)\\b/.test(location.pathname) || document.querySelector('input[name=session_key]')) return 'logged-out';
       const b = [...document.querySelectorAll('button,[role=button]')].find((x) => (x.innerText || '').trim() === 'Start a post' && x.offsetParent !== null);
       return b ? 'ready' : '';
@@ -96,24 +95,23 @@ export async function createPost(ctx, args) {
     if (ready === "logged-out") return { posted: false, reason: "logged out" };
     if (ready !== "ready") return { posted: false, reason: "no 'Start a post' button (not logged in, or not an admin of this page?)" };
 
-    const me = await readMe(ctx);
+    const me = await readMe(page);
     if (isSelf && (!me || me.error)) return { posted: false, reason: `cannot resolve publicIdentifier: ${me && me.error}` };
     const fullName = me && !me.error ? `${me.first} ${me.last}`.trim() : "";
 
-    const baseline = isSelf ? [] : (await evaluate(ctx, `[...document.querySelectorAll('[data-urn]')].map((e) => e.getAttribute('data-urn'))`)) || [];
+    const baseline = isSelf ? [] : (await evaluate(page, `[...document.querySelectorAll('[data-urn]')].map((e) => e.getAttribute('data-urn'))`)) || [];
 
-    if (!(await evaluate(ctx, clickButtonExpr("document.body", "Start a post")))) return { posted: false, reason: "could not click 'Start a post'" };
+    if (!(await evaluate(page, clickButtonExpr("document.body", "Start a post")))) return { posted: false, reason: "could not click 'Start a post'" };
     await wait(1500);
-    await ctx.session.use(targetId);
 
     const scope = isSelf ? "document.body" : `(${COMPANY_DIALOG})`;
     const editorExpr = isSelf ? SELF_EDITOR : `(${COMPANY_DIALOG}) && (${COMPANY_DIALOG}).querySelector('.ql-editor')`;
-    const opened = await waitFor(ctx, `!!(${editorExpr})`, 20000);
+    const opened = await waitFor(page, `!!(${editorExpr})`, 20000);
     if (!opened) return { posted: false, reason: "composer did not open" };
 
     // Media first (company only): Add media -> set files -> Next back to the composer.
     if (media.length) {
-      const added = await evaluate(ctx, `(() => {
+      const added = await evaluate(page, `(() => {
         const d = ${COMPANY_DIALOG};
         const b = d && d.querySelector('button[aria-label="Add media"]');
         if (!b) return false;
@@ -122,27 +120,27 @@ export async function createPost(ctx, args) {
       })()`);
       if (!added) return { posted: false, reason: "no 'Add media' button in the composer" };
       await wait(2000);
-      await ctx.session.DOM.enable();
-      const { root } = await ctx.session.DOM.getDocument({ depth: -1, pierce: true });
-      const { nodeIds } = await ctx.session.DOM.querySelectorAll({ nodeId: root.nodeId, selector: "input[type=file]" });
+      await page.cdp("DOM.enable", {});
+      const { root } = await page.cdp("DOM.getDocument", { depth: -1, pierce: true });
+      const { nodeIds } = await page.cdp("DOM.querySelectorAll", { nodeId: root.nodeId, selector: "input[type=file]" });
       if (!nodeIds || !nodeIds.length) return { posted: false, reason: "no file input after 'Add media'" };
-      await ctx.session.DOM.setFileInputFiles({ nodeId: nodeIds[nodeIds.length - 1], files: media });
-      const nextClicked = await waitFor(ctx, clickButtonExpr("document.body", "Next"), 45000);
+      await page.cdp("DOM.setFileInputFiles", { nodeId: nodeIds[nodeIds.length - 1], files: media });
+      const nextClicked = await waitFor(page, clickButtonExpr("document.body", "Next"), 45000);
       if (!nextClicked) return { posted: false, reason: "'Next' never became available after upload" };
       await wait(1500);
-      const back = await waitFor(ctx, `!!(${COMPANY_DIALOG})`, 15000);
+      const back = await waitFor(page, `!!(${COMPANY_DIALOG})`, 15000);
       if (!back) return { posted: false, reason: "composer did not return after 'Next'" };
     }
 
     // Text: focus the editor, then ONE insertText with the whole body.
-    const focused = await evaluate(ctx, `(() => { const e = ${editorExpr}; if (!e) return false; e.focus(); return true; })()`);
+    const focused = await evaluate(page, `(() => { const e = ${editorExpr}; if (!e) return false; e.focus(); return true; })()`);
     if (!focused) return { posted: false, reason: "editor missing before typing" };
     await wait(300);
-    await ctx.session.Input.insertText({ text });
+    await page.cdp("Input.insertText", { text });
     await wait(1000);
 
     // Pre-post assertions. Abort with a reason instead of posting when any fails.
-    const st = JSON.parse((await evaluate(ctx, `JSON.stringify((() => {
+    const st = JSON.parse((await evaluate(page, `JSON.stringify((() => {
       const root = ${scope};
       const ed = ${editorExpr};
       return {
@@ -163,22 +161,21 @@ export async function createPost(ctx, args) {
     }
     if (media.length && !st.preview) return { posted: false, reason: "media not attached (no img[alt='Image preview'])" };
 
-    const clicked = await evaluate(ctx, clickButtonExpr(scope, "Post"));
+    const clicked = await evaluate(page, clickButtonExpr(scope, "Post"));
     if (!clicked) return { posted: false, reason: "no enabled 'Post' button" };
     await wait(5000);
-    const stillOpen = await evaluate(ctx, `!!(${editorExpr})`);
+    const stillOpen = await evaluate(page, `!!(${editorExpr})`);
     if (stillOpen) return { posted: false, reason: "composer still open after Post" };
 
     // Locate the new post and build the permalink.
     for (let attempt = 0; attempt < 6; attempt++) {
       if (isSelf) {
-        await ctx.session.Page.navigate({ url: `https://www.linkedin.com/in/${me.publicIdentifier}/recent-activity/all/` });
+        await page.cdp("Page.navigate", { url: `https://www.linkedin.com/in/${me.publicIdentifier}/recent-activity/all/` });
       } else {
-        await ctx.session.Page.navigate({ url: listUrl });
+        await page.cdp("Page.navigate", { url: listUrl });
       }
-      await ctx.session.use(targetId);
       await wait(8000);
-      const urn = await evaluate(ctx, isSelf
+      const urn = await evaluate(page, isSelf
         ? `(() => {
             const html = document.documentElement.outerHTML;
             const safe = ${JSON.stringify(needle)}.split(/[&<>"'\`]/)[0];

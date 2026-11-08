@@ -73,3 +73,5 @@ who can delete repos). The REST `PATCH /orgs/{org}` silently ignores
 does not apply them, so verify by re-reading the org after a PATCH, not by trusting the response.
 The 2FA requirement toggle lives at a different page, `/organizations/<org>/settings/security`,
 not on the profile page. Creating a private-only repo on a Free-plan org via REST returns 422.
+
+Ported to the Page API (see ../PORTING.md). live: unverified (logged-in).

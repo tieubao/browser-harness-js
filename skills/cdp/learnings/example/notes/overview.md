@@ -17,3 +17,5 @@ await learnings("example", "getOutline", { max: 5 })
 When the agent runs a task repeatedly here, distill the recipe into a tool
 rather than re-deriving selectors each call — that is the entire point of the
 registry.
+
+Ported to the Page API (see ../PORTING.md). live: verified.

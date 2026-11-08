@@ -240,4 +240,4 @@ Env vars: `CDP_REPL_PORT` (default `9876`; the extension worker hardcodes 9876),
 
 ### Per-site learnings
 
-`learnings/<domain>/` holds per-site recipes (`manifest.json`, `notes/overview.md`, `tools/*.mjs`) that call the old globals above through `learnings(domain, tool, args)`. Read [learnings/README.md](learnings/README.md) before adding one. They keep working unchanged while the compatibility layer is registered.
+`learnings/<domain>/` holds per-site recipes (`manifest.json`, `notes/overview.md`, `tools/*.mjs`) that call the old globals above through `learnings(domain, tool, args)`. Read [learnings/README.md](learnings/README.md) before adding one. Tools receive the Page API on their `ctx` (`ctx.page`, `ctx.findPage(match)`, `ctx.attachPage(targetId)`); the porting contract is [learnings/PORTING.md](learnings/PORTING.md). Unported tools keep working unchanged while the compatibility layer is registered.

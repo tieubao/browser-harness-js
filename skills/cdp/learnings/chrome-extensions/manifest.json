@@ -4,7 +4,7 @@
   "notes": ["notes/overview.md"],
   "nodeTools": {
     "loadUnpacked": {
-      "description": "Load an unpacked extension directory without the native file picker, via the browser-level CDP method Extensions.loadUnpacked (no page session attached). Restores the previously active session afterward.",
+      "description": "Load an unpacked extension directory without the native file picker, via the browser-level CDP method Extensions.loadUnpacked (no page session attached). Leaves the REPL active session untouched.",
       "path": "tools/extensions.mjs",
       "callable": "loadUnpacked",
       "args": {

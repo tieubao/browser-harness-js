@@ -61,3 +61,5 @@ and ask; do not reach for an OCR model, a solver service, or a cached answer.
 ## Provenance
 
 2026-10-19 LLC franchise tax lookup, driven live on the real page, then frozen here.
+
+Ported to the Page API (see ../PORTING.md). live: unverified (logged-in).

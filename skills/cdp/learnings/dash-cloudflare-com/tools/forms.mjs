@@ -16,16 +16,16 @@
 // The tab is foreground: real mouse input on a throttled background tab is unreliable.
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
-async function evaluate(ctx, expression) {
-  const { result, exceptionDetails } = await ctx.session.Runtime.evaluate({ expression, returnByValue: true, awaitPromise: true });
+async function evaluate(page, expression) {
+  const { result, exceptionDetails } = await page.cdp("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true });
   if (exceptionDetails) throw new Error(exceptionDetails.text || (exceptionDetails.exception || {}).description || "Runtime.evaluate failed");
   return result ? result.value : undefined;
 }
 
-async function realClick(ctx, x, y) {
-  await ctx.session.Input.dispatchMouseEvent({ type: "mouseMoved", x, y });
-  await ctx.session.Input.dispatchMouseEvent({ type: "mousePressed", x, y, button: "left", clickCount: 1 });
-  await ctx.session.Input.dispatchMouseEvent({ type: "mouseReleased", x, y, button: "left", clickCount: 1 });
+async function realClick(page, x, y) {
+  await page.cdp("Input.dispatchMouseEvent", { type: "mouseMoved", x, y });
+  await page.cdp("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", clickCount: 1 });
+  await page.cdp("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", clickCount: 1 });
 }
 
 // In-page helpers, prepended to every evaluated expression. find() returns the first VISIBLE
@@ -36,9 +36,9 @@ const txt = (e) => (((e.innerText || e.getAttribute("aria-label") || e.value || 
 const find = (sel, re, root) => [...(root || document).querySelectorAll(sel)].find((e) => vis(e) && re.test(txt(e)));
 const rectOf = (e) => { if (!e) return null; e.scrollIntoView({ block: "center" }); const r = e.getBoundingClientRect(); return { x: r.x, y: r.y, width: r.width, height: r.height }; };
 `;
-// Module-scope ctx of the call in flight (set by openTab); every helper below reads it.
-let currentCtx;
-const inPage = (body) => evaluate(currentCtx, `(() => { ${PRELUDE} ${body} })()`);
+// Module-scope Page of the call in flight (set by openTab); every helper below reads it.
+let currentPage;
+const inPage = (body) => evaluate(currentPage, `(() => { ${PRELUDE} ${body} })()`);
 
 const reOf = (src) => `new RegExp(${JSON.stringify(src)}, "i")`;
 
@@ -61,7 +61,7 @@ async function waitRect(sel, reSrc, { rootExpr, timeout = 15000 } = {}) {
 async function clickReal(label, sel, reSrc, opts) {
   const r = await waitRect(sel, reSrc, opts);
   if (!r) throw new Error(`not found: ${label}`);
-  await realClick(currentCtx, r.x + r.width / 2, r.y + r.height / 2);
+  await realClick(currentPage, r.x + r.width / 2, r.y + r.height / 2);
   return r;
 }
 
@@ -96,11 +96,10 @@ async function blockedReason() {
 }
 
 async function openTab(ctx, url) {
-  currentCtx = ctx;
   const { targetId } = await ctx.session.Target.createTarget({ url: "about:blank", background: false });
-  await ctx.session.use(targetId);
-  await ctx.session.Page.enable();
-  await ctx.session.Page.navigate({ url });
+  currentPage = await ctx.attachPage(targetId, { allowedOrigins: ["https://dash.cloudflare.com"] });
+  await currentPage.cdp("Page.enable", {});
+  await currentPage.cdp("Page.navigate", { url });
   await wait(4000);
   await pollUntil(`return document.readyState === "complete";`, 15000);
   return targetId;
@@ -146,23 +145,23 @@ export async function addTurnstileWidget(ctx, args) {
   return withTab(ctx, `https://dash.cloudflare.com/${accountId}/turnstile`, async () => {
     // The list page's button lands on /turnstile/add. Fall back to the URL if the click misses.
     const r = await waitRect("a, button", "^add widget manually$", { timeout: 15000 });
-    if (r) await realClick(ctx, r.x + r.width / 2, r.y + r.height / 2);
+    if (r) await realClick(currentPage, r.x + r.width / 2, r.y + r.height / 2);
     if (!(await pollUntil(`return /\\/turnstile\\/add/.test(location.pathname);`, 8000))) {
-      await ctx.session.Page.navigate({ url: `https://dash.cloudflare.com/${accountId}/turnstile/add` });
+      await currentPage.cdp("Page.navigate", { url: `https://dash.cloudflare.com/${accountId}/turnstile/add` });
     }
 
     await focusEl("widget name input", `document.querySelector('input[name="name"]')`);
-    await ctx.session.Input.insertText({ text: name });
+    await currentPage.cdp("Input.insertText", { text: name });
 
     const added = [];
     for (const host of hostnames) {
       const before = Number(await inPage(`return ${CONFIGURED} || 0;`)) || 0;
       await focusEl("hostname input", `[...document.querySelectorAll("input")].find((i) => vis(i) && /hostname/i.test(i.placeholder || ""))`);
-      await ctx.session.Input.insertText({ text: host });
+      await currentPage.cdp("Input.insertText", { text: host });
       // The suggestion reads: Add “<host>” as a custom hostname. el.click() and Enter do NOT add it.
       const opt = await waitRect('[role="option"]', `custom hostname`, { timeout: 8000 });
       if (!opt) throw new Error(`hostname option did not appear for ${host}`);
-      await realClick(ctx, opt.x + opt.width / 2, opt.y + opt.height / 2);
+      await realClick(currentPage, opt.x + opt.width / 2, opt.y + opt.height / 2);
       const grew = await pollUntil(`return Number(${CONFIGURED} || 0) > ${before};`, 6000);
       if (!grew) return { stop: "hostname-not-added", hostname: host, added };
       added.push(host);
@@ -199,7 +198,7 @@ export async function addGatewayProviderKey(ctx, args) {
   const provRe = provider.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   return withTab(ctx, `https://dash.cloudflare.com/${accountId}/ai/ai-gateway/gateways/${gateway}/integrations`, async () => {
     const tab = await findRect('[role="tab"], button, a', "^provider keys$");
-    if (tab) await realClick(ctx, tab.x + tab.width / 2, tab.y + tab.height / 2);
+    if (tab) await realClick(currentPage, tab.x + tab.width / 2, tab.y + tab.height / 2);
     await wait(1000);
 
     // Row for the provider: the nearest ancestor of an "Add" button that mentions the provider.
@@ -210,7 +209,7 @@ export async function addGatewayProviderKey(ctx, args) {
     `;
     const rowAdd = await inPage(`${addRow} const x = pick([...document.querySelectorAll("button")].filter((b) => vis(b) && /^add$/i.test(txt(b)))); return x ? rectOf(x.b) : null;`);
     if (rowAdd) {
-      await realClick(ctx, rowAdd.x + rowAdd.width / 2, rowAdd.y + rowAdd.height / 2);
+      await realClick(currentPage, rowAdd.x + rowAdd.width / 2, rowAdd.y + rowAdd.height / 2);
     } else {
       // Provider already has a key: open its Actions menu, then "Add another key".
       await clickReal(`Actions for ${provider}`, "button", `^actions for ${provRe}`);
@@ -219,9 +218,9 @@ export async function addGatewayProviderKey(ctx, args) {
 
     const dialog = `document.querySelector('[role="dialog"]')`;
     await focusEl("key password input", `${dialog} && ${dialog}.querySelector('input[type="password"]')`);
-    await ctx.session.Input.insertText({ text: secret });
+    await currentPage.cdp("Input.insertText", { text: secret });
     await focusEl("alias input", `${dialog} && [...${dialog}.querySelectorAll("input")].find((i) => vis(i) && i.type !== "password" && (i.type === "text" || !i.type))`);
-    await ctx.session.Input.insertText({ text: alias });
+    await currentPage.cdp("Input.insertText", { text: alias });
 
     await clickReal("Add Key button", "button", "^add key$", { rootExpr: dialog });
 
@@ -269,7 +268,7 @@ export async function createGatewayToken(ctx, args) {
         const byLabel = lab && (lab.control || (lab.htmlFor && document.getElementById(lab.htmlFor)) || lab.querySelector("input"));
         return byLabel || [...document.querySelectorAll("input")].find((i) => vis(i) && /token name/i.test((i.placeholder || "") + (i.getAttribute("aria-label") || "")));
       })()`);
-    await ctx.session.Input.insertText({ text: name });
+    await currentPage.cdp("Input.insertText", { text: name });
 
     await clickReal("Create API Token button", "button", "^create api token$");
 

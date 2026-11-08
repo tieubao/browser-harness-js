@@ -29,3 +29,5 @@ The REPL daemon imports a learning module once and caches it for its lifetime. `
 
 - No download through the browser. The member API route in `annas-fetch` is the download path.
 - No pagination: the first page of results has been enough for known-item lookups.
+
+Ported to the Page API (see ../PORTING.md). live: unverified (never driven through a browser).

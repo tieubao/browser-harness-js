@@ -32,8 +32,8 @@ function matches(url, domain) {
   } catch { return false; }
 }
 
-async function evaluate(ctx, expression) {
-  const { result, exceptionDetails } = await ctx.session.Runtime.evaluate({ expression, returnByValue: true, awaitPromise: true });
+async function evaluate(page, expression) {
+  const { result, exceptionDetails } = await page.cdp("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true });
   if (exceptionDetails) {
     const ex = exceptionDetails.exception || {};
     throw new Error(exceptionDetails.text || ex.description || "Runtime.evaluate failed");
@@ -41,17 +41,17 @@ async function evaluate(ctx, expression) {
   return result ? result.value : undefined;
 }
 
-async function bringToFront(ctx) {
-  try { await ctx.session.Page.bringToFront(); } catch { /* not fatal, retried by the caller */ }
+async function bringToFront(page) {
+  try { await page.cdp("Page.bringToFront", {}); } catch { /* not fatal, retried by the caller */ }
 }
 
 // Focus + selectAll + insertText via execCommand, retried with bringToFront each time until
 // the box text actually matches. execCommand silently returns false on a background tab, so
 // the only reliable signal is reading the box back.
-async function setTextbox(ctx, selector, text) {
+async function setTextbox(page, selector, text) {
   for (let attempt = 0; attempt < 8; attempt++) {
-    await bringToFront(ctx);
-    const ok = await evaluate(ctx, `(() => {
+    await bringToFront(page);
+    const ok = await evaluate(page, `(() => {
       const box = document.querySelector(${JSON.stringify(selector)});
       if (!box) return false;
       box.focus();
@@ -65,8 +65,8 @@ async function setTextbox(ctx, selector, text) {
   return false;
 }
 
-async function setPlaylist(ctx, name) {
-  const opened = await evaluate(ctx, `(() => {
+async function setPlaylist(page, name) {
+  const opened = await evaluate(page, `(() => {
     const trigger = document.querySelector("ytcp-video-metadata-playlists ytcp-dropdown-trigger");
     if (!trigger) return false;
     trigger.click();
@@ -75,7 +75,7 @@ async function setPlaylist(ctx, name) {
   if (!opened) return { done: false, reason: "no playlist dropdown trigger" };
   await wait(1200);
 
-  const picked = await evaluate(ctx, `(() => {
+  const picked = await evaluate(page, `(() => {
     const boxes = [...document.querySelectorAll("ytcp-video-metadata-playlists ytcp-checkbox-lit")];
     const row = boxes.find((cb) => {
       let node = cb;
@@ -95,7 +95,7 @@ async function setPlaylist(ctx, name) {
   if (!picked || !picked.found) return { done: false, reason: "no playlist row matched " + name, picked };
   await wait(400);
 
-  const done = await evaluate(ctx, `(() => {
+  const done = await evaluate(page, `(() => {
     const btns = [...document.querySelectorAll("ytcp-video-metadata-playlists ytcp-button")];
     const btn = btns.find((b) => { const r = b.getBoundingClientRect(); return r.width > 0 && r.height > 0 && (b.textContent || "").trim().includes("Done"); });
     if (!btn) return false;
@@ -106,10 +106,10 @@ async function setPlaylist(ctx, name) {
 }
 
 export async function status(ctx) {
-  const tabs = await ctx.listPageTargets();
+  const tabs = await ctx.browser.tabs();
   const tab = tabs.find((t) => DOMAINS.some((d) => matches(t.url, d)));
   if (!tab) return { state: "no-tab", hint: "no open tab matches " + DOMAINS.join(", ") };
-  await ctx.session.use(tab.targetId);
+  await ctx.attachPage(tab.targetId);
   return { state: "tab", url: tab.url };
 }
 
@@ -136,27 +136,27 @@ export async function upload(ctx, args = {}) {
   const url = `https://studio.youtube.com/channel/${channelId}/videos/upload?d=ud&authuser=${authuser}`;
   const { targetId } = await ctx.session.Target.createTarget({ url, background: false });
   try {
-    await ctx.session.use(targetId);
+    const page = await ctx.attachPage(targetId, { allowedOrigins: [new URL(url).origin] });
     await wait(6000);
-    await bringToFront(ctx);
+    await bringToFront(page);
 
-    await ctx.session.DOM.enable();
-    const { root } = await ctx.session.DOM.getDocument({ depth: -1 });
-    const { nodeId } = await ctx.session.DOM.querySelector({ nodeId: root.nodeId, selector: "input[type=file][name=Filedata]" });
+    await page.cdp("DOM.enable", {});
+    const { root } = await page.cdp("DOM.getDocument", { depth: -1 });
+    const { nodeId } = await page.cdp("DOM.querySelector", { nodeId: root.nodeId, selector: "input[type=file][name=Filedata]" });
     if (!nodeId) return { stop: "no-file-input", hint: "input[type=file][name=Filedata] not found; upload dialog may not have opened" };
-    await ctx.session.DOM.setFileInputFiles({ nodeId, files: [file] });
+    await page.cdp("DOM.setFileInputFiles", { nodeId, files: [file] });
     await wait(3000);
 
-    const titleOk = await setTextbox(ctx, "#title-textarea #textbox", title);
+    const titleOk = await setTextbox(page, "#title-textarea #textbox", title);
     if (!titleOk) return { stop: "title-not-set" };
 
     if (description) {
-      const descOk = await setTextbox(ctx, "#description-textarea #textbox", description);
+      const descOk = await setTextbox(page, "#description-textarea #textbox", description);
       if (!descOk) return { stop: "description-not-set" };
     }
 
     const audienceName = madeForKids ? "VIDEO_MADE_FOR_KIDS_MFK" : "VIDEO_MADE_FOR_KIDS_NOT_MFK";
-    const audienceSet = await evaluate(ctx, `(() => {
+    const audienceSet = await evaluate(page, `(() => {
       const el = document.querySelector("tp-yt-paper-radio-button[name=${audienceName}]");
       if (!el) return false;
       el.click();
@@ -166,13 +166,13 @@ export async function upload(ctx, args = {}) {
     await wait(500);
 
     if (playlist) {
-      const pl = await setPlaylist(ctx, playlist);
+      const pl = await setPlaylist(page, playlist);
       if (!pl.done) return { stop: "playlist-not-set", detail: pl };
     }
 
     for (let i = 0; i < 3; i++) {
       await wait(600);
-      const clicked = await evaluate(ctx, `(() => {
+      const clicked = await evaluate(page, `(() => {
         const b = document.querySelector("ytcp-uploads-dialog #next-button");
         if (!b || b.disabled) return false;
         b.click();
@@ -182,7 +182,7 @@ export async function upload(ctx, args = {}) {
     }
 
     await wait(800);
-    const visClicked = await evaluate(ctx, `(() => {
+    const visClicked = await evaluate(page, `(() => {
       const el = document.querySelector("tp-yt-paper-radio-button[name=${visibility}]");
       if (!el) return false;
       el.click();
@@ -191,7 +191,7 @@ export async function upload(ctx, args = {}) {
     if (!visClicked) return { stop: "visibility-not-set" };
     await wait(500);
 
-    const id = await evaluate(ctx, `(() => {
+    const id = await evaluate(page, `(() => {
       const a = document.querySelector('ytcp-uploads-dialog a[href*="youtu.be/"]');
       if (!a) return null;
       const m = a.href.match(/youtu\\.be\\/([^?&]+)/);
@@ -203,7 +203,7 @@ export async function upload(ctx, args = {}) {
     let lastLabel = "";
     let stalled = false;
     while (Date.now() < deadline) {
-      lastLabel = (await evaluate(ctx, `(() => {
+      lastLabel = (await evaluate(page, `(() => {
         const els = document.querySelectorAll("ytcp-uploads-dialog .progress-label");
         const el = els[els.length - 1];
         return el ? el.textContent.trim() : "";
@@ -219,7 +219,7 @@ export async function upload(ctx, args = {}) {
       return { stop: "processing-timeout", id, lastLabel };
     }
 
-    const saved = await evaluate(ctx, `(() => {
+    const saved = await evaluate(page, `(() => {
       const b = document.querySelector("ytcp-uploads-dialog #done-button");
       if (!b) return false;
       b.click();
@@ -228,10 +228,10 @@ export async function upload(ctx, args = {}) {
     if (!saved) return { stop: "no-done-button", id };
     await wait(1500);
 
-    const stillChecking = await evaluate(ctx, `(() => (document.body ? document.body.textContent : "").includes("still checking your content"))()`);
+    const stillChecking = await evaluate(page, `(() => (document.body ? document.body.textContent : "").includes("still checking your content"))()`);
     if (stillChecking) {
       if (!confirmPublishAnyway) return { stop: "still-checking-content", id, hint: "pass confirmPublishAnyway:true to click Publish anyway" };
-      await evaluate(ctx, `(() => {
+      await evaluate(page, `(() => {
         const btns = [...document.querySelectorAll("button, ytcp-button")];
         const b = btns.find((x) => (x.textContent || "").includes("Publish anyway"));
         if (!b) return false;
@@ -255,11 +255,11 @@ export async function setLanguage(ctx, args = {}) {
   const url = `https://studio.youtube.com/video/${id}/edit?authuser=${authuser}`;
   const { targetId } = await ctx.session.Target.createTarget({ url, background: false });
   try {
-    await ctx.session.use(targetId);
+    const page = await ctx.attachPage(targetId, { allowedOrigins: [new URL(url).origin] });
     await wait(6000);
-    await bringToFront(ctx);
+    await bringToFront(page);
 
-    await evaluate(ctx, `(() => {
+    await evaluate(page, `(() => {
       const els = [...document.querySelectorAll("*")];
       const el = els.find((e) => (e.textContent || "").trim() === "Show more" && e.offsetParent);
       if (el) el.click();
@@ -267,10 +267,10 @@ export async function setLanguage(ctx, args = {}) {
     })()`);
     await wait(800);
 
-    const inputCount = (await evaluate(ctx, `(() => document.querySelectorAll("ytcp-form-language-input").length)()`)) || 0;
+    const inputCount = (await evaluate(page, `(() => document.querySelectorAll("ytcp-form-language-input").length)()`)) || 0;
     let applied = 0;
     for (let i = 0; i < inputCount; i++) {
-      const visible = await evaluate(ctx, `(() => {
+      const visible = await evaluate(page, `(() => {
         const el = [...document.querySelectorAll("ytcp-form-language-input")][${i}];
         if (!el) return false;
         const r = el.getBoundingClientRect();
@@ -278,7 +278,7 @@ export async function setLanguage(ctx, args = {}) {
       })()`);
       if (!visible) continue;
 
-      const opened = await evaluate(ctx, `(() => {
+      const opened = await evaluate(page, `(() => {
         const el = [...document.querySelectorAll("ytcp-form-language-input")][${i}];
         const trigger = el.querySelector("ytcp-dropdown-trigger") || el;
         trigger.click();
@@ -287,7 +287,7 @@ export async function setLanguage(ctx, args = {}) {
       if (!opened) continue;
       await wait(2500);
 
-      const picked = await evaluate(ctx, `(() => {
+      const picked = await evaluate(page, `(() => {
         const boxes = [...document.querySelectorAll("tp-yt-paper-listbox")];
         const box = boxes.find((b) => b.children.length > 900);
         if (!box) return false;
@@ -301,7 +301,7 @@ export async function setLanguage(ctx, args = {}) {
     }
     if (!applied) return { stop: "no-language-input-set" };
 
-    const saved = await evaluate(ctx, `(() => {
+    const saved = await evaluate(page, `(() => {
       const b = document.querySelector("ytcp-button#save");
       if (!b) return false;
       b.click();
@@ -312,11 +312,10 @@ export async function setLanguage(ctx, args = {}) {
 
     const verifyUrl = `https://studio.youtube.com/video/${id}/translations?authuser=${authuser}`;
     const { targetId: verifyTargetId } = await ctx.session.Target.createTarget({ url: verifyUrl, background: true });
-    await ctx.session.use(verifyTargetId);
+    const verifyPage = await ctx.attachPage(verifyTargetId, { allowedOrigins: [new URL(verifyUrl).origin] });
     await wait(2500);
-    const text = (await evaluate(ctx, `(() => document.body ? document.body.textContent : "")()`)) || "";
+    const text = (await evaluate(verifyPage, `(() => document.body ? document.body.textContent : "")()`)) || "";
     try { await ctx.session.Target.closeTarget({ targetId: verifyTargetId }); } catch { /* already gone */ }
-    await ctx.session.use(targetId);
 
     const verified = new RegExp(`Video language:\\s*${language}`, "i").test(text);
     return { applied, verified };
@@ -331,9 +330,9 @@ export async function list(ctx, args = {}) {
   const url = `https://studio.youtube.com/channel/${channelId}/videos/upload?authuser=${authuser}`;
   const { targetId } = await ctx.session.Target.createTarget({ url, background: true });
   try {
-    await ctx.session.use(targetId);
+    const page = await ctx.attachPage(targetId, { allowedOrigins: [new URL(url).origin] });
     await wait(6000);
-    const rows = await evaluate(ctx, `(() => {
+    const rows = await evaluate(page, `(() => {
       const rows = [...document.querySelectorAll("ytcp-video-row")].slice(0, ${limit});
       return rows.map((row) => {
         const a = row.querySelector('a[href*="/video/"]');
@@ -366,11 +365,11 @@ export async function remove(ctx, args = {}) {
   const url = `https://studio.youtube.com/video/${id}/edit?authuser=${authuser}`;
   const { targetId } = await ctx.session.Target.createTarget({ url, background: false });
   try {
-    await ctx.session.use(targetId);
+    const page = await ctx.attachPage(targetId, { allowedOrigins: [new URL(url).origin] });
     await wait(6000);
-    await bringToFront(ctx);
+    await bringToFront(page);
 
-    const opened = await evaluate(ctx, `(() => {
+    const opened = await evaluate(page, `(() => {
       const b = document.querySelector('ytcp-icon-button[aria-label="Options"]');
       if (!b) return false;
       b.click();
@@ -379,7 +378,7 @@ export async function remove(ctx, args = {}) {
     if (!opened) return { stop: "no-options-button" };
     await wait(800);
 
-    const clickedDelete = await evaluate(ctx, `(() => {
+    const clickedDelete = await evaluate(page, `(() => {
       const els = [...document.querySelectorAll("*")];
       const el = els.find((e) => e.children.length === 0 && (e.textContent || "").trim() === "Delete");
       if (!el) return false;
@@ -389,13 +388,13 @@ export async function remove(ctx, args = {}) {
     if (!clickedDelete) return { stop: "no-delete-item" };
     await wait(1000);
 
-    const dialogText = (await evaluate(ctx, `(() => document.body ? document.body.textContent : "")()`)) || "";
+    const dialogText = (await evaluate(page, `(() => document.body ? document.body.textContent : "")()`)) || "";
     if (!/Permanently delete this video/i.test(dialogText)) return { stop: "no-delete-dialog" };
     if (!dialogText.includes(expectDuration)) {
       return { stop: "duration-mismatch", hint: "dialog text does not contain expectDuration, refusing to delete", dialogText: dialogText.slice(0, 400) };
     }
 
-    const ticked = await evaluate(ctx, `(() => {
+    const ticked = await evaluate(page, `(() => {
       const c = document.querySelector("ytcp-checkbox-lit #checkbox");
       if (!c) return false;
       c.click();
@@ -404,7 +403,7 @@ export async function remove(ctx, args = {}) {
     if (!ticked) return { stop: "no-confirm-checkbox" };
     await wait(500);
 
-    const deleted = await evaluate(ctx, `(() => {
+    const deleted = await evaluate(page, `(() => {
       const els = [...document.querySelectorAll("*")];
       const el = els.find((e) => e.children.length === 0 && (e.textContent || "").trim() === "Delete forever");
       if (!el) return false;

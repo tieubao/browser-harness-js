@@ -66,3 +66,5 @@ hand through `browser-harness-js` with an explicit `wsUrl`.
 Tool status: the reauth-poll and row-read recipe for `listDelegation` was proven live.
 `deleteDelegation` encodes the recipe observed for the Delete link and confirm dialog but has
 not yet run end to end as a tool; the first real revoke is its proof.
+
+Ported to the Page API (see ../PORTING.md). live: unverified (logged-in).

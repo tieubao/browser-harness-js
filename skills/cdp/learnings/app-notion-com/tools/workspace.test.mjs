@@ -5,16 +5,16 @@ import assert from "node:assert/strict";
 import { saveTransaction, listSpaces, getRecords, unwrap } from "./workspace.mjs";
 import { summarizeHistory, pagePropertyHistory } from "./pages.mjs";
 
-// Fake ctx: one app.notion.com tab; Runtime.evaluate records the expression and returns `reply`.
+// Fake ctx: one app.notion.com tab; the attached Page's Runtime.evaluate records the expression and returns `reply`.
 function fakeCtx(reply = {}) {
   const sent = [];
+  const page = { cdp: async (method, { expression }) => { sent.push(expression); return { result: { value: reply } }; } };
   const ctx = {
     sent,
-    session: {
-      Target: { getTargets: async () => ({ targetInfos: [{ type: "page", targetId: "T1", url: "https://app.notion.com/x" }] }) },
-      use: async () => {},
-      Runtime: { evaluate: async ({ expression }) => { sent.push(expression); return { result: { value: reply } }; } },
-    },
+    page,
+    requirePage: () => page,
+    browser: { tabs: async () => [{ type: "page", targetId: "T1", url: "https://app.notion.com/x" }] },
+    attachPage: async () => page,
   };
   return ctx;
 }

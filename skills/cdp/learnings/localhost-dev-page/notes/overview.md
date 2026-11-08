@@ -82,3 +82,5 @@ false}` to `{label: "sound 34, noise: worklet", disabled: true}`, plus the page'
 advancing (3702 → 3810 over 2.5s) confirming the page was actually live, not just painted. Always
 read `before` and `after` and diff them; a same-before-and-after result means the click did not
 land, whatever the click call itself returned.
+
+Ported to the Page API (see ../PORTING.md). live: verified.

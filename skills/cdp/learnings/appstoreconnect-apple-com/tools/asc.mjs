@@ -12,10 +12,12 @@
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 const FETCH_TIMEOUT_MS = 20000;
-let tabId;
+const ORIGIN = "https://appstoreconnect.apple.com";
+let tabId; // the dedicated tab's id survives across calls; a Page never does, ensureTab re-attaches it
+const current = new WeakMap(); // the Page ensureTab attached for this ctx (one ctx per tool call)
 
 async function evaluate(ctx, expression, { awaitPromise = true, timeout = 25000 } = {}) {
-  const { result, exceptionDetails } = await ctx.session.Runtime.evaluate({
+  const { result, exceptionDetails } = await current.get(ctx).cdp("Runtime.evaluate", {
     expression, returnByValue: true, userGesture: true, awaitPromise, timeout,
   });
   if (exceptionDetails) {
@@ -27,12 +29,12 @@ async function evaluate(ctx, expression, { awaitPromise = true, timeout = 25000 
 
 async function ensureTab(ctx) {
   if (tabId) {
-    const alive = (await ctx.listPageTargets()).some((t) => t.targetId === tabId);
-    if (alive) { await ctx.session.use(tabId); return tabId; }
+    const alive = (await ctx.browser.tabs()).some((t) => t.targetId === tabId);
+    if (alive) { current.set(ctx, await ctx.attachPage(tabId, { allowedOrigins: [ORIGIN] })); return tabId; }
   }
   const { targetId } = await ctx.session.Target.createTarget({ url: "https://appstoreconnect.apple.com/apps", background: true });
   tabId = targetId;
-  await ctx.session.use(tabId);
+  current.set(ctx, await ctx.attachPage(tabId, { allowedOrigins: [ORIGIN] }));
   await wait(6000);
   return tabId;
 }
@@ -124,7 +126,7 @@ export async function clearFutureTerritories(ctx, args) {
   const { id } = args || {};
   if (!id) throw new Error("clearFutureTerritories: id is required");
   if (!(await isSignedIn(ctx))) return { stop: "not-signed-in" };
-  await ctx.session.Page.navigate({ url: `https://appstoreconnect.apple.com/apps/${id}/distribution/pricing` });
+  await current.get(ctx).cdp("Page.navigate", { url: `https://appstoreconnect.apple.com/apps/${id}/distribution/pricing` });
   const ready = `location.href.includes('/${id}/')&&[...document.querySelectorAll('button')].some(x=>(x.innerText||'').trim()==='Manage')`;
   for (let i = 0; i < 30; i++) {
     if (await evaluate(ctx, `(${ready})`, { awaitPromise: false, timeout: 8000 })) break;
@@ -184,7 +186,7 @@ export async function removeApp(ctx, args) {
 // Read the Business page for agreement rows and tax-form rows. Read-only.
 export async function agreements(ctx, _args) {
   if (!(await isSignedIn(ctx))) return { stop: "not-signed-in" };
-  await ctx.session.Page.navigate({ url: "https://appstoreconnect.apple.com/business" });
+  await current.get(ctx).cdp("Page.navigate", { url: "https://appstoreconnect.apple.com/business" });
   await wait(12000);
   const expr = `(()=>{
     const t=(document.querySelector('main')||document.body).innerText.replace(/\\n+/g,' | ');

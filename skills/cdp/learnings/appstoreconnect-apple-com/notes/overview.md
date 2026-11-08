@@ -70,3 +70,5 @@ one-off scripts before the recipe held), and an agreements/tax-forms read. Groun
 port: `apps-page.js`, `verify-page.js`, `why-page.js`, `fix3.js` + `flag.js` (the removal fix),
 `pod5.js` (the network capture that found `CANNOT_REMOVE_WITH_APP_STORE_AVAILABILITY`), `agr.js`,
 `pod-page.js` (the last removal variant), all in the originating session's scratchpad.
+
+Ported to the Page API (see ../PORTING.md). live: unverified (logged-in).

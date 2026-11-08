@@ -51,3 +51,5 @@ A DOM click on the composer's enabled "Post" button (exact text) worked for both
 - Call `session.use(targetId)` again after every `Page.navigate`; the harness session can re-bind to another target.
 - The feed list can lag a few seconds; the tool reloads and retries before giving up with `{posted: true, url: null}`.
 - Long bodies may render truncated ("see more") in the list, so the match uses only the first line's first 40 characters.
+
+Ported to the Page API (see ../PORTING.md). live: unverified (logged-in).

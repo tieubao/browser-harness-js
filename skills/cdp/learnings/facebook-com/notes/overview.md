@@ -56,3 +56,5 @@ until the count is unchanged for ~10 rounds (or a max-rounds bound).
 - **Logged out:** `input[name=email]` is present; the tool returns
   `{ids: [], reason: "logged out"}`. Zero reels returns `{ids: [], reason}` too.
 - **Close the tab** in `finally` so the user's tab count is unchanged.
+
+Ported to the Page API (see ../PORTING.md). live: unverified (logged-in).

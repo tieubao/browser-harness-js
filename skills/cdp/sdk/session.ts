@@ -148,6 +148,8 @@ export class Session implements Transport {
   private nextId = 1;
   private pending = new Map<number, Pending>();
   private activeSessionId: string | undefined;
+  /** sessionId -> targetId for sessions attached through use(), so the active target is recoverable. */
+  private readonly sessionTargets = new Map<string, string>();
   private eventListeners: Array<(method: string, params: unknown, sessionId?: string) => void> = [];
   private callObserver?: CdpCallObserver;
   private connectPromise?: Promise<void>;
@@ -175,6 +177,7 @@ export class Session implements Transport {
   private connectionChanged(): void {
     this.connectionGeneration++;
     this.activeSessionId = undefined;
+    this.sessionTargets.clear();
     for (const fn of this.eventListeners) {
       try { fn('Session.connectionChanged', { generation: this.connectionGeneration }); } catch { /* isolate listeners */ }
     }
@@ -524,6 +527,8 @@ export class Session implements Transport {
   async use(targetId: string): Promise<string> {
     const r = await this._call('Target.attachToTarget', { targetId, flatten: true }) as { sessionId: string };
     this.activeSessionId = r.sessionId;
+    this.sessionTargets.set(r.sessionId, targetId);
+    if (this.sessionTargets.size > 256) this.sessionTargets.delete(this.sessionTargets.keys().next().value as string);
     return r.sessionId;
   }
 
@@ -534,6 +539,11 @@ export class Session implements Transport {
 
   getActiveSession(): string | undefined {
     return this.activeSessionId;
+  }
+
+  /** The targetId the active session was attached to via use(); undefined when it was set another way. */
+  getActiveTargetId(): string | undefined {
+    return this.activeSessionId ? this.sessionTargets.get(this.activeSessionId) : undefined;
   }
 
   /** Observe successful CDP calls. Observer failures never break the protocol call. */

@@ -5,8 +5,8 @@
 // until the unique-id count stops growing. Closes the tab at the end.
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
-async function evaluate(ctx, expression) {
-  const { result, exceptionDetails } = await ctx.session.Runtime.evaluate({ expression, returnByValue: true, awaitPromise: true });
+async function evaluate(page, expression) {
+  const { result, exceptionDetails } = await page.cdp("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true });
   if (exceptionDetails) {
     const ex = exceptionDetails.exception || {};
     throw new Error(exceptionDetails.text || ex.description || "Runtime.evaluate failed");
@@ -30,14 +30,14 @@ export async function listPageReels(ctx, args) {
 
   const { targetId } = await ctx.session.Target.createTarget({ url: pageUrl, background: true });
   try {
-    await ctx.session.use(targetId);
+    const page = await ctx.attachPage(targetId, { allowedOrigins: [new URL(pageUrl).origin] });
     // A background tab is "hidden": Facebook's lazy loader never runs. Make it look visible.
-    await ctx.session.Emulation.setFocusEmulationEnabled({ enabled: true });
-    await ctx.session.Page.enable();
-    await ctx.session.Page.setWebLifecycleState({ state: "active" }).catch(() => {});
+    await page.cdp("Emulation.setFocusEmulationEnabled", { enabled: true });
+    await page.cdp("Page.enable", {});
+    await page.cdp("Page.setWebLifecycleState", { state: "active" }).catch(() => {});
     await wait(7000);
 
-    const state = JSON.parse((await evaluate(ctx, `JSON.stringify({
+    const state = JSON.parse((await evaluate(page, `JSON.stringify({
       url: location.href,
       loggedOut: !!document.querySelector('input[name=email]'),
     })`)) || "{}");
@@ -48,10 +48,10 @@ export async function listPageReels(ctx, args) {
     let rounds = 0;
     while (rounds < maxRounds && unchanged < stallRounds) {
       rounds += 1;
-      await evaluate(ctx, SCROLL_LAST);
-      await ctx.session.Input.dispatchMouseEvent({ type: "mouseWheel", x: 400, y: 400, deltaX: 0, deltaY: 3000 });
+      await evaluate(page, SCROLL_LAST);
+      await page.cdp("Input.dispatchMouseEvent", { type: "mouseWheel", x: 400, y: 400, deltaX: 0, deltaY: 3000 });
       await wait(settleMs);
-      const now = JSON.parse((await evaluate(ctx, COLLECT_IDS)) || "[]");
+      const now = JSON.parse((await evaluate(page, COLLECT_IDS)) || "[]");
       unchanged = now.length === ids.length ? unchanged + 1 : 0;
       ids = now;
     }

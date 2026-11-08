@@ -31,3 +31,5 @@ Learned by hand-driving a real post:
   `{posted: false, reason: "no composer"}` instead of typing into a login form.
 - The free-tier character cap is 280; the composer refuses to enable Post past
   it, so an over-limit post surfaces as "no enabled Post button".
+
+Ported to the Page API (see ../PORTING.md). live: unverified (logged-in).

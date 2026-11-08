@@ -31,3 +31,5 @@ Mechanics the tools encode:
 Provenance: 2026-09-02 Dwarves subscription audit (53 members, team on Starter, two paid Figma
 charges traced to accounts outside this team). The same recipe exists as a one-shot script in
 `ops-toolkit/experiments/explore-distill-replay/code/figma-admin/` over `sdk/browser-cdp`.
+
+Ported to the Page API (see ../PORTING.md). live: unverified (logged-in).

@@ -1,7 +1,7 @@
 // learnings/retail-sc-com/tools/retail-sc-com.mjs
 // Read-only Standard Chartered Singapore retail online banking (https://retail.sc.com/sg/nfs/ibank/*).
 // No transfers, no form submits. Every call attaches to the existing tab and sends each CDP call
-// with that explicit sessionId (ctx.cdp), never session.use, so the shared REPL pointer is left alone.
+// as its own Page (ctx.findPage), never session.use, so the shared REPL pointer is left alone.
 //
 // Facts these tools rely on (verified live):
 // - Every in-app menu link is `javascript: blockUI(); window.location="<page>.htm?r=<session token>"`.
@@ -21,28 +21,22 @@ const LOGIN_PATH = "/sg/nfs/login.htm";
 const ESTATEMENT_PATH = "/sg/nfs/ibank/estatement_list_summary.htm";
 
 async function attachTab(ctx) {
-  const { targetInfos } = await ctx.session.Target.getTargets();
-  const open = targetInfos.find((t) => t.type === "page" && new URL(t.url || "about:blank").hostname === HOST);
+  const open = (await ctx.browser.tabs()).find((t) => new URL(t.url || "about:blank").hostname === HOST);
   if (!open) return null;
-  const { sessionId } = await ctx.session._call("Target.attachToTarget", { targetId: open.targetId, flatten: true });
-  const send = (method, params = {}) => ctx.cdp(sessionId, method, params);
+  const page = await ctx.attachPage(open.targetId, { allowedOrigins: ["https://" + HOST] });
+  const send = (method, params = {}) => page.cdp(method, params);
   const evaluate = async (expression) => {
     const { result, exceptionDetails } = await send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true });
     if (exceptionDetails) throw new Error(exceptionDetails.text || (exceptionDetails.exception || {}).description || "Runtime.evaluate failed");
     return result ? result.value : undefined;
   };
-  const detach = () => ctx.session._call("Target.detachFromTarget", { sessionId }).catch(() => {});
-  return { targetId: open.targetId, evaluate, detach };
+  return { targetId: open.targetId, evaluate };
 }
 
 async function withTab(ctx, fn) {
   const tab = await attachTab(ctx);
   if (!tab) return { state: "no-tab", hint: `no open tab on ${HOST}; open and log in to retail.sc.com in the browser first` };
-  try {
-    return await fn(tab);
-  } finally {
-    await tab.detach();
-  }
+  return fn(tab); // the runner disposes the Page when the tool returns
 }
 
 async function poll(evaluate, expression, { timeoutMs = 20000, intervalMs = 500 } = {}) {

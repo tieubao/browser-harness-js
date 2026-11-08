@@ -24,8 +24,12 @@ const ID = {
   submit: "ctl00_ContentPlaceHolder1_btnContinue",
 };
 
+const ORIGIN = "https://icis.corp.delaware.gov";
+// The tab pickTab/prepare/submit attached for this ctx (one ctx per tool call).
+const current = new WeakMap();
+
 async function evaluate(ctx, expression) {
-  const { result, exceptionDetails } = await ctx.session.Runtime.evaluate({ expression, returnByValue: true, awaitPromise: true });
+  const { result, exceptionDetails } = await current.get(ctx).cdp("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true });
   if (exceptionDetails) {
     const ex = exceptionDetails.exception || {};
     throw new Error(exceptionDetails.text || ex.description || "Runtime.evaluate failed");
@@ -82,10 +86,10 @@ export function parseTaxPage(text, url) {
 }
 
 async function pickTab(ctx) {
-  const tabs = await ctx.listPageTargets();
+  const tabs = await ctx.browser.tabs();
   const tab = tabs.find((t) => SITE.test(t.url));
   if (!tab) return null;
-  await ctx.session.use(tab.targetId);
+  current.set(ctx, await ctx.attachPage(tab.targetId, { allowedOrigins: [ORIGIN] }));
   return tab;
 }
 
@@ -106,10 +110,10 @@ export async function prepare(ctx, args = {}) {
   let targetId;
   if (tab) {
     targetId = tab.targetId;
-    await ctx.session.Page.navigate({ url: ENTRY });
+    await current.get(ctx).cdp("Page.navigate", { url: ENTRY });
   } else {
     ({ targetId } = await ctx.session.Target.createTarget({ url: ENTRY }));
-    await ctx.session.use(targetId);
+    current.set(ctx, await ctx.attachPage(targetId, { allowedOrigins: [ORIGIN] }));
   }
   await wait(2500);
   if (!(await waitForForm(ctx))) return { stop: "form-not-found", targetId, hint: "login form or CAPTCHA image did not load; check the tab" };
@@ -127,7 +131,7 @@ export async function submit(ctx, args = {}) {
   const { targetId } = args;
   const captcha = String(args.captcha || "").trim();
   if (!targetId || !captcha) throw new Error("submit needs {targetId, captcha}: the prepare() target and the characters the human read");
-  await ctx.session.use(targetId);
+  current.set(ctx, await ctx.attachPage(targetId, { allowedOrigins: [ORIGIN] }));
   const armed = await evaluate(ctx, `(()=>{
     const c=document.getElementById(${JSON.stringify(ID.captcha)}); const b=document.getElementById(${JSON.stringify(ID.submit)});
     if(!c||!b) return false;

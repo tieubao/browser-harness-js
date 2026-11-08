@@ -29,19 +29,18 @@ const mask = (s) =>
 // Match the exact origin, never a prefix: dashboard.alchemy.com.evil.test starts with the same
 // string, and the tab this picks is the page the captured header gets evaluated in.
 async function useDashboardTab(ctx) {
-  const targets = await ctx.listPageTargets();
+  const targets = await ctx.browser.tabs();
   const tab = targets.find((t) => {
     try { return new URL(t.url).origin === DASH; } catch { return false; }
   });
   if (!tab) throw new Error("no dashboard.alchemy.com tab open; open one and sign in first");
-  await ctx.session.use(tab.targetId);
-  return tab;
+  return ctx.attachPage(tab.targetId, { allowedOrigins: [DASH] });
 }
 
 // One tRPC query, run page-side so it carries the browser's own origin and TLS session.
 // The AbortController is not optional: a page fetch that hangs under awaitPromise wedges the
 // whole REPL, and only `browser-harness-js --restart` gets it back.
-async function trpc(ctx, proc, input, header) {
+async function trpc(page, proc, input, header) {
   const expression = `(async () => {
     const c = new AbortController();
     const timer = setTimeout(() => c.abort(), ${FETCH_MS});
@@ -53,7 +52,7 @@ async function trpc(ctx, proc, input, header) {
       return { status: 0, body: "page fetch failed: " + String((e && e.message) || e) };
     } finally { clearTimeout(timer); }
   })()`;
-  const { result, exceptionDetails } = await ctx.session.Runtime.evaluate({
+  const { result, exceptionDetails } = await page.cdp("Runtime.evaluate", {
     expression, awaitPromise: true, returnByValue: true, timeout: FETCH_MS + 5000,
   });
   if (exceptionDetails) throw new Error(mask(exceptionDetails.text || "Runtime.evaluate failed"));
@@ -62,8 +61,9 @@ async function trpc(ctx, proc, input, header) {
 
 async function query(ctx, proc, input, args) {
   const supplied = args && args.auth;
+  const page = await useDashboardTab(ctx);
   const header = supplied || (await captureAuth(ctx));
-  const { status, body } = await trpc(ctx, proc, input, header);
+  const { status, body } = await trpc(page, proc, input, header);
   if (status === 200) {
     // Never let a SyntaxError carry a body snippet: an apps.getApps body holds live API keys.
     let parsed;
@@ -81,18 +81,19 @@ async function query(ctx, proc, input, args) {
 // calls; the first one carrying the header wins. Returns the value to the caller in memory only.
 export async function captureAuth(ctx, args) {
   if (cached && !(args && args.force)) return cached;
-  await useDashboardTab(ctx);
-  await ctx.session.Network.enable({});
+  const page = await useDashboardTab(ctx);
+  await page.cdp("Network.enable", {});
   let found = null;
-  const off = ctx.session.onEvent((method, params) => {
-    if (found || method !== "Network.requestWillBeSent") return;
+  const sid = page.scope.sessionId;
+  const off = ctx.browser.session.onEvent((method, params, sessionId) => {
+    if (sessionId !== sid || found || method !== "Network.requestWillBeSent") return;
     if (!params.request.url.startsWith(TRPC)) return;
     const headers = params.request.headers;
     const key = Object.keys(headers).find((h) => h.toLowerCase() === "authorization");
     if (key) found = headers[key];
   });
   try {
-    await ctx.session.Page.reload({});
+    await page.cdp("Page.reload", {});
     const deadline = Date.now() + CAPTURE_MS;
     while (!found && Date.now() < deadline) await new Promise((r) => setTimeout(r, 500));
   } finally {

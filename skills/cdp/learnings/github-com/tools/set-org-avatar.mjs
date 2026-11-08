@@ -4,8 +4,8 @@
 // #avatar-upload-input (never click the styled button -- opens the OS picker instead).
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
-async function evaluate(ctx, expression) {
-  const { result, exceptionDetails } = await ctx.session.Runtime.evaluate({ expression, returnByValue: true, awaitPromise: true });
+async function evaluate(page, expression) {
+  const { result, exceptionDetails } = await page.cdp("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true });
   if (exceptionDetails) {
     const ex = exceptionDetails.exception || {};
     throw new Error(exceptionDetails.text || ex.description || "Runtime.evaluate failed");
@@ -23,19 +23,19 @@ export async function setOrgAvatar(ctx, args) {
   const url = `https://github.com/organizations/${encodeURIComponent(org)}/settings/profile`;
   const { targetId } = await ctx.session.Target.createTarget({ url, background: true });
   try {
-    await ctx.session.use(targetId);
+    const page = await ctx.attachPage(targetId, { allowedOrigins: ["https://github.com"] });
     await wait(5000);
 
-    await ctx.session.DOM.enable();
-    const { root } = await ctx.session.DOM.getDocument({ depth: -1 });
-    const { nodeId } = await ctx.session.DOM.querySelector({ nodeId: root.nodeId, selector: "#avatar-upload-input" });
+    await page.cdp("DOM.enable", {});
+    const { root } = await page.cdp("DOM.getDocument", { depth: -1 });
+    const { nodeId } = await page.cdp("DOM.querySelector", { nodeId: root.nodeId, selector: "#avatar-upload-input" });
     if (!nodeId) return { done: false, reason: "no #avatar-upload-input on page (not org admin, or GitHub changed the form)" };
     if (dryRun) return { done: false, reason: "dry run", foundInput: true };
 
-    await ctx.session.DOM.setFileInputFiles({ nodeId, files: [file] });
+    await page.cdp("DOM.setFileInputFiles", { nodeId, files: [file] });
     await wait(1500); // crop dialog opens inside an open <details>
 
-    const clicked = await evaluate(ctx, `(() => {
+    const clicked = await evaluate(page, `(() => {
       const b = [...document.querySelectorAll('button')].find((b) => (b.innerText || "").trim() === "Set new profile picture");
       if (!b) return false;
       b.click();

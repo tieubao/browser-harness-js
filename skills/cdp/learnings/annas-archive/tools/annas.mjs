@@ -22,18 +22,17 @@ function searchUrl({ query, ext, lang }) {
 // Reuse an annas-archive tab when one exists, else open one. The tab stays open between calls
 // so a solved challenge cookie carries across searches.
 async function useTab(ctx) {
-  const targets = await ctx.listPageTargets();
-  let tab = targets.find((t) => { try { return new URL(t.url).hostname.endsWith("annas-archive.gl"); } catch { return false; } });
-  if (!tab) {
+  const open = /^https?:\/\/([^/:]*\.)?annas-archive\.gl([:/?#]|$)/;
+  try {
+    return await ctx.findPage(open, { waitMs: 0 });
+  } catch {
     const { targetId } = await ctx.session.Target.createTarget({ url: BASE + "/" });
-    tab = { targetId };
+    return ctx.attachPage(targetId, { allowedOrigins: [BASE] });
   }
-  await ctx.session.use(tab.targetId);
-  return tab;
 }
 
-async function evalIn(ctx, expression) {
-  const { result, exceptionDetails } = await ctx.session.Runtime.evaluate({
+async function evalIn(page, expression) {
+  const { result, exceptionDetails } = await page.cdp("Runtime.evaluate", {
     expression, awaitPromise: true, returnByValue: true, timeout: LOAD_MS,
   });
   if (exceptionDetails) throw new Error(exceptionDetails.text || "Runtime.evaluate failed");
@@ -47,11 +46,11 @@ async function evalIn(ctx, expression) {
 // through an interstitial (…&check=1) that lists random books in real result cards. So "cards
 // exist" is not "results exist". Ready means a card mentions a query word, or the page says no
 // results. A mid-navigation evaluate returns undefined and counts as loading.
-async function waitForResults(ctx, words) {
+async function waitForResults(page, words) {
   const started = Date.now();
   while (Date.now() - started < LOAD_MS) {
     // "Execution context was destroyed" mid-navigation is a loading state, not an error.
-    const state = await evalIn(ctx, `(() => {
+    const state = await evalIn(page, `(() => {
       if (document.readyState !== "complete") return "loading";
       const words = ${JSON.stringify(words)};
       const cards = [...document.querySelectorAll('a[href^="/md5/"]')]
@@ -75,14 +74,14 @@ const significant = (s) => String(s || "").toLowerCase().split(/[^a-z0-9]+/).fil
 // text beats selectors here: the card markup has changed more than once, the text shape has not.
 export async function search(ctx, { query, ext = "epub", lang = "en", limit = 5 } = {}) {
   if (!query) throw new Error("query is required");
-  await useTab(ctx);
-  await ctx.session.Page.navigate({ url: searchUrl({ query, ext, lang }) });
-  const state = await waitForResults(ctx, significant(query));
+  const page = await useTab(ctx);
+  await page.cdp("Page.navigate", { url: searchUrl({ query, ext, lang }) });
+  const state = await waitForResults(page, significant(query));
   if (state !== "ready") return { query, state, rows: [] };
   // A result card is a bordered flex row holding the cover anchor and a text column. The page
   // also carries a "recent downloads" ticker of /md5/ anchors (.js-recent-downloads-scroll),
   // which is why the anchor list alone returned garbage the first time.
-  const rows = await evalIn(ctx, `(() => {
+  const rows = await evalIn(page, `(() => {
     const seen = new Set();
     const out = [];
     for (const a of document.querySelectorAll('a[href^="/md5/"]')) {
@@ -116,11 +115,11 @@ function parseRow({ md5, text }) {
 // Diagnostic: navigate to a search and sample the page once a second. Use it when search()
 // returns rows that do not match the query; the samples show what the page did over time.
 export async function probe(ctx, { query, ext = "epub", lang = "en", seconds = 12 } = {}) {
-  await useTab(ctx);
-  await ctx.session.Page.navigate({ url: searchUrl({ query, ext, lang }) });
+  const page = await useTab(ctx);
+  await page.cdp("Page.navigate", { url: searchUrl({ query, ext, lang }) });
   const samples = [];
   for (let i = 0; i < seconds; i++) {
-    const s = await evalIn(ctx, `(() => {
+    const s = await evalIn(page, `(() => {
       const cards = [...document.querySelectorAll("div.border-b")].filter((d) => d.querySelector('a[href^="/md5/"]'));
       return { t: ${i}, href: location.href.slice(0, 120), ready: document.readyState, cards: cards.length,
         first: cards.slice(0, 2).map((d) => d.innerText.replace(/\\s+/g, " ").slice(0, 70)),

@@ -16,8 +16,11 @@ const USER_INFO = {
   email: "Read user information including email addresses",
 };
 
+// The developers tab page() attached for this ctx (one ctx per tool call).
+const current = new WeakMap();
+
 async function ev(ctx, expression) {
-  const { result, exceptionDetails } = await ctx.session.Runtime.evaluate({ expression, returnByValue: true, awaitPromise: true });
+  const { result, exceptionDetails } = await (current.get(ctx) || ctx.requirePage()).cdp("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true });
   if (exceptionDetails) throw new Error(exceptionDetails.text || (exceptionDetails.exception && exceptionDetails.exception.description) || "Runtime.evaluate failed");
   return result ? result.value : undefined;
 }
@@ -34,14 +37,13 @@ async function until(ctx, expr, what, ms = 10000) {
 
 // Switch the session to an app.notion.com/developers tab (open one if none) and refuse a signed-out page.
 async function page(ctx, path = "") {
-  const { targetInfos } = await ctx.session.Target.getTargets();
-  let tab = targetInfos.find((t) => t.type === "page" && t.url.startsWith("https://app.notion.com/developers"));
+  let tab = (await ctx.browser.tabs()).find((t) => t.url.startsWith("https://app.notion.com/developers"));
   if (!tab) {
     const { targetId } = await ctx.session.Target.createTarget({ url: BASE + path });
     tab = { targetId };
     await wait(4000);
   }
-  await ctx.session.use(tab.targetId);
+  current.set(ctx, await ctx.attachPage(tab.targetId, { allowedOrigins: ["https://app.notion.com"] }));
   await ctx.session.Target.activateTarget({ targetId: tab.targetId });
   if (path && !(await ev(ctx, "location.href")).includes(BASE + path)) { await ev(ctx, `location.href=${JSON.stringify(BASE + path)}`); await wait(4000); }
   await until(ctx, "document.body && document.body.innerText.length>50", "page render");
@@ -121,14 +123,14 @@ export async function sharePages(ctx, args) {
   await wait(500);
   if (!(await clickText(ctx, "button", "Edit access"))) throw new Error("Edit access button not found");
   await until(ctx, "document.querySelector(\"[role=dialog] input[placeholder='Search pages']\")", "access dialog");
-  const s = ctx.session;
-  await s.Emulation.setFocusEmulationEnabled({ enabled: true });
+  const p = current.get(ctx);
+  await p.cdp("Emulation.setFocusEmulationEnabled", { enabled: true });
   const added = [], missing = [];
   for (const q of queries) {
     // The native value setter does not trigger Notion's search: type through CDP.
     await ev(ctx, "(()=>{const i=document.querySelector(\"[role=dialog] input[placeholder='Search pages']\");i.focus();i.select()})()");
-    for (const type of ["keyDown", "keyUp"]) await s.Input.dispatchKeyEvent({ type, key: "Backspace", code: "Backspace", windowsVirtualKeyCode: 8 });
-    await s.Input.insertText({ text: q });
+    for (const type of ["keyDown", "keyUp"]) await p.cdp("Input.dispatchKeyEvent", { type, key: "Backspace", code: "Backspace", windowsVirtualKeyCode: 8 });
+    await p.cdp("Input.insertText", { text: q });
     await wait(1500);
     const r = await ev(ctx, `(()=>{const q=${JSON.stringify(q)},ex=${exact};
       const it=[...document.querySelectorAll('[role=menu] [role=menuitem]')].find(m=>{const t=m.textContent;return ex?t.trim().endsWith(q):t.includes(q)});
@@ -136,8 +138,8 @@ export async function sharePages(ctx, args) {
     (r === "missing" ? missing : added).push(q);
     await wait(500);
   }
-  await s.Input.dispatchKeyEvent({ type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
-  await s.Input.dispatchKeyEvent({ type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+  await p.cdp("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+  await p.cdp("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
   await wait(500);
   if (!(await clickText(ctx, "[role=dialog] button", "Save"))) throw new Error("dialog Save button not found");
   await wait(1500);

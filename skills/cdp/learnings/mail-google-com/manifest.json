@@ -103,7 +103,7 @@
       "returns": {"type": "object", "description": "{rows: string[]} each row whitespace-collapsed and truncated to 200 chars"}
     },
     "readThread": {
-      "description": "Open a Gmail search, read the first result row's data-legacy-thread-id, navigate the same target to #search/<query>/<threadId> (clicking the row does nothing in a background tab), expand the whole thread, and return its messages, attachment names, outbound links and recipients. Same search+background-tab mechanics as searchRows.",
+      "description": "Open a Gmail search, read the first result row's data-legacy-thread-id, navigate the same target to #search/<query>/<threadId> (clicking the row does nothing in a background tab), expand the whole thread, and return its messages, attachment names, outbound links and recipients. Same search+background-tab mechanics as searchRows. Side effect: opening a thread marks its unread messages read.",
       "path": "tools/mail-google-com.mjs",
       "callable": "readThread",
       "args": {

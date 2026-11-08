@@ -26,7 +26,7 @@
       "returns": {"type": "object", "description": "{rows:[{index, id (data-element-id, the conversation id), text (whitespace-collapsed, 200 chars)}]}; {rows:[], hint} when nothing appears within 15s"}
     },
     "readConversation": {
-      "description": "Search, real-click result row <index> (focus emulation lets a background tab open it without bringToFront), expand every collapsed message by clicking its header, and read each iframe[data-testid=content-iframe] body as plain text. Opening a message can mark an unread one as read (Proton default). Never sends, deletes, moves or labels. Pass url (a full /<label>/<conversationId>/<messageId> link from a previous result) instead of term to skip the search.",
+      "description": "Search, real-click result row <index> (focus emulation lets a background tab open it without bringToFront), expand every collapsed message by clicking its header, and read each iframe[data-testid=content-iframe] body as plain text. Never sends, deletes, moves or labels. Pass url (a full /<label>/<conversationId>/<messageId> link from a previous result) instead of term to skip the search. Side effect: opening a message marks an unread one as read (Proton default).",
       "path": "tools/mail-proton-me.mjs",
       "callable": "readConversation",
       "args": {

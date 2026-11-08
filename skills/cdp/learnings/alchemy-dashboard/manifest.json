@@ -5,7 +5,7 @@
   "notes": ["notes/overview.md"],
   "nodeTools": {
     "captureAuth": {
-      "description": "Capture the dashboard's short-lived Bearer Authorization header from a live tRPC request (reloads the signed-in tab and reads Network.requestWillBeSent). Returns the value to the caller in memory only: it is never written to disk or logged. The other tools call this themselves; call it directly only to force a refresh.",
+      "description": "Capture the dashboard's short-lived Bearer Authorization header from a live tRPC request (reloads the signed-in tab and reads Network.requestWillBeSent). Returns the value to the caller in memory only: it is never written to disk or logged. The other tools call this themselves; call it directly only to force a refresh. Side effect: reloads the signed-in dashboard tab.",
       "path": "tools/alchemy.mjs",
       "callable": "captureAuth",
       "args": {

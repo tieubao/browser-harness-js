@@ -1,6 +1,6 @@
 # discord.com/developers (app and bot setup)
 
-Tools are in `tools/portal.mjs`, one dedicated foreground tab. Steps a script cannot finish return `{needsHuman}` with the tab fronted. Stop and let the human act; never loop. Restart the daemon after editing (`browser-harness-js --restart`).
+Tools are in `tools/portal.mjs`, one dedicated BACKGROUND tab (`createTarget({background:true})`, then `Emulation.setFocusEmulationEnabled` and `Page.setWebLifecycleState active`), so reads never move Han's window. Only `needsHuman` and `authorize_invite` front the tab (`Target.activateTarget` plus app activate), because the human must see it and the consent scroll needs it. Steps a script cannot finish return `{needsHuman}` with the tab fronted. Stop and let the human act; never loop. Restart the daemon after editing (`browser-harness-js --restart`).
 
 ## Human steps (return needsHuman)
 

@@ -1,8 +1,9 @@
 // learnings/admin-google-com/tools/admin-google-com.mjs
 // Google Workspace admin console, domain-wide delegation page. This page demands a fresh
 // passkey re-auth (challenge) before it loads, which only a human at the machine can pass, so
-// listDelegation opens a FOREGROUND tab and polls for the URL to settle rather than assuming a
-// background tab will ever get there. deleteDelegation is a WRITE (revokes an integration) and
+// listDelegation opens a BACKGROUND tab (Han's window does not move) and polls for the URL to settle;
+// only when the URL lands on the accounts.google.com challenge does it front the tab, once, because
+// a human must see and approve the passkey prompt. deleteDelegation is a WRITE (revokes an integration) and
 // refuses without confirm:true, then re-reads the table to prove the row is actually gone --
 // a synthetic click reporting success proves nothing on this page.
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -48,15 +49,23 @@ async function readRows(page) {
 
 export async function listDelegation(ctx, { authuser = 0 } = {}) {
   const url = `https://admin.google.com/u/${authuser}/ac/owl/domainwidedelegation`;
-  const { targetId } = await ctx.session.Target.createTarget({ url, background: false });
+  const { targetId } = await ctx.session.Target.createTarget({ url, background: true });
   const page = await ctx.attachPage(targetId, { allowedOrigins: ["https://admin.google.com"] });
+  await page.cdp("Emulation.setFocusEmulationEnabled", { enabled: true }).catch(() => {});
+  await page.cdp("Page.setWebLifecycleState", { state: "active" }).catch(() => {});
 
   const pollMs = 10000;
   const maxAttempts = Math.ceil((4 * 60 * 1000) / pollMs); // ~4 minutes
   let ready = false;
+  let fronted = false;
   for (let i = 0; i < maxAttempts; i++) {
     const href = String((await evaluate(page, "location.href")) || "");
     if (href.includes("domainwidedelegation") && !href.includes("accounts.google.com")) { ready = true; break; }
+    if (!fronted && href.includes("accounts.google.com")) {
+      // Passkey challenge: only a human can pass it, and only on a visible tab.
+      fronted = true;
+      await ctx.session.Target.activateTarget({ targetId });
+    }
     await wait(pollMs);
   }
   if (!ready) {

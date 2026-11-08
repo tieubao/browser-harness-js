@@ -31,13 +31,14 @@ async function evaluate(ctx, expression) {
 
 // Open a tab, route page-level calls to it, wait for the SPA to settle.
 async function openTab(ctx, url, settleMs) {
-  const { targetId } = await ctx.session.Target.createTarget({ url });
-  current.set(ctx, await ctx.attachPage(targetId, { allowedOrigins: ["https://www.figma.com"] }));
-  // createTarget opens a BACKGROUND tab. The 53-row read was only ever proven on a foreground
-  // tab (browser-cdp's /json/new path), so activate it for the ~15 s the tool runs; closeTab
-  // returns the operator to their previous tab. (Focus emulation alone was tried and is not
-  // what fixed the short read; the scroll container was.)
-  await ctx.session.Target.activateTarget({ targetId });
+  const { targetId } = await ctx.session.Target.createTarget({ url, background: true });
+  const page = await ctx.attachPage(targetId, { allowedOrigins: ["https://www.figma.com"] });
+  current.set(ctx, page);
+  // Background tab, never activated (Han's window must not move). Focus emulation plus an active
+  // lifecycle state keep it rendering. The short-read bug of the old foreground version was the grid's
+  // own scroll container (see adminPeople), not tab visibility; the 53-row read is unverified here.
+  await page.cdp("Emulation.setFocusEmulationEnabled", { enabled: true }).catch(() => {});
+  await page.cdp("Page.setWebLifecycleState", { state: "active" }).catch(() => {});
   await wait(settleMs);
   return targetId;
 }

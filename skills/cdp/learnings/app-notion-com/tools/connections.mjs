@@ -39,12 +39,16 @@ async function until(ctx, expr, what, ms = 10000) {
 async function page(ctx, path = "") {
   let tab = (await ctx.browser.tabs()).find((t) => t.url.startsWith("https://app.notion.com/developers"));
   if (!tab) {
-    const { targetId } = await ctx.session.Target.createTarget({ url: BASE + path });
+    const { targetId } = await ctx.session.Target.createTarget({ url: BASE + path, background: true });
     tab = { targetId };
     await wait(4000);
   }
-  current.set(ctx, await ctx.attachPage(tab.targetId, { allowedOrigins: ["https://app.notion.com"] }));
-  await ctx.session.Target.activateTarget({ targetId: tab.targetId });
+  const attached = await ctx.attachPage(tab.targetId, { allowedOrigins: ["https://app.notion.com"] });
+  current.set(ctx, attached);
+  // Never activate the tab (Han's window must not move): focus emulation plus an active lifecycle state
+  // keep a background tab rendering and clickable.
+  await attached.cdp("Emulation.setFocusEmulationEnabled", { enabled: true }).catch(() => {});
+  await attached.cdp("Page.setWebLifecycleState", { state: "active" }).catch(() => {});
   if (path && !(await ev(ctx, "location.href")).includes(BASE + path)) { await ev(ctx, `location.href=${JSON.stringify(BASE + path)}`); await wait(4000); }
   await until(ctx, "document.body && document.body.innerText.length>50", "page render");
   // Signed out: the page renders cached with this banner; clicking would do nothing useful.

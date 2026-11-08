@@ -5,7 +5,7 @@ re-deriving recipes (selectors, scraping scripts, API reverse-engineering)
 every time. Adapted from ego-browser's `learnings/<domain>/` layout, but
 CDP-native: node-tools are plain `.mjs` modules loaded via dynamic `import()`
 into the REPL global scope; browser-tools are JS strings evaluated via
-`Runtime.evaluate` on the active session.
+`Runtime.evaluate` on a Page (see below).
 
 ## Layout
 
@@ -68,7 +68,10 @@ loops here and the model calls one tool instead of re-deriving the recipe.
 A **`browserTool`** is the JS source of an ESM-style file (no `export`
 questions — the source is concatenated inside an `(async function(args){ ... })()`
 wrapper). It runs in the browser page via `Runtime.evaluate`, returns whatever
-the named function returns.
+the named function returns. The runner picks the tab without touching the REPL's
+active-session pointer: `args.targetId`, else the first tab whose host is in the
+manifest `domains`, else the REPL's active target, else an error naming the
+domains. The Page is disposed after the call (the tab stays open).
 
 ## Editing a learning module
 

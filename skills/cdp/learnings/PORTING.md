@@ -27,7 +27,16 @@ Rules the runner applies, so tools do not:
 - **Serialized.** Calls on one `Page` run one at a time, in order. Two awaited `page.cdp` calls started together run back to back, not in parallel. A call that blocks until a second call on the same Page fires would deadlock; restructure it into one in-page expression.
 - **Ceiling.** A single `page.cdp` call is capped at 60 s. A longer in-page wait is split into a loop of shorter evaluates.
 
-`browserTools` (JS strings in `browser-tools/`) are unchanged by this work; they still evaluate on the REPL's active session. Do not touch them.
+### browserTools
+
+`browserTools` (JS strings in `browser-tools/`) need no port: the runner evaluates them on a Page, never on the singleton session. The tab is resolved in this order:
+
+1. `args.targetId`, when given.
+2. The first open tab whose URL host is one of the manifest `domains` (exact host, `http` or `https`; waits up to 2 s for a tab still at `about:blank`).
+3. The REPL's active target, as before.
+4. Otherwise an error naming the declared domains.
+
+The expression, `returnByValue`, `awaitPromise` and error text are unchanged, so results are identical. The Page is attached raw-only (`page.cdp`; any URL works, including `about:blank` or `file:`) and disposed after the call. `args` (including `targetId`) is still passed to the in-page function untouched. Do not edit the `browser-tools/` files for this.
 
 ## 2. Mapping table
 

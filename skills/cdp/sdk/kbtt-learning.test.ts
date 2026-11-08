@@ -1,5 +1,5 @@
 // Offline test for the kbtt-tam-tru browser tools: loads them through the real
-// learnings() loader with a fake session whose Runtime.evaluate runs the
+// learnings() loader with a fake browser whose Page.cdp('Runtime.evaluate') runs the
 // wrapped expression in a vm against a tiny hand-built DOM. No browser.
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
@@ -28,10 +28,15 @@ class FakeEvent { type: string; constructor(type: string) { this.type = type; } 
 
 async function runTool(dom: Fake, tool: string, args: unknown, extra: Fake = {}) {
   const g = globalThis as any;
-  const prev = g.session;
+  const prev = { session: g.session, browser: g.browser };
   const ctx = vm.createContext({ document: dom, window: {}, MouseEvent: FakeEvent, Event: FakeEvent, MessageChannel, ...extra });
-  g.session = { domains: { Runtime: { evaluate: async ({ expression }: { expression: string }) => ({ result: { value: JSON.parse(JSON.stringify((await vm.runInContext(expression, ctx)) ?? null)) } }) } } };
-  try { return await learnings('kbtt-tam-tru', tool, args); } finally { g.session = prev; }
+  const evaluate = async ({ expression }: { expression: string }) => ({ result: { value: JSON.parse(JSON.stringify((await vm.runInContext(expression, ctx)) ?? null)) } });
+  g.session = { getActiveTargetId: () => 'ACTIVE' };
+  g.browser = {
+    tabs: async () => [{ targetId: 'ACTIVE', url: 'https://tamtru.example/' }],
+    attach: async () => ({ dispose() {}, cdp: async (method: string, params: any) => (method === 'Runtime.evaluate' ? evaluate(params) : {}) }),
+  };
+  try { return await learnings('kbtt-tam-tru', tool, args); } finally { g.session = prev.session; g.browser = prev.browser; }
 }
 
 test('learnings("kbtt-tam-tru") lists the five browser tools', async () => {

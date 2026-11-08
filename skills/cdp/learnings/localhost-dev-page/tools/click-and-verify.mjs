@@ -1,46 +1,35 @@
 // learnings/localhost-dev-page/tools/click-and-verify.mjs
-// Fallback for a Chromium instance the harness's own Session cannot discover:
-// a throwaway --remote-debugging-port instance driven directly, not through
-// ctx.session (see notes/overview.md, trap 2). Called as click-and-verify(ctx, args);
-// ctx is accepted for the standard callable shape but unused, since the whole
-// point is that ctx.session belongs to a different browser.
+// For a Chromium instance the daemon's own Session is not bound to: a throwaway
+// --remote-debugging-port instance (see notes/overview.md, trap 2). The tool opens
+// its OWN Browser (its own Session and WebSocket) on that port and drives the page
+// through the Page API, so ctx.page / ctx.session (the daemon's browser) are unused.
+// Called as clickAndVerify(ctx, args). Porting contract: learnings/PORTING.md.
+import { Browser } from "../../../sdk/browser.ts";
+
 export async function clickAndVerify(ctx, args) {
   const port = args.port || 9333;
   const before4 = await fetchJson(`http://127.0.0.1:${port}/json/list`).catch(() => []);
   const before6 = await fetchJson(`http://[::1]:${port}/json/list`).catch(() => []);
+  const host = before4.length ? "127.0.0.1" : "[::1]";
   const targets = before4.length ? before4 : before6;
-  const page = targets.find((t) => t.type === "page" && (t.url || "").includes(args.urlIncludes));
-  if (!page) throw new Error(`no page target matching "${args.urlIncludes}" on port ${port} (checked 127.0.0.1 and [::1])`);
+  const found = targets.find((t) => t.type === "page" && (t.url || "").includes(args.urlIncludes));
+  if (!found) throw new Error(`no page target matching "${args.urlIncludes}" on port ${port} (checked 127.0.0.1 and [::1])`);
 
-  const ws = new WebSocket(page.webSocketDebuggerUrl);
-  let msgId = 0;
-  const pending = new Map();
-  ws.addEventListener("message", (event) => {
-    const msg = JSON.parse(event.data);
-    const resolve = pending.get(msg.id);
-    if (resolve) { pending.delete(msg.id); resolve(msg); }
-  });
-  await new Promise((resolve, reject) => {
-    ws.addEventListener("open", resolve, { once: true });
-    ws.addEventListener("error", reject, { once: true });
-  });
-
-  const evaluate = (expression) => {
-    const id = ++msgId;
-    return new Promise((resolve) => {
-      pending.set(id, resolve);
-      ws.send(JSON.stringify({ id, method: "Runtime.evaluate", params: { expression, returnByValue: true, awaitPromise: true, userGesture: true } }));
-    });
-  };
-
+  const own = new Browser();
   try {
+    await own.connect({ port, host });
+    const page = await own.attach(found.id, { allowedOrigins: [new URL(found.url).origin] });
+    const evaluate = async (expression) => {
+      const r = await page.cdp("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true, userGesture: true });
+      return r.result?.value;
+    };
     const before = await evaluate(args.before);
     await evaluate(`document.querySelector(${JSON.stringify(args.selector)}).click()`);
     await new Promise((r) => setTimeout(r, args.delayMs || 2000));
     const after = await evaluate(args.after);
-    return { before: before.result?.result?.value, after: after.result?.result?.value };
+    return { before, after };
   } finally {
-    ws.close();
+    own.disconnect();
   }
 }
 

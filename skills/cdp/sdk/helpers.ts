@@ -425,6 +425,110 @@ function ctxForTool(): Record<string, unknown> {
   };
 }
 
+// --- Page API for learnings -----------------------------------------------
+// Every node-tool ctx also carries `browser`, `page`, `pageError`, `requirePage`, `findPage` and `attachPage`.
+// Pages are attached with their own flat sessionId (they never touch session.use), so they are
+// safe next to other Claude sessions on the same daemon. The runner disposes every Page it
+// handed out (detaches the attachment, leaves the tab open) when the tool returns or throws.
+// Learning tools are trusted repo code, so a raw page.cdp() default timeout of 60s (the Page
+// maximum) replaces the stricter 10s default; a tool can still pass {timeoutMs} per call.
+const LEARNING_PAGE_TIMEOUT_MS = 60_000;
+
+/** allowedOrigins: extra exact origins (the target's own origin and the manifest domains are added).
+ *  timeoutMs: per-call Page timeout, 1..60000. waitMs (findPage only): how long to keep polling for a
+ *  matching tab, default 2000, because a tab created with a URL can sit at about:blank for a moment. */
+export type LearningPageOptions = { allowedOrigins?: string[]; timeoutMs?: number; waitMs?: number };
+export type ToolCtxHandle = { ctx: Record<string, unknown>; cleanup: () => void };
+
+const httpOrigin = (url: unknown): string | undefined => {
+  try {
+    const u = new URL(String(url));
+    return u.protocol === 'http:' || u.protocol === 'https:' ? u.origin : undefined;
+  } catch { return undefined; }
+};
+
+/** https origins for the manifest's `domains` (bare host, optional port). */
+function manifestOrigins(manifest: any): string[] {
+  const out: string[] = [];
+  for (const d of Array.isArray(manifest?.domains) ? manifest.domains : []) {
+    const o = typeof d === 'string' ? httpOrigin('https://' + d.replace(/^https?:\/\//, '').replace(/\/.*$/, '')) : undefined;
+    if (o) out.push(o);
+  }
+  return out;
+}
+
+const uniqueOrigins = (list: Array<string | undefined>): string[] =>
+  [...new Set(list.filter((o): o is string => typeof o === 'string'))].slice(0, 32);
+
+/** Build the ctx handed to one node-tool call, plus the cleanup that disposes its Pages. */
+async function buildToolCtx(manifest: any, args?: unknown): Promise<ToolCtxHandle> {
+  const g = globalThis as any;
+  const ctx: Record<string, any> = { ...ctxForTool(), browser: g.browser, page: null, pageError: undefined };
+  const made = new Map<string, any>();
+  const browser = g.browser;
+  const domainOrigins = manifestOrigins(manifest);
+
+  const adopt = async (target: { targetId: string; url?: string }, opts: LearningPageOptions = {}) => {
+    if (!browser) throw new Error('learnings: the browser global is not available (REPL not started?)');
+    const cached = made.get(target.targetId);
+    if (cached && !cached.disposed) return cached;
+    const url = target.url ?? (await browser.tabs().catch(() => []) as Array<{ targetId: string; url: string }>).find(t => t.targetId === target.targetId)?.url;
+    const allowedOrigins = uniqueOrigins([httpOrigin(url), ...(opts.allowedOrigins ?? []), ...domainOrigins]);
+    if (!allowedOrigins.length) throw new Error('learnings: no http(s) origin to allow for target ' + target.targetId + '; pass {allowedOrigins:[...]} or declare "domains" in the manifest');
+    const page = await browser.attach(target.targetId, { allowedOrigins, timeoutMs: opts.timeoutMs ?? LEARNING_PAGE_TIMEOUT_MS });
+    made.set(target.targetId, page);
+    return page;
+  };
+
+  ctx.findPage = async (match: string | RegExp, opts: LearningPageOptions = {}) => {
+    if (!browser) throw new Error('learnings: the browser global is not available (REPL not started?)');
+    if (typeof match !== 'string' && !(match instanceof RegExp)) throw new Error('findPage: match must be a URL prefix string or a RegExp');
+    const test = (url: string) => typeof match === 'string' ? url.startsWith(match) : new RegExp(match.source, match.flags.replace(/[gy]/g, '')).test(url);
+    const deadline = Date.now() + (opts.waitMs ?? 2000);
+    let tabs: Array<{ targetId: string; url: string }> = await browser.tabs();
+    let hit = tabs.find(t => test(t.url));
+    while (!hit && Date.now() < deadline) {
+      await new Promise(res => setTimeout(res, 100));
+      tabs = await browser.tabs();
+      hit = tabs.find(t => test(t.url));
+    }
+    if (!hit) {
+      throw new Error('findPage: no open page matches ' + String(match) + ' (open: ' + (tabs.map(t => t.url).slice(0, 8).join(', ') || 'none') + ')');
+    }
+    return adopt(hit, opts);
+  };
+
+  ctx.attachPage = async (targetId: string, opts: LearningPageOptions = {}) => {
+    if (!browser) throw new Error('learnings: the browser global is not available (REPL not started?)');
+    return adopt({ targetId }, opts);
+  };
+
+  // Default ctx.page: args.targetId, else the REPL's active target, else null. Never fatal: a tool
+  // that opens its own tab (createTarget + attachPage) or calls findPage does not need it.
+  const defaultTarget = async (): Promise<{ targetId: string; url?: string } | undefined> => {
+    const explicit = args && typeof args === 'object' ? (args as any).targetId : undefined;
+    if (typeof explicit === 'string' && explicit) return { targetId: explicit };
+    const s = g.session;
+    const targetId = s && typeof s.getActiveTargetId === 'function' ? s.getActiveTargetId() : undefined;
+    return targetId ? { targetId } : undefined;
+  };
+
+  if (browser) {
+    try {
+      const target = await defaultTarget();
+      if (target) ctx.page = await adopt(target);
+    } catch (e) { ctx.pageError = (e as Error).message; }
+  }
+
+  ctx.requirePage = () => {
+    if (ctx.page) return ctx.page;
+    throw new Error('no default page' + (ctx.pageError ? ' (' + ctx.pageError + ')' : ': no args.targetId and no active tab') + '; pass {targetId} or use ctx.findPage(match)');
+  };
+
+  const cleanup = () => { for (const p of made.values()) { try { p.dispose(); } catch { /* already gone */ } } made.clear(); };
+  return { ctx, cleanup };
+}
+
 async function learnings(domain: string, tool?: string, args?: unknown): Promise<unknown> {
   const manifest = await loadManifest(domain);
   if (!tool) {
@@ -444,7 +548,10 @@ async function learnings(domain: string, tool?: string, args?: unknown): Promise
     if (typeof fn !== 'function') {
       throw new Error('learnings: "' + tool + '" expected export "' + nodeDecl.callable + '" from ' + nodeDecl.path + '; found: ' + ((mod && Object.keys(mod).join(', ')) || '(none)'));
     }
-    return await fn(ctxForTool(), args);
+    const { ctx, cleanup } = await buildToolCtx(manifest, args);
+    try {
+      return await fn(ctx, args);
+    } finally { cleanup(); }
   }
   const brDecl = manifest.browserTools ? manifest.browserTools[tool] : undefined;
   if (brDecl) {
@@ -475,7 +582,7 @@ const HELP: Record<string, string> = {
   listPageTargets: 'listPageTargets() -> PageTarget[]. Filters chrome:// / devtools:// from Target.getTargets. Extension transport also fills index/windowId/groupId/pinned/muted/active.',
   ext: 'ext.* Chrome-extension commands (extension transport only): ext.group({tabIds}), ext.ungroup, ext.getTabGroups, ext.updateTabGroup, ext.moveTabGroup, ext.updateTab, ext.moveTabs, ext.discardTab, ext.reloadTab, ext.duplicateTab, ext.highlight, ext.getWindows, ext.createWindow, ext.updateWindow, ext.removeWindow. Also session.Browser.getWindowForTarget / getWindowBounds / setWindowBounds.',
   listLearnings: 'listLearnings() -> string[]. Domains under skills/cdp/learnings/.',
-  learnings: 'learnings(domain, tool?, args?) -> any. learnings("site") -> {nodeTools, browserTools, notes}. learnings("site", "toolName", args) calls the registered node/browser tool; the tool function receives (ctx, args) where ctx carries session/cdp/axView/axClick/axType/listPageTargets/parseAxRefs/parseAxLocators/drainSignals/pageInfo/help.',
+  learnings: 'learnings(domain, tool?, args?) -> any. learnings("site") -> {nodeTools, browserTools, notes}. learnings("site", "toolName", args) calls the registered node/browser tool; the tool function receives (ctx, args) where ctx carries session/cdp/axView/axClick/axType/listPageTargets/parseAxRefs/parseAxLocators/drainSignals/pageInfo/help plus the Page API: browser, page (Page | null), pageError, requirePage(), findPage(match, opts?), attachPage(targetId, opts?). See learnings/PORTING.md.',
   attachTab: 'attachTab(match) -> {sessionId, targetId, url}. match = an uppercase hex targetId prefix (6-32 chars, only when a target actually starts with it) or a RegExp/substring against the tab URL, otherwise falls back to URL matching. Throws on zero or multiple matches. Never calls session.use.',
   evalFile: 'evalFile(sessionId, file, opts?) -> value | byteCount. Runs a local JS file via Runtime.evaluate on the explicit session, returnByValue+awaitPromise. The file is evaluated as-is (never wrapped): it must be an expression or script, typically (async()=>{ ... })(), since a top-level return is a page-side SyntaxError. opts: {timeoutMs=30000, userGesture=false, out}. Bounded by a REQUIRED timeout raced against the call, so a hung page cannot wedge the daemon. opts.out writes the result to a file (String(value) when JSON cannot serialize it, e.g. undefined) and returns its byte count instead of throwing.',
   waitForUrl: 'waitForUrl(sessionId, test, opts?) -> string. Polls location.href on the explicit session until test (RegExp or (url)=>boolean) passes. Each poll is itself bounded (min(intervalMs, time remaining), floored at 1000ms) so one hung poll cannot defeat the overall deadline. opts: {timeoutMs=300000, intervalMs=5000}. Throws on overall timeout. The "wait for the human to finish signing in" loop.',
@@ -504,4 +611,5 @@ export const extraHelpers = {
   waitForUrl,
   deepQuery,
   ctxForTool,
+  buildToolCtx,
 };

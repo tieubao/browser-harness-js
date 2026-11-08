@@ -56,8 +56,11 @@ await learnings("example")                 // -> {nodeTools, browserTools, notes
 await learnings("example", "getOutline", {max: 5})  // -> call the node-tool
 ```
 
-A **`nodeTool`** is called as `fn(ctx, args)` where `ctx` carries every REPL
-global (so the tool uses `ctx.session`, `ctx.cdp`, `ctx.axView`, ...). It runs
+A **`nodeTool`** is called as `fn(ctx, args)`. New and ported tools use the Page
+API fields on `ctx` (`ctx.page`, `ctx.requirePage()`, `ctx.findPage(match)`,
+`ctx.attachPage(targetId)`, `ctx.browser`); the legacy REPL globals
+(`ctx.session`, `ctx.cdp`, `ctx.axView`, ...) stay for unported tools. The exact
+contract and mapping is [PORTING.md](PORTING.md). It runs
 in the same Node process holding the persistent `Session`, so it can compose
 multi-step CDP work into one function — write `add snapshot -> act -> verify`
 loops here and the model calls one tool instead of re-deriving the recipe.

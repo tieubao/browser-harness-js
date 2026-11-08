@@ -198,7 +198,7 @@ Existing `tools/*.test.mjs` (app-notion-com, chrome-extensions, corp-delaware-go
 ## 7. Verification each porter runs
 
 1. **Residue and load.** `node skills/cdp/learnings/check-port.mjs <domain>` for every folder in your batch. Required: `OK` (exit 0). `FAIL` means a broken import or manifest; `RESIDUE` means a legacy call is left. An exception is allowed only with a one-line comment in the tool saying why (for example an extension target that cannot be attached as a Page).
-2. **Unit tests.** `node --test skills/cdp/learnings/<domain>/tools/*.test.mjs` where tests exist, and `cd skills/cdp/sdk && node --test *.test.ts` (0 fail).
+2. **Unit tests.** `node --test skills/cdp/learnings/<domain>/tools/*.test.mjs` where tests exist, and `cd skills/cdp/sdk && node --test *.test.ts` (0 fail). `npm run check` in `skills/cdp/sdk` runs both across every learning and is the pre-merge gate.
 3. **Live call on the headless browser** for every learning marked `public` below. Use **your batch's own ports** (three workers run at once):
 
    | Batch | `CDP_REPL_PORT` | Helium `--remote-debugging-port` |

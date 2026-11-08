@@ -33,4 +33,4 @@ Each call opens its own background tab, drives it through its own Page (`ctx.att
 - **Output is mailbox content.** Print counts and lengths when logging, not text.
 - **Edit then restart.** The REPL caches imported modules; run `browser-harness-js --restart` after editing the tool, then reconnect.
 
-Ported to the Page API (see ../PORTING.md). live: unverified (logged-in).
+Ported to the Page API (see ../PORTING.md). live: verified on findAccountSlot and searchRows; readConversation unverified.

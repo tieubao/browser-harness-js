@@ -101,4 +101,4 @@ developers.facebook.com,business.facebook.com,www.facebook.com`. Notes
 captured from one session hand-driving the operator's logged-in browser across Meta for
 Developers and Business Suite; no further automation built on top.
 
-Ported to the Page API (see ../PORTING.md). live: unverified (logged-in).
+Ported to the Page API (see ../PORTING.md). live: verified on status.

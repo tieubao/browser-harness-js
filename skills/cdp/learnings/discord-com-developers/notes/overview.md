@@ -30,4 +30,4 @@ Tools are in `tools/portal.mjs`, one dedicated BACKGROUND tab (`createTarget({ba
 
 `get_bot_settings` was run live. The mutating tools were written from recipes proven by hand in a live session but have not been run end to end as tools.
 
-Ported to the Page API (see ../PORTING.md). live: unverified (logged-in).
+Ported to the Page API (see ../PORTING.md). live: verified on status and invite_url; write tools unverified.

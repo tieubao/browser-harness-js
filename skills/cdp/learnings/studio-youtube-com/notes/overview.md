@@ -113,4 +113,4 @@ spec and the sibling learnings' file-upload and dropdown patterns (`github-com/s
 2026-09-24, built for the Dwarves Dispatch publishing pipeline. Channel:
 `UC_SyzGLf6wiqctQFsRI_frw`, account slot `authuser=1` (han@d.foundation).
 
-Ported to the Page API (see ../PORTING.md). live: unverified (logged-in).
+Ported to the Page API (see ../PORTING.md). live: verified on status, list and probe; upload, setLanguage and remove unverified.

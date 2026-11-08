@@ -62,6 +62,6 @@ Endpoints proven: `getSpaces`, `syncRecordValuesSpace`, `queryCollection`, `sear
 - **Raw collection schema edits are rejected** ("Collection schema updates must use high-level schema operations"). Write into existing properties.
 - **Bring no ids into the learning.** Workspace, user and page ids are always arguments. `readCollection` finds the workspace from `pageId` when `spaceId` is omitted. A wrong `spaceId` makes Notion error ("Cross-cell memcached access is not allowed") instead of returning null.
 
-Ported to the Page API (see ../PORTING.md). live: unverified (logged-in).
+Ported to the Page API (see ../PORTING.md). live: verified on read tools (list_spaces, get_records, page_property_history, list_connections); write tools unverified.
 
 The connections and workspace tools open their tab with `background: true`, apply focus emulation and an active lifecycle state, and never call `Target.activateTarget`; Han's window does not move.

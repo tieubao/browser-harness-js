@@ -44,4 +44,4 @@ Log in by hand first (password plus OTP). Each call attaches to the already open
 
 Scaffolded with `browser-cdp learn new retail-sc-com --domains retail.sc.com`. Page paths, the menu-link shape, the PDF href pattern and the content type were observed on a live session. The tool code is syntax-checked and dry-run against a fake session. Its row parser was checked against the observed row shape (type cell, `dd/mm/yyyy` date cell, `View PDF`, `View`), not yet run end to end against the live bank.
 
-Ported to the Page API (see ../PORTING.md). live: unverified (logged-in).
+Ported to the Page API (see ../PORTING.md). live: status verified only on the no-tab path; estatements unverified (logged-in).

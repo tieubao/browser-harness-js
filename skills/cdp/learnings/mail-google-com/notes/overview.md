@@ -262,4 +262,4 @@ yet run end to end as tools -- the first real use is their proof.
 - **Select the signature by its list text:** the visible leaf whose text equals the name, outside any `<select>` or contenteditable. Then click `Save Changes` and wait about 5 s.
 - **Verify by reload.** The tool reloads and returns the editor text, `<img>` count, loaded-image count (`naturalWidth>0`) and link count. It never returns clipboard contents.
 
-Ported to the Page API (see ../PORTING.md). live: unverified (logged-in).
+Ported to the Page API (see ../PORTING.md). live: verified on findAccountSlot, verifySent and searchRows; write tools unverified.

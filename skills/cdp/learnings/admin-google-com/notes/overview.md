@@ -2,8 +2,8 @@
 
 The Google Workspace admin console's domain-wide delegation page lists which OAuth client IDs
 are allowed to impersonate users in the domain, and lets an admin revoke one. Unlike a normal
-signed-in Google page, this page gates on a fresh passkey re-auth every time, so the usual
-background-tab recipe does not apply here.
+signed-in Google page, this page gates on a fresh passkey re-auth every time, so a
+background tab alone is not enough: a human must see the challenge.
 
 ```js
 await learnings("admin-google-com", "listDelegation", { authuser: 0 })
@@ -22,14 +22,16 @@ await learnings("admin-google-com", "deleteDelegation", {
   `/ac/owl/domainwidedelegation` redirects to an `accounts.google.com` challenge; only a human
   at the machine can approve a passkey prompt. A `?rapt=` parameter appears in the URL once the
   challenge clears. Because nothing scriptable can answer that prompt, `listDelegation` opens a
-  **foreground** tab (never `background: true`, the challenge UI needs to be visible and
-  interactive to the human) and polls the URL every 10 seconds for up to ~4 minutes, looking for
+  **background** tab with focus emulation (Han's window does not move) and, only when the URL lands
+  on the `accounts.google.com` challenge, fronts it once with `Target.activateTarget` (the challenge
+  UI must be visible and interactive to the human). It polls the URL every 10 seconds for up to ~4 minutes, looking for
   `domainwidedelegation` in the URL with no `accounts.google.com` challenge host still present.
   No settle inside that window returns `{ stop: "reauth-required" }` rather than hanging or
   guessing.
-- **A background tab never gets there.** The same navigation from a `background: true` target
+- **A background tab never gets past the challenge.** The same navigation from a `background: true` target
   sits on the challenge screen indefinitely, since there is no human eye on it to pass the
-  prompt. Always foreground this page.
+  prompt. Hence the one-time front when the challenge host shows up. With a still-valid re-auth
+  the page loads in the background and nothing is fronted.
 - **The Delete link is visible without hover.** Unlike menus that only render on `:hover` or
   focus, each row's Delete action is a plain leaf element already in the DOM, matched by exact
   text `Delete`. No pre-click hover step is needed, only the real

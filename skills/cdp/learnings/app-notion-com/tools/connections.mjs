@@ -35,16 +35,25 @@ async function until(ctx, expr, what, ms = 10000) {
   throw new Error("timed out waiting for " + what);
 }
 
+// The table header (and a loading skeleton) renders before the data rows; a read on `tr` alone then sees
+// zero connections. Wait for a row that is not the "Connection" header; an account with none falls through.
+const DATA_ROW = "[...document.querySelectorAll('tr')].some(r=>{const l=r.innerText.split('\\n').map(s=>s.trim()).filter(Boolean);return l.length&&l[0]!=='Connection'})";
+const untilRows = async (ctx) => { await until(ctx, "document.querySelector('tr')", "connection rows"); await until(ctx, DATA_ROW, "connection data rows", 8000).catch(() => {}); };
+
 // Switch the session to an app.notion.com/developers tab (open one if none) and refuse a signed-out page.
 async function page(ctx, path = "") {
   let tab = (await ctx.browser.tabs()).find((t) => t.url.startsWith("https://app.notion.com/developers"));
   if (!tab) {
-    const { targetId } = await ctx.session.Target.createTarget({ url: BASE + path });
+    const { targetId } = await ctx.session.Target.createTarget({ url: BASE + path, background: true });
     tab = { targetId };
     await wait(4000);
   }
-  current.set(ctx, await ctx.attachPage(tab.targetId, { allowedOrigins: ["https://app.notion.com"] }));
-  await ctx.session.Target.activateTarget({ targetId: tab.targetId });
+  const attached = await ctx.attachPage(tab.targetId, { allowedOrigins: ["https://app.notion.com"] });
+  current.set(ctx, attached);
+  // Never activate the tab (Han's window must not move): focus emulation plus an active lifecycle state
+  // keep a background tab rendering and clickable.
+  await attached.cdp("Emulation.setFocusEmulationEnabled", { enabled: true }).catch(() => {});
+  await attached.cdp("Page.setWebLifecycleState", { state: "active" }).catch(() => {});
   if (path && !(await ev(ctx, "location.href")).includes(BASE + path)) { await ev(ctx, `location.href=${JSON.stringify(BASE + path)}`); await wait(4000); }
   await until(ctx, "document.body && document.body.innerText.length>50", "page render");
   // Signed out: the page renders cached with this banner; clicking would do nothing useful.
@@ -57,7 +66,7 @@ const idFromUrl = (ctx) => ev(ctx, "(location.pathname.match(/connections\\/([0-
 export async function listConnections(ctx) {
   await page(ctx);
   await ev(ctx, `location.pathname.endsWith('/connections')||(location.href=${JSON.stringify(BASE)})`);
-  await until(ctx, "document.querySelector('tr')", "connection rows");
+  await untilRows(ctx);
   // Ids are not in the rows (no links); openConnection returns the id after the click.
   return ev(ctx, "[...document.querySelectorAll('tr')].map(r=>r.innerText.split('\\n').map(s=>s.trim()).filter(Boolean)).filter(l=>l.length&&l[0]!=='Connection').map(l=>({name:l[0],details:l.slice(1)}))");
 }
@@ -67,7 +76,7 @@ export async function openConnection(ctx, args) {
   if (!name) throw new Error("name required");
   await page(ctx, "");
   if (!(await ev(ctx, "location.pathname.endsWith('/connections')"))) { await ev(ctx, `location.href=${JSON.stringify(BASE)}`); await wait(3000); }
-  await until(ctx, "document.querySelector('tr')", "connection rows");
+  await untilRows(ctx);
   const hit = await ev(ctx, `(()=>{const r=[...document.querySelectorAll('tr')].find(r=>r.innerText.split('\\n').map(s=>s.trim()).includes(${JSON.stringify(name)}));if(!r)return false;r.click();return true})()`);
   if (!hit) throw new Error("no connection named " + name);
   await until(ctx, "/connections\\/[0-9a-f-]{36}/.test(location.pathname)", "connection page");

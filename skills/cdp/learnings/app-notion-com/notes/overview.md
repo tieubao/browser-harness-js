@@ -63,3 +63,5 @@ Endpoints proven: `getSpaces`, `syncRecordValuesSpace`, `queryCollection`, `sear
 - **Bring no ids into the learning.** Workspace, user and page ids are always arguments. `readCollection` finds the workspace from `pageId` when `spaceId` is omitted. A wrong `spaceId` makes Notion error ("Cross-cell memcached access is not allowed") instead of returning null.
 
 Ported to the Page API (see ../PORTING.md). live: unverified (logged-in).
+
+The connections and workspace tools open their tab with `background: true`, apply focus emulation and an active lifecycle state, and never call `Target.activateTarget`; Han's window does not move.

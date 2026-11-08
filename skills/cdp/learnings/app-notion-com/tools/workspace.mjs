@@ -19,7 +19,7 @@ export async function ev(ctx, expression) {
 export async function pin(ctx) {
   let tab = (await ctx.browser.tabs()).find((t) => t.url.startsWith(HOME));
   if (!tab) {
-    const { targetId } = await ctx.session.Target.createTarget({ url: HOME });
+    const { targetId } = await ctx.session.Target.createTarget({ url: HOME, background: true });
     tab = { targetId };
     await wait(4000);
   }

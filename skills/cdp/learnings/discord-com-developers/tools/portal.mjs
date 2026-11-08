@@ -1,7 +1,8 @@
 // learnings/discord-com-developers/tools/portal.mjs
-// Discord Developer Portal app + bot setup, driven through ONE dedicated foreground tab
-// (hCaptcha, MFA and the consent-page scroll all need a visible tab). Steps a script cannot
-// finish return {needsHuman:"captcha"|"mfa"} with the tab fronted; never loop on them.
+// Discord Developer Portal app + bot setup, driven through ONE dedicated BACKGROUND tab (focus
+// emulation keeps it rendering; Han's window never moves). Only the human steps (hCaptcha, MFA) and
+// the consent-page scroll front it. Steps a script cannot finish return {needsHuman:"captcha"|"mfa"}
+// with the tab fronted; never loop on them.
 // Tokens are returned to the caller only, never logged. See notes/overview.md.
 import { execFile } from "node:child_process";
 
@@ -30,6 +31,13 @@ async function ev(ctx, expression, timeout = 20000) {
   return result?.value;
 }
 
+// Background tabs render hidden: emulate focus and mark the page active so evaluates and clicks work.
+async function settle(page) {
+  await page.cdp("Emulation.setFocusEmulationEnabled", { enabled: true }).catch(() => {});
+  await page.cdp("Page.setWebLifecycleState", { state: "active" }).catch(() => {});
+}
+
+// Foreground on purpose: only for a human step and the consent scroll (notes/overview.md).
 async function front(ctx) {
   await ctx.session.Target.activateTarget({ targetId: tabId });
   await (await pageOf(ctx)).cdp("Emulation.setFocusEmulationEnabled", { enabled: true }).catch(() => {});
@@ -40,13 +48,14 @@ async function front(ctx) {
 async function open(ctx, url) {
   const alive = tabId && (await ctx.browser.tabs()).some((t) => t.targetId === tabId);
   if (!alive) {
-    ({ targetId: tabId } = await ctx.session.Target.createTarget({ url }));
+    ({ targetId: tabId } = await ctx.session.Target.createTarget({ url, background: true }));
     current.set(ctx, await ctx.attachPage(tabId, { allowedOrigins: [new URL(url).origin] }));
   } else {
     current.set(ctx, await ctx.attachPage(tabId, { allowedOrigins: [new URL(url).origin] }));
+    await settle(current.get(ctx));
     await current.get(ctx).cdp("Page.navigate", { url });
   }
-  await front(ctx);
+  await settle(current.get(ctx));
   await wait(3500);
 }
 

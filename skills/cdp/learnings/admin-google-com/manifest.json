@@ -5,7 +5,7 @@
   "notes": ["notes/overview.md"],
   "nodeTools": {
     "listDelegation": {
-      "description": "Open the domain-wide delegation page in a FOREGROUND tab (a re-auth passkey challenge may appear; only a human at the machine can pass it) and wait up to ~4 minutes, polling every 10s, for the URL to settle on domainwidedelegation rather than an accounts.google.com challenge. Returns the delegation rows once the page is ready, or a reauth stop if it never settles.",
+      "description": "Open the domain-wide delegation page in a BACKGROUND tab (fronted once only if a re-auth passkey challenge appears; only a human at the machine can pass it) and wait up to ~4 minutes, polling every 10s, for the URL to settle on domainwidedelegation rather than an accounts.google.com challenge. Returns the delegation rows once the page is ready, or a reauth stop if it never settles.",
       "path": "tools/admin-google-com.mjs",
       "callable": "listDelegation",
       "args": {

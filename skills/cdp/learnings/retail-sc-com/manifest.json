@@ -19,7 +19,7 @@
       }
     },
     "estatements": {
-      "description": "Read-only. On the eStatements page (estatement_list_summary.htm), list the statement rows and their View PDF anchors. If the tab is on another ibank page it first clicks the eStatements menu anchor in-page (never Page.navigate, which drops the session). With dest, fetch each PDF with an in-page fetch (credentials included), return base64 to node, and write <type>-<month>.pdf into dest. No transfers, no form submits.",
+      "description": "Read-only. On the eStatements page (estatement_list_summary.htm), list the statement rows and their View PDF anchors. If the tab is on another ibank page it first clicks the eStatements menu anchor in-page (never Page.navigate, which drops the session). With dest, fetch each PDF with an in-page fetch (credentials included), return base64 to node, and write <type>-<month>.pdf into dest. No transfers, no form submits. Side effect: with dest, downloads each PDF (the bank may log the view) and writes files into dest; may click the eStatements menu in the open tab.",
       "path": "tools/retail-sc-com.mjs",
       "callable": "estatements",
       "args": {

@@ -12,7 +12,7 @@
       "returns": {"type": "array", "description": "[{name, channelId, kind:\"dm\"|\"group\"}]; {stop:\"not-signed-in\"|\"dm-list-not-rendered\", targetId, href} when the list never rendered"}
     },
     "readDm": {
-      "description": "Open /channels/@me/<channelId> in a NEW background target, poll until li[id^=chat-messages-] exists (up to 60s), then scroll the message scroller to the top, 2.5s per step, until the count stops growing, the \"beginning of your direct message history\" text appears, or maxScrolls is hit. Read-only DOM reading; never sends, never touches the token.",
+      "description": "Open /channels/@me/<channelId> in a NEW background target, poll until li[id^=chat-messages-] exists (up to 60s), then scroll the message scroller to the top, 2.5s per step, until the count stops growing, the \"beginning of your direct message history\" text appears, or maxScrolls is hit. Read-only DOM reading; never sends, never touches the token. Side effect: opening a DM can mark it read for the account.",
       "path": "tools/discord-com.mjs",
       "callable": "readDm",
       "args": {

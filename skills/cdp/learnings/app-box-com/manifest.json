@@ -1,0 +1,18 @@
+{
+  "id": "app-box-com",
+  "name": "Box (folder listing)",
+  "domains": ["app.box.com"],
+  "notes": ["notes/overview.md"],
+  "nodeTools": {
+    "listFolder": {
+      "description": "Read-only listing of a Box folder on the logged-in web app: items with name, id, kind, updated and size; depth > 1 also lists each subfolder (item.children). Opens its own background tab, waits for the SPA (about 8 s per folder), walks serially in that tab, and closes it. Never uploads, moves, deletes or shares.",
+      "path": "tools/app-box-com.mjs",
+      "callable": "listFolder",
+      "args": {
+        "folderId": {"type": "string", "required": false, "description": "Digits from /folder/<id>; default \"0\" (All Files root)."},
+        "depth": {"type": "integer", "required": false, "description": "1 = this folder only (default); 2 = also each subfolder's items; max 4."}
+      },
+      "returns": {"type": "object", "description": "{path, items:[{name, id, kind:'folder'|'file', updated, size, children?}]}; path is the breadcrumb joined with ' / '; size is the row text ('890.9 KB', or '6 Files' for a folder); children is the nested items array of a folder when depth allows."}
+    }
+  }
+}

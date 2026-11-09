@@ -103,7 +103,7 @@
       "returns": {"type": "object", "description": "{rows: string[]} each row whitespace-collapsed and truncated to 200 chars"}
     },
     "readThread": {
-      "description": "Open a Gmail search, read the first result row's data-legacy-thread-id, navigate the same target to #search/<query>/<threadId> (clicking the row does nothing in a background tab), expand the whole thread, and return its messages, attachment names, outbound links and recipients. Same search+background-tab mechanics as searchRows. Side effect: opening a thread marks its unread messages read.",
+      "description": "Open a Gmail search, read the first result row's data-legacy-thread-id, navigate the same target to #search/<query>/<threadId> (clicking the row does nothing in a background tab), expand the whole thread, and return its messages, attachment names, outbound links and recipients. When the thread view yields no messages it falls back to Gmail's print view (view=pt) in the same tab. Same search+background-tab mechanics as searchRows. Side effect: opening a thread marks its unread messages read.",
       "path": "tools/mail-google-com.mjs",
       "callable": "readThread",
       "args": {
@@ -111,7 +111,7 @@
         "query": {"type": "string", "required": true, "description": "Gmail search operators that should resolve to one thread"},
         "maxChars": {"type": "number", "required": false, "description": "per-message truncation, default 1600"}
       },
-      "returns": {"type": "object", "description": "{attachments: string[], links: string[] (non-mail.google.com hrefs), messages: string[], recipients: [{email, name}] (unique [email] attributes)} on a hit; {stop:\"no-results\", hint} when the search returns nothing; {stop:\"no-thread-id\", hint} when the first row has no data-legacy-thread-id"}
+      "returns": {"type": "object", "description": "{attachments: string[], links: string[] (non-mail.google.com hrefs), messages: string[], recipients: [{email, name}] (unique [email] attributes), printMessages?: [{from, date, to, body}] and source?: \"print-view\" when the print-view fallback supplied the messages (messages entries are then \"from | date | To: ...\\nbody\", body cut at maxChars)} on a hit; {stop:\"no-results\", hint} when the search returns nothing; {stop:\"no-thread-id\", hint} when the first row has no data-legacy-thread-id"}
     },
     "composeDraft": {
       "description": "Open a prefilled compose (view=cm) with To/Cc/Bcc/Subject/Body and optional attachments. Never sends -- Gmail auto-saves the open compose as a draft. Returns a readback to verify before any further action.",

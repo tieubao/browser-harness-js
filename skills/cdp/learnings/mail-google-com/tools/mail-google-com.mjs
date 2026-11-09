@@ -247,10 +247,53 @@ export async function readThread(ctx, { authuser = 0, query, maxChars = 1600 } =
       return { attachments: [...names], links, messages, recipients };
     })())`)) || "{}");
 
+    // The thread view often renders no div.a3s at all (messages: [] with attachments and
+    // recipients still filled). Gmail's print view is plain server-rendered HTML with every
+    // message, header included, so read that instead.
+    if (!(data.messages || []).length) {
+      const printed = await readPrintView(tab, { authuser, threadId, maxChars });
+      if (printed.length) {
+        data.messages = printed.map((m) => `${m.from} | ${m.date} | To: ${m.to}\n${m.body}`);
+        data.printMessages = printed;
+        data.source = "print-view";
+      }
+    }
     return data;
   } finally {
     ctx.session.Target.closeTarget({ targetId }).catch(() => {});
   }
+}
+
+// Print view text is "<sender>\t<date>\n\nTo: ...\n\n\n<body>" per message, in `table.message`
+// blocks. Each table's first line anchors where that message starts in body.innerText, so the
+// split does not depend on the sender format. Quoted text arrives collapsed as "[Quoted text hidden]".
+async function readPrintView(tab, { authuser, threadId, maxChars }) {
+  await tab.send("Page.navigate", { url: `https://mail.google.com/mail/u/${authuser}/?ui=2&view=pt&search=all&th=${encodeURIComponent(threadId)}` });
+  await wait(1500);
+  if (!(await pollUntil(tab, "!!document.querySelector('table.message')", 15000, 500))) return [];
+  await wait(1000);
+  const max = Number(maxChars) || 1600;
+  const raw = JSON.parse((await evaluate(tab, `JSON.stringify((() => {
+    const text = document.body.innerText;
+    const heads = [...document.querySelectorAll('table.message')].map((t) => (t.innerText || '').split('\\n')[0]);
+    const starts = [];
+    let cursor = 0;
+    for (const h of heads) {
+      const at = h ? text.indexOf(h, cursor) : -1;
+      if (at < 0) continue;
+      starts.push(at);
+      cursor = at + h.length;
+    }
+    return starts.map((at, i) => text.slice(at, i + 1 < starts.length ? starts[i + 1] : text.length));
+  })())`)) || "[]");
+  return raw.map((chunk) => {
+    const [head, ...rest] = chunk.split("\n");
+    const [from, ...dateParts] = head.split("\t");
+    const lines = rest.join("\n").replace(/^\s+/, "").split("\n");
+    const to = lines[0] && /^To:/i.test(lines[0]) ? lines.shift().replace(/^To:\s*/i, "").trim() : "";
+    const body = lines.join("\n").replace(/\n{3,}/g, "\n\n").trim().slice(0, max);
+    return { from: from.trim(), date: dateParts.join(" ").trim(), to, body };
+  });
 }
 
 // Never sends -- Gmail auto-saves an open compose as a draft, so an aborted or failed call

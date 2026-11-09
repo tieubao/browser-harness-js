@@ -139,6 +139,10 @@ await learnings("mail-google-com", "saveDraftNow", { targetId: draft.targetId })
 - **The header did not expand on a send-as alias.** The real click on the To row left the From line at width 0, so `prepareDraftAs` stopped at `from-line-not-found`. A synthetic `mousedown`/`mouseup`/`click` on the hidden `[role=option]` switched From three times out of three that day. It is now the fallback, and the `input[name=from]` check still guards it.
 - **Proven live end to end** for the first time: `han@console.so` alias, signature "Console Labs" present, body escaped above it. No send.
 
+## Limits (learned 2026-11-09)
+
+- **The thread view can render zero `div.a3s`.** `readThread` then returned `messages: []` with attachments and recipients still filled. It now falls back to Gmail's print view (`?ui=2&view=pt&search=all&th=<legacy-thread-id>`, same background tab, polled for `table.message`): every message with sender, date, To and full body, quoted text collapsed to `[Quoted text hidden]`. `messages` stays `string[]` (`from | date | To: ...` then the body, body cut at `maxChars`); `printMessages` holds `{from, date, to, body}` and `source` is `"print-view"`. The DOM read stays first because it needs no second navigation. Proven live on a four-message thread.
+
 ## Concurrency
 
 The harness REPL server is one long-lived process shared by every Claude session on the machine, and its active-session pointer is global. A tool that moved that pointer to its tab and then made plain `session.X(...)` calls raced other sessions: one session's `Page.navigate` landed in another session's draft tab, and `setBodyAboveSignature`, `replaceAttachments` and `replyInThread` hung or acted on the wrong tab.

@@ -5,6 +5,8 @@
 // mousePressed, mouseReleased) at the target's own bounding-rect centre switches the sender.
 // Verified live 2026-09-27. Sending is outward and irreversible, so prepareDraftAs stops short
 // of Send and hands back a readback; sendPreparedDraft refuses without confirm:true.
+import fs from "node:fs";
+import path from "node:path";
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // The REPL server is one process shared by every Claude session, and its active-session pointer
@@ -294,6 +296,68 @@ async function readPrintView(tab, { authuser, threadId, maxChars }) {
     const body = lines.join("\n").replace(/\n{3,}/g, "\n\n").trim().slice(0, max);
     return { from: from.trim(), date: dateParts.join(" ").trim(), to, body };
   });
+}
+
+// Same search + background-tab + thread-URL mechanics as readThread. Attachment chips carry
+// download_url="mime:filename:url"; the url is fetched inside the page so the Gmail session
+// cookies apply, and the bytes come back as base64 for node to write. Gmail also lists "x (1).pdf"
+// / "x[1].pdf" copies of the same file, so names are cleaned and deduped before fetching.
+export async function downloadAttachments(ctx, { authuser = 0, query, outDir, match } = {}) {
+  if (!query) throw new Error("downloadAttachments: query is required");
+  if (!outDir || !path.isAbsolute(outDir)) throw new Error("downloadAttachments: outDir must be an absolute path");
+  const nameFilter = match ? new RegExp(match, "i") : null;
+  const url = `https://mail.google.com/mail/u/${authuser}/#search/${encodeURIComponent(query)}`;
+  const { targetId } = await ctx.session.Target.createTarget({ url, background: true });
+  try {
+    const tab = await attachTab(ctx, targetId);
+    await wait(9000);
+
+    const threadId = await evaluate(tab, `(() => {
+      const row = document.querySelector('tr.zA');
+      if (!row) return null;
+      const el = row.matches('[data-legacy-thread-id]') ? row : row.querySelector('[data-legacy-thread-id]');
+      return el ? el.getAttribute('data-legacy-thread-id') : '';
+    })()`);
+    if (threadId === null || threadId === undefined) return { stop: "no-results", hint: `no rows for query ${query}` };
+    if (!threadId) return { stop: "no-thread-id", hint: "first row has no data-legacy-thread-id descendant" };
+    await tab.send("Page.enable");
+    await tab.send("Page.navigate", { url: `${url}/${encodeURIComponent(threadId)}` });
+    await wait(5000);
+
+    const expandRect = JSON.parse((await evaluate(tab, `JSON.stringify((() => {
+      const btn = document.querySelector('[aria-label="Expand all"]');
+      return btn ? btn.getBoundingClientRect() : null;
+    })())`)) || "null");
+    if (expandRect) {
+      await clickRect(tab, expandRect);
+      await wait(2000);
+    }
+
+    const urls = (await evaluate(tab, `[...new Set([...document.querySelectorAll('[download_url]')].map((e) => e.getAttribute('download_url')))]`)) || [];
+    fs.mkdirSync(outDir, { recursive: true });
+    const saved = [];
+    const seenNames = new Set();
+    for (const du of urls) {
+      const [mime, rawName] = du.split(":");
+      if (rawName === undefined) continue;
+      const link = du.slice(mime.length + rawName.length + 2);
+      let name = rawName;
+      try { name = decodeURIComponent(rawName); } catch { /* keep the raw name */ }
+      name = path.basename(name.replace(/\[1\]/g, "").replace(/ \(1\)/g, ""));
+      if (!name || seenNames.has(name)) continue;
+      seenNames.add(name);
+      if (nameFilter && !nameFilter.test(name)) continue;
+      const b64 = await evaluate(tab, `fetch(${JSON.stringify(link)}, { credentials: 'include' })
+        .then((r) => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.arrayBuffer(); })
+        .then((buf) => { let s = ''; const u = new Uint8Array(buf); for (let i = 0; i < u.length; i += 0x8000) s += String.fromCharCode.apply(null, u.subarray(i, i + 0x8000)); return btoa(s); })`);
+      const file = path.join(outDir, name);
+      fs.writeFileSync(file, Buffer.from(b64, "base64"));
+      saved.push({ name, mime, bytes: fs.statSync(file).size, path: file });
+    }
+    return { saved, found: urls.length };
+  } finally {
+    ctx.session.Target.closeTarget({ targetId }).catch(() => {});
+  }
 }
 
 // Never sends -- Gmail auto-saves an open compose as a draft, so an aborted or failed call

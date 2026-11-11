@@ -18,6 +18,8 @@ await learnings("mail-google-com", "verifySent", { recipient: "someone@example.c
 
 await learnings("mail-google-com", "searchRows", { query: "from:someone is:unread", limit: 10 })
 await learnings("mail-google-com", "readThread", { query: "subject:\"Invoice #123\"" })
+await learnings("mail-google-com", "downloadAttachments", { query: "subject:\"Invoice #123\"", outDir: "/abs/dir", match: "\\.pdf$" })
+// -> { saved: [{ name, mime, bytes, path }], found }: first result thread, bytes fetched in-page with the session cookies
 const draft = await learnings("mail-google-com", "composeDraft", {
   to: "someone@example.com", subject: "Subject", body: "Body text",
   attachments: ["/absolute/path/to/file.pdf"],

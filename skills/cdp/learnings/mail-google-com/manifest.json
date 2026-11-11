@@ -113,6 +113,18 @@
       },
       "returns": {"type": "object", "description": "{attachments: string[], links: string[] (non-mail.google.com hrefs), messages: string[], recipients: [{email, name}] (unique [email] attributes), printMessages?: [{from, date, to, body}] and source?: \"print-view\" when the print-view fallback supplied the messages (messages entries are then \"from | date | To: ...\\nbody\", body cut at maxChars)} on a hit; {stop:\"no-results\", hint} when the search returns nothing; {stop:\"no-thread-id\", hint} when the first row has no data-legacy-thread-id"}
     },
+    "downloadAttachments": {
+      "description": "Open a Gmail search in a background tab, take the first row's data-legacy-thread-id, navigate to the thread, real-click \"Expand all\" when present, collect the unique [download_url] chips (mime:filename:url), skip duplicate names (\"x (1).pdf\" and \"x[1].pdf\" copies; %XX in names is decoded), fetch each url inside the page with credentials:'include', and write the bytes to outDir with node fs. Side effect: opening a thread marks its unread messages read; writes files under outDir.",
+      "path": "tools/mail-google-com.mjs",
+      "callable": "downloadAttachments",
+      "args": {
+        "authuser": {"type": "number", "required": false, "description": "default 0"},
+        "query": {"type": "string", "required": true, "description": "Gmail search operators that should resolve to one thread (the first row is used)"},
+        "outDir": {"type": "string", "required": true, "description": "absolute directory to write into; created when missing"},
+        "match": {"type": "string", "required": false, "description": "regex source tested case-insensitively against the cleaned file name; omit to save every attachment"}
+      },
+      "returns": {"type": "object", "description": "{saved: [{name, mime, bytes, path}], found: number of unique download_url chips seen} on a hit; {stop:\"no-results\", hint} when the search returns nothing; {stop:\"no-thread-id\", hint} when the first row has no data-legacy-thread-id"}
+    },
     "composeDraft": {
       "description": "Open a prefilled compose (view=cm) with To/Cc/Bcc/Subject/Body and optional attachments. Never sends -- Gmail auto-saves the open compose as a draft. Returns a readback to verify before any further action.",
       "path": "tools/mail-google-com.mjs",

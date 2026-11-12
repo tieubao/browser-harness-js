@@ -74,4 +74,30 @@ does not apply them, so verify by re-reading the org after a PATCH, not by trust
 The 2FA requirement toggle lives at a different page, `/organizations/<org>/settings/security`,
 not on the profile page. Creating a private-only repo on a Free-plan org via REST returns 422.
 
+## Fine-grained PAT: add a repo to its access (no API, token page only)
+
+GitHub has no REST or GraphQL call to change a fine-grained PAT's repository access. The token page `https://github.com/settings/personal-access-tokens/<id>` is the editor (`/<id>/edit` is a 404). Token ids are the numeric suffix of the links on `/settings/personal-access-tokens`.
+
+```js
+const a = await learnings("github-com", "openFgPat", { tokenId: "123456" })
+// a = {status:"sudo", targetId, digits:"42"}  -> approve on the phone, then poll the same tab:
+const b = await learnings("github-com", "openFgPat", { tokenId: "123456", targetId: a.targetId, waitMs: 120000 })
+// b = {status:"ready", targetId}
+const r = await learnings("github-com", "addFgPatRepo", { targetId: a.targetId, org: "dwarvesf", repoId: "987654321", expectCount: 4 })
+// r = {done:true, before:4, after:5}
+```
+
+Recipe this encodes:
+
+- **Sudo first.** The page opens on "Confirm access". The verb clicks the visible "Use GitHub Mobile" button, reads the two digits off the page, and returns them. The caller approves on the phone. Then `openFgPat` with the `targetId` polls `document.title` until it leaves "Confirm access" (a few minutes; the request then expires, and `resend: true` reloads for a fresh one). Never type a password.
+- **The repo-access form hides behind the SECOND button whose text is exactly "Edit".** It reveals `form[action*="/grant-requests/organizations/<org>"]` with `install_target=selected` checked and one hidden `input[name="repository_ids[]"]` per repo.
+- **Add = clone the last `repository_ids[]` input**, set its value to the new repo id, insert it beside the others, click the form's "Update" button.
+- **Click Edit, append and Update in ONE evaluation.** A separate evaluation found the form closed again and the update silently never saved. The Update click fires from `setTimeout` so the result returns before the page navigates.
+- **Guards, all checked before any change:** `install_target=selected` is checked, the id is not already present, the current count equals the caller's `expectCount`. Any miss returns `{done:false, reason}` with the form untouched.
+- **Verify outside the browser, with the token itself.** The verb cannot: it returns only `{before, after}` input counts. Check `GET repos/<o>/<r>/actions/runs` flips 404 to 200 and an old repo stays 200.
+- Both verbs leave the tab open (the sudo wait needs it). Close it with `ctx.session.Target.closeTarget` when done.
+- Selectors are label-text based (`Edit`, `Update`, `Use GitHub Mobile`); the digits reader takes a two-digit leaf element, else the first two-digit number after "GitHub Mobile". If GitHub changes the sudo copy, `digits` comes back `null` and the caller reads the tab.
+
+Not run live yet as tools; the first real use is their proof. The recipe itself was proven by hand on a real token (404 to 200 on the added repo).
+
 Ported to the Page API (see ../PORTING.md). live: unverified (logged-in).

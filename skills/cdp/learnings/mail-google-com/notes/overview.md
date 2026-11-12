@@ -145,6 +145,11 @@ await learnings("mail-google-com", "saveDraftNow", { targetId: draft.targetId })
 
 - **The thread view can render zero `div.a3s`.** `readThread` then returned `messages: []` with attachments and recipients still filled. It now falls back to Gmail's print view (`?ui=2&view=pt&search=all&th=<legacy-thread-id>`, same background tab, polled for `table.message`): every message with sender, date, To and full body, quoted text collapsed to `[Quoted text hidden]`. `messages` stays `string[]` (`from | date | To: ...` then the body, body cut at `maxChars`); `printMessages` holds `{from, date, to, body}` and `source` is `"print-view"`. The DOM read stays first because it needs no second navigation. Proven live on a four-message thread.
 
+## Limits (learned 2026-11-12)
+
+- **`sendPreparedDraft` can report `compose-still-open-after-send` after a real send.** Its check looks for `input[name=from]` 3 s after the click, and an inbox page can still hold one. A `verifySent` right after also missed the message; the same check about 20 s later found it. Never resend on that stop: wait about 20 s, run `verifySent`, and resend only on a second miss. Seen live on a `composeDraft` with a PDF attachment, sent to the account's own address.
+- **`composeDraft` readback lists can carry noise.** `recipients` repeated the address twice, and `attachments` held the address beside the real file name (the leaf scan in `ATTACHMENT_NAMES_JS`). Read them for the expected entries; do not treat an extra entry as a second recipient or file.
+
 ## Concurrency
 
 The harness REPL server is one long-lived process shared by every Claude session on the machine, and its active-session pointer is global. A tool that moved that pointer to its tab and then made plain `session.X(...)` calls raced other sessions: one session's `Page.navigate` landed in another session's draft tab, and `setBodyAboveSignature`, `replaceAttachments` and `replyInThread` hung or acted on the wrong tab.

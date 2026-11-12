@@ -8,6 +8,9 @@ The client portal at `accounts.delawareregisteredagent.com` is an SPA. It has no
 - `fetch(path, {credentials: "include"})` from a page on the portal origin works. No token in localStorage is needed.
 - A new background tab opened straight to the portal can land on an auth redirect (`#state=...`). The tools reuse an already-open portal tab (found by URL host via `Target.getTargets`). Otherwise they open one and poll until the API answers 200.
 - A 401/403 means the browser is logged out; sign in by hand, then retry.
+- Sign-in is a Keycloak form on `id.delawareregisteredagent.com` (`#kc-form`, `#username`, `#password`). In a hidden background tab, clicking `#kc-login` does nothing. Set the values, then call `form.requestSubmit()` after `Emulation.setFocusEmulationEnabled({enabled:true})`.
+- A second step emails a 6-digit code to the login address (`#code` in `#kc-email-code-login-form`). When that address is Proton, read the code with the `mail-proton-me` learning: `readConversation({ term: "Verification Code" })`. Submit it with `requestSubmit()` too. The code expires in 15 minutes.
+- The Documents page is `#/documents`. A bare `/documents` path returns an S3 `AccessDenied` page. `listDocuments` reads the same list through the API.
 
 ## Endpoints
 

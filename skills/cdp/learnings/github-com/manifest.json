@@ -25,6 +25,30 @@
         "dryRun": {"type": "boolean", "required": false, "description": "stop after finding #avatar-upload-input; do not upload"}
       },
       "returns": {"type": "object", "description": "{done:true} on success; {done:false, reason} on no admin access, no input found, or upload/click failure"}
+    },
+    "openFgPat": {
+      "description": "Phase 1 of changing a fine-grained PAT's repository access (no API exists). Opens https://github.com/settings/personal-access-tokens/<tokenId> in a background tab that stays open. At the 'Confirm access' sudo gate it clicks 'Use GitHub Mobile' and returns the two digits for the caller to approve on the phone; never types a password. Call again with the returned targetId to poll until sudo clears (resend:true reloads and sends a fresh phone request after expiry).",
+      "path": "tools/fg-pat.mjs",
+      "callable": "openFgPat",
+      "args": {
+        "tokenId": {"type": "string", "required": true, "description": "numeric suffix of the token link on /settings/personal-access-tokens"},
+        "targetId": {"type": "string", "required": false, "description": "tab from a previous call; re-checks it instead of opening a new one"},
+        "resend": {"type": "boolean", "required": false, "description": "with targetId: reload and click 'Use GitHub Mobile' again"},
+        "waitMs": {"type": "integer", "required": false, "description": "with targetId: poll up to this long for sudo to clear, default 30000, max 120000"}
+      },
+      "returns": {"type": "object", "description": "{status:'sudo', targetId, digits} | {status:'ready', targetId} | {status:'unexpected', targetId, href}"}
+    },
+    "addFgPatRepo": {
+      "description": "Phase 2: add one repository id to a fine-grained PAT's selected repositories. In ONE page evaluation it clicks the second 'Edit' button, then aborts unless install_target=selected is checked, the id is absent, and the current repository_ids[] count equals expectCount; then clones the last hidden input, sets the new id, and fires the form's 'Update' click on a timer. Cannot verify access; the caller checks with the token itself.",
+      "path": "tools/fg-pat.mjs",
+      "callable": "addFgPatRepo",
+      "args": {
+        "targetId": {"type": "string", "required": true, "description": "tab from openFgPat once its status is 'ready'"},
+        "org": {"type": "string", "required": true, "description": "org login in the form action /grant-requests/organizations/<org>"},
+        "repoId": {"type": "string", "required": true, "description": "numeric repository id to add"},
+        "expectCount": {"type": "integer", "required": true, "description": "repositories currently on the token; the verb aborts on any other count"}
+      },
+      "returns": {"type": "object", "description": "{done:true, before, after, targetId} on submit; {done:false, reason, ...} on sudo, wrong page, edit-button-missing, form-not-open, install-target-not-selected, count-mismatch, already-present, no-input-to-clone, update-button-missing"}
     }
   }
 }

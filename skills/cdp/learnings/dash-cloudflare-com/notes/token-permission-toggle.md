@@ -41,7 +41,7 @@ by a read.
 6. Permission checkboxes are `span[role=checkbox]` with aria-label like
    "Account Settings, Account, Edit" and `aria-checked`. Real-click toggles; re-read `aria-checked`.
 7. Real-click "Continue to summary". The summary page lists every permission: check the change
-   there. Then real-click "Update token". The list page shows the token "Modified 0s ago".
+   there. Then real-click "Update token". The list row shows only a relative time ("0s ago", no "Modified" label), so the tool confirms the save by polling the token's permission groups until they change.
 8. Verify out of band with the token itself: a call that needs the permission succeeds after an add
    and returns error 10000 (authentication/permission) after a remove.
 
@@ -60,8 +60,8 @@ by a read.
   an account permission is found in the account policy, not the zone one. Two account policies that
   both list it: pass `policyMatch`.
 - **Already in the requested state** returns `{changed:false}` and saves nothing.
-- A `Modified` time that never freshens returns `{error}` with `before`: read the token again before
-  retrying, the save may have landed.
+- Permission groups that never change after "Update token" return `{error}` with `before` and `after`:
+  read the token again before retrying, the save may have landed late.
 
 ## Driving it by hand (when the tool is not enough)
 

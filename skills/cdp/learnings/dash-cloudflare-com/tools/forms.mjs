@@ -393,14 +393,20 @@ export async function setTokenPermission(ctx, args) {
     if (args.dryRun) return { changed: false, dryRun: true, policyIndex, before, summary };
 
     await clickReal("Update token", "button", "^update token$");
-    const modified = await pollUntil(`
-      const row = [...document.querySelectorAll("tr")].find((r) => ${rowRe}.test(r.innerText || ""));
-      const m = row && (row.innerText || "").match(/Modified[^\\n]*/i);
-      return m && /\\b\\d+\\s?s\\b|second|just now/i.test(m[0]) ? m[0] : null;`, 25000);
-    if (!modified) return { error: "list page did not show a fresh Modified time after Update token", policyIndex, before };
-
-    const after = await readGroups();
-    const diff = before && after ? { added: after.filter((n) => !before.includes(n)), removed: before.filter((n) => !after.includes(n)) } : {};
+    // The list row shows only a relative time ("0s ago"), no "Modified" label, so
+    // confirm the save by polling the token's permission groups until they change.
+    let after = null;
+    const until = Date.now() + 25000;
+    while (Date.now() < until) {
+      after = await readGroups();
+      if (after && before && JSON.stringify(after) !== JSON.stringify(before)) break;
+      await wait(1000);
+    }
+    if (!after || (before && JSON.stringify(after) === JSON.stringify(before))) {
+      return { error: "token permission groups did not change after Update token", policyIndex, before, after };
+    }
+    const modified = "permission groups changed";
+    const diff = before ? { added: after.filter((n) => !before.includes(n)), removed: before.filter((n) => !after.includes(n)) } : {};
     return { changed: true, policyIndex, modified, before, after, ...diff };
   });
 }

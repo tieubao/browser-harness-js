@@ -378,10 +378,19 @@ export async function setTokenPermission(ctx, args) {
     const want = enabled ? "true" : "false";
     let changed = false;
     if (box.checked !== want) {
-      await realClick(currentPage, box.x + box.width / 2, box.y + box.height / 2);
-      const now = await pollUntil(`
-        const e = [...document.querySelectorAll('[role="checkbox"]')].find((x) => x.getAttribute("aria-label") === ${JSON.stringify(permission)});
-        return e && e.getAttribute("aria-checked") === ${JSON.stringify(want)} ? "ok" : null;`, 6000);
+      // The filtered list re-renders after the search text lands: let it settle and measure
+      // again right before each click, or the press can hit where the box used to be.
+      let now = null;
+      for (let attempt = 0; attempt < 3 && !now; attempt++) {
+        await wait(700);
+        const fresh = await ariaRect(permission);
+        if (!fresh) continue;
+        if (fresh.checked === want) { now = "ok"; break; }
+        await realClick(currentPage, fresh.x + fresh.width / 2, fresh.y + fresh.height / 2);
+        now = await pollUntil(`
+          const e = [...document.querySelectorAll('[role="checkbox"]')].find((x) => x.getAttribute("aria-label") === ${JSON.stringify(permission)});
+          return e && e.getAttribute("aria-checked") === ${JSON.stringify(want)} ? "ok" : null;`, 3000);
+      }
       if (!now) return { error: "checkbox did not reach the requested state after the click", policyIndex };
       changed = true;
     }

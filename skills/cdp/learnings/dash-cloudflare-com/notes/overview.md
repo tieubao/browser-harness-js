@@ -16,7 +16,8 @@ await learnings("dash-cloudflare-com", "setZoneSetting", { zoneId, key: "ssl", v
 ```
 
 Flows where in-page POST/PUT returns 403 (Turnstile widgets, AI Gateway provider keys and token)
-are form-driven: see `turnstile-and-ai-gateway.md`. Login and passkey workarounds:
+are form-driven: see `turnstile-and-ai-gateway.md`. Editing a permission on an existing token (also form-driven):
+`token-permission-toggle.md`. Login and passkey workarounds:
 `account-access.md`.
 
 ## Limits (learned 2026-09-04)

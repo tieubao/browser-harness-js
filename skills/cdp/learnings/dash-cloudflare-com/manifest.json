@@ -2,7 +2,7 @@
   "id": "dash-cloudflare-com",
   "name": "Cloudflare dashboard (cookie-authenticated API)",
   "domains": ["dash.cloudflare.com"],
-  "notes": ["notes/overview.md", "notes/turnstile-and-ai-gateway.md", "notes/account-access.md"],
+  "notes": ["notes/overview.md", "notes/turnstile-and-ai-gateway.md", "notes/account-access.md", "notes/token-permission-toggle.md"],
   "nodeTools": {
     "whoami": {
       "description": "Signed-in user's email, read from the dashboard profile page. Returns {stop:\"sudo\"|\"turnstile\"|\"no-email-found\"} instead of clicking through a blocking page.",
@@ -78,6 +78,19 @@
         "name": {"type": "string", "required": true, "description": "token name"}
       },
       "returns": {"type": "object", "description": "{name, value} on success; {stop} or {error} otherwise"}
+    },
+    "setTokenPermission": {
+      "description": "Turn one permission group on or off for an existing user API token through the token edit form (in-page PUT to /api/v4/user/tokens/<id> returns a 403 challenge). Real-clicks the token row Actions then Edit, finds the policy that lists the permission (policy order is not stable; optional policyMatch narrows by summary text), toggles the aria-checked checkbox, Continue to summary, Update token. Proves the change by reading the token's permission group names through the dashboard GET before and after. dryRun stops on the summary page.",
+      "path": "tools/forms.mjs",
+      "callable": "setTokenPermission",
+      "args": {
+        "tokenName": {"type": "string", "required": true, "description": "exact token name as listed on /profile/api-tokens"},
+        "permission": {"type": "string", "required": true, "description": "checkbox aria-label as the form shows it, e.g. \"Account Settings, Account, Edit\""},
+        "enabled": {"type": "boolean", "required": true, "description": "true to grant, false to remove"},
+        "policyMatch": {"type": "string", "required": false, "description": "regex source tested against each policy's summary text; default is the first policy that lists the permission"},
+        "dryRun": {"type": "boolean", "required": false, "description": "stop on the summary page without clicking Update token"}
+      },
+      "returns": {"type": "object", "description": "{changed, policyIndex, modified, before, after, added, removed} (group names); {changed:false} when already in the requested state; {stop} or {error} otherwise"}
     }
   }
 }

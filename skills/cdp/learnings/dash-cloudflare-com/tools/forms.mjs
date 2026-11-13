@@ -291,3 +291,122 @@ export async function createGatewayToken(ctx, args) {
     return { name, value };
   });
 }
+
+// Turn ONE permission group on or off for an existing user API token, through the token edit form.
+// Why a form: in-page PUT/POST to /api/v4/user/tokens/<id> from a dash tab returns a 403 HTML
+// challenge (GET works with x-cross-site-security: dash and x-atok: window.bootstrap.atok), so
+// api() cannot edit a token.
+//
+// args.permission is the checkbox aria-label exactly as the form shows it, e.g.
+// "Account Settings, Account, Edit". The search box is typed with its first segment.
+// args.policyMatch (optional regex source) picks the policy by its summary text. Without it the
+// tool opens each policy in turn and uses the first one that lists the permission. The policy
+// ORDER IS NOT STABLE between visits, so never hard-code an index.
+// args.dryRun stops on the summary page without clicking "Update token".
+// Returns {changed, before, after, added, removed, ...}: before/after are the token's permission
+// group NAMES read through the dashboard GET (names only, no ids), so the change is proven by a
+// read, not by the click. Verify out of band as well: call the API with the token itself.
+export async function setTokenPermission(ctx, args) {
+  needArgs("setTokenPermission", args, ["tokenName", "permission"]);
+  if (typeof args.enabled !== "boolean") throw new Error("setTokenPermission: enabled (true|false) is required");
+  const { tokenName, permission, enabled } = args;
+  const policyRe = args.policyMatch ? new RegExp(args.policyMatch, "i") : null;
+  const searchText = permission.split(",")[0].trim();
+  const nameRe = tokenName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+  const readGroups = async () => {
+    const r = await inPage(`
+      return fetch("/api/v4/user/tokens?per_page=100", { credentials: "include",
+        headers: { "x-cross-site-security": "dash", "x-atok": (window.bootstrap || {}).atok || "" } })
+        .then((x) => x.json()).catch(() => null);`);
+    if (!r || !r.success) return null;
+    const t = (r.result || []).find((x) => x.name === tokenName);
+    if (!t) return null;
+    return [...new Set(t.policies.flatMap((p) => p.permission_groups.map((g) => g.name)))].sort();
+  };
+  const ariaRect = (label) => inPage(`
+    const e = [...document.querySelectorAll('[role="checkbox"]')].find((x) => vis(x) && x.getAttribute("aria-label") === ${JSON.stringify(label)});
+    return e ? { ...rectOf(e), checked: e.getAttribute("aria-checked") } : null;`);
+  const policyButtons = () => inPage(`
+    return [...document.querySelectorAll('button[aria-label="Edit policy"]')].filter(vis).map((b) => {
+      let top = b; for (let n = b.parentElement, i = 0; n && i < 5; n = n.parentElement, i++) {
+        if ([...n.querySelectorAll('button[aria-label="Edit policy"]')].length === 1) top = n; else break; }
+      return (top.innerText || "").replace(/\\s+/g, " ").slice(0, 160); });`);
+
+  return withTab(ctx, "https://dash.cloudflare.com/profile/api-tokens", async () => {
+    if (!(await pollUntil(`return document.body.innerText.includes(${JSON.stringify(tokenName)});`, 20000))) {
+      return { error: `token ${tokenName} not listed on /profile/api-tokens` };
+    }
+    const before = await readGroups();
+
+    // Actions menu: el.click() does not open it reliably, a real mouse press does.
+    await currentPage.cdp("Page.bringToFront", {});
+    const rowRe = reOf(nameRe);
+    const actions = await inPage(`
+      const row = [...document.querySelectorAll("tr")].find((r) => ${rowRe}.test(r.innerText || ""));
+      const b = row && [...row.querySelectorAll("button")].find((x) => /actions/i.test(x.innerText || x.getAttribute("aria-label") || ""));
+      return rectOf(b);`);
+    if (!actions) return { error: "Actions button not found in the token row" };
+    await realClick(currentPage, actions.x + actions.width / 2, actions.y + actions.height / 2);
+    await clickReal("Edit menu item", '[role="menuitem"]', "^edit$", { timeout: 8000 });
+    if (!(await pollUntil(`return !!document.querySelector('button[aria-label="Edit policy"]');`, 20000))) {
+      return { error: "token edit form did not load (no Edit policy button)" };
+    }
+
+    // Find the policy, open it, search, locate the checkbox.
+    const summaries = await policyButtons();
+    let box = null;
+    let policyIndex = -1;
+    for (let i = 0; i < summaries.length && !box; i++) {
+      if (policyRe && !policyRe.test(summaries[i])) continue;
+      const btn = await inPage(`return rectOf([...document.querySelectorAll('button[aria-label="Edit policy"]')].filter(vis)[${i}]);`);
+      if (!btn) continue;
+      await realClick(currentPage, btn.x + btn.width / 2, btn.y + btn.height / 2);
+      const sr = await pollUntil(`
+        const i = [...document.querySelectorAll("input")].find((x) => vis(x) && x.placeholder === "Search for permission groups...");
+        return i ? rectOf(i) : null;`, 8000);
+      if (!sr) { await clickReal("Close editor", "button", "^close editor$", { timeout: 4000 }).catch(() => {}); continue; }
+      await realClick(currentPage, sr.x + sr.width / 2, sr.y + sr.height / 2);
+      await currentPage.cdp("Input.insertText", { text: searchText });
+      const end = Date.now() + 6000;
+      while (!box && Date.now() < end) { box = await ariaRect(permission); if (!box) await wait(400); }
+      if (box) { policyIndex = i; break; }
+      await clickReal("Close editor", "button", "^close editor$", { timeout: 4000 }).catch(() => {});
+    }
+    if (!box) return { error: `checkbox "${permission}" not found in any policy`, policies: summaries };
+
+    const want = enabled ? "true" : "false";
+    let changed = false;
+    if (box.checked !== want) {
+      await realClick(currentPage, box.x + box.width / 2, box.y + box.height / 2);
+      const now = await pollUntil(`
+        const e = [...document.querySelectorAll('[role="checkbox"]')].find((x) => x.getAttribute("aria-label") === ${JSON.stringify(permission)});
+        return e && e.getAttribute("aria-checked") === ${JSON.stringify(want)} ? "ok" : null;`, 6000);
+      if (!now) return { error: "checkbox did not reach the requested state after the click", policyIndex };
+      changed = true;
+    }
+    if (!changed) return { changed: false, policyIndex, before, after: before, note: "already in the requested state; nothing saved" };
+
+    await clickReal("Continue to summary", "button", "^continue to summary$");
+    await pollUntil(`return /summary/i.test(document.body.innerText || "") && !!Array.from(document.querySelectorAll("button")).find((b) => /^update token$/i.test((b.innerText || "").trim()));`, 15000);
+    const summary = await inPage(`return document.body.innerText.replace(/\\s+/g, " ").slice(0, 1500);`);
+    if (args.dryRun) return { changed: false, dryRun: true, policyIndex, before, summary };
+
+    await clickReal("Update token", "button", "^update token$");
+    // The list row shows only a relative time ("0s ago"), no "Modified" label, so
+    // confirm the save by polling the token's permission groups until they change.
+    let after = null;
+    const until = Date.now() + 25000;
+    while (Date.now() < until) {
+      after = await readGroups();
+      if (after && before && JSON.stringify(after) !== JSON.stringify(before)) break;
+      await wait(1000);
+    }
+    if (!after || (before && JSON.stringify(after) === JSON.stringify(before))) {
+      return { error: "token permission groups did not change after Update token", policyIndex, before, after };
+    }
+    const modified = "permission groups changed";
+    const diff = before ? { added: after.filter((n) => !before.includes(n)), removed: before.filter((n) => !after.includes(n)) } : {};
+    return { changed: true, policyIndex, modified, before, after, ...diff };
+  });
+}

@@ -1,0 +1,48 @@
+{
+  "id": "calendar-google-com",
+  "name": "Google Calendar",
+  "domains": [
+    "calendar.google.com"
+  ],
+  "notes": [
+    "notes/overview.md"
+  ],
+  "nodeTools": {
+    "status": {
+      "description": "Where the tab is: no-tab (no open tab matches domains) | tab.",
+      "path": "tools/calendar-google-com.mjs",
+      "callable": "status",
+      "args": {},
+      "returns": {
+        "type": "object",
+        "description": "{state:\"tab\", url} or {state:\"no-tab\", hint}"
+      }
+    },
+    "ical-secret": {
+      "description": "Read a calendar's Secret address in iCal format and RETURN it (a credential). Capture with VAR=$(browser-harness-js ...) and pipe it to a secret store; never print it. Opens its own tab, reveals through the Security warning dialog, never clicks Reset.",
+      "path": "tools/calendar-google-com.mjs",
+      "callable": "icalSecret",
+      "args": {
+        "calendarId": {
+          "type": "string",
+          "required": true,
+          "description": "calendar id; for a primary calendar, the account email"
+        },
+        "authuser": {
+          "type": "number",
+          "required": false,
+          "description": "account slot from /calendar/u/<n>/, default 0"
+        },
+        "timeoutMs": {
+          "type": "number",
+          "required": false,
+          "description": "wait for the settings page, default 20000"
+        }
+      },
+      "returns": {
+        "type": "string",
+        "description": "https://calendar.google.com/calendar/ical/<id>/private-<token>/basic.ics"
+      }
+    }
+  }
+}

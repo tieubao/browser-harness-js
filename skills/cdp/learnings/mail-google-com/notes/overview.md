@@ -150,6 +150,11 @@ await learnings("mail-google-com", "saveDraftNow", { targetId: draft.targetId })
 - **`sendPreparedDraft` can report `compose-still-open-after-send` after a real send.** Its check looks for `input[name=from]` 3 s after the click, and an inbox page can still hold one. A `verifySent` right after also missed the message; the same check about 20 s later found it. Never resend on that stop: wait about 20 s, run `verifySent`, and resend only on a second miss. Seen live on a `composeDraft` with a PDF attachment, sent to the account's own address.
 - **`composeDraft` readback lists can carry noise.** `recipients` repeated the address twice, and `attachments` held the address beside the real file name (the leaf scan in `ATTACHMENT_NAMES_JS`). Read them for the expected entries; do not treat an extra entry as a second recipient or file.
 
+## Limits (learned 2026-11-16)
+
+- **`replyInThread` then `sendPreparedDraft` worked live end to end.** An inline reply to the last message of a personal-Gmail thread, with an `.xlsx` attachment and `stripSignature: true`, read back the right recipient, body and file name, and `sendPreparedDraft({ targetId, confirm: true })` returned `{sent: true}`. The message showed in Sent, in the same thread, about 20 s later.
+- **Use this path for any reply that needs a file.** The claude.ai Gmail connector takes attachments only as inline base64, and an agent's output masker replaces long base64 with a mask, so the file cannot reach the connector call. `replyInThread` takes a host path instead.
+
 ## Concurrency
 
 The harness REPL server is one long-lived process shared by every Claude session on the machine, and its active-session pointer is global. A tool that moved that pointer to its tab and then made plain `session.X(...)` calls raced other sessions: one session's `Page.navigate` landed in another session's draft tab, and `setBodyAboveSignature`, `replaceAttachments` and `replyInThread` hung or acted on the wrong tab.

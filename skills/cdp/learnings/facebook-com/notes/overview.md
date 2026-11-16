@@ -58,3 +58,20 @@ until the count is unchanged for ~10 rounds (or a max-rounds bound).
 - **Close the tab** in `finally` so the user's tab count is unchanged.
 
 Ported to the Page API (see ../PORTING.md). live: verified on listPageReels; createPagePost unverified.
+
+## Reading a Page's feed (`listPageFeed` and `listPageReelViews` node-tools)
+
+For competitor watching: counts per post without opening each one. Hand-proven on a 30-post Page.
+
+- **A post card** is the smallest ancestor of `[aria-label^="Actions for this post"]` that holds exactly one such button and a `[aria-label^="Comment on"]` control. Class names are obfuscated; labels are not.
+- **Counts live in aria-labels.** `Comment on X's post, 15 comments`, `Share X's post, 1 share`, and one `Like: 57 people` / `Love: 41 people` label per reaction type (sum them). Zero shows no number in the label. The sum can sit a few under the headline total (631 against 635 seen on one post).
+- **Caption** is `[data-ad-rendering-role="story_message"]`; strip the trailing "See more".
+- **Timestamps are scrambled.** The visible text is an SVG glyph plus decoy characters (`U+034F` runs), so `innerText` gives garbage. The date exists only as a hover tooltip (`[role=tooltip]`, "Saturday, November 14, 2026 at 7:31 PM") that opens centered just below the anchor `a[href^="?__cft__"][target=_blank]` holding an `svg use`. The tool hovers each such anchor in view (move to 5,5, then onto it) and accepts a tooltip only if its center is within 80 px of the anchor and its text is new in the run, because a tooltip can outlive its hover. Tag anchors with a globally increasing counter, never the per-call array index: reused indexes stamped the wrong card. The `aria-labelledby` target next to the glyph is not reliable (once read "a day ago").
+- **The feed is virtualized**, so collect cards every 400 px of scrolling and merge (one 1000 px step per collect dropped three adjacent posts once). Merge video cards on a 40-char caption prefix: the reel link hydrates a round after the caption.
+- **Scroll** in bursts of small wheel events (2 x 200 px, 120 ms apart); one big wheel event or `scrollBy` loads nothing in a background tab.
+- **Post keys:** `reel:<id>` from `a[href*="/reel/"]`; `pcb:<id>` from `set=pcb.<id>` on photo links (multi-photo post); `photo:<fbid>` for a single photo (its `set=a.<id>` is the whole album, not the post). Some cards show no date or link on a given pass; keep a caption-based fallback key.
+- **Messenger bar:** the card text holds "Send message" (also `aria-label="Send message"`). The page header's "Message" button is outside the card. A bar on a post usually means an ad objective or a boost, but is not proof.
+- **Reels-tab tiles** (`a[href*="/reel/"]`, `aria-label="Reel tile preview"`) print the view count as the first line of their `innerText`; the feed card does not show views.
+- **Runtime:** about 2 to 3 min for 30 posts. Run it from a plain `browser-harness-js` call; the REPL eval has no tight timeout. After editing `feed.mjs`, `browser-harness-js --restart` (the daemon caches the module); the restarted daemon is already attached through the extension relay, so a later `session.connect({wsUrl})` throws "already connected" and the caller should treat that as success.
+- **Comments are never read.** The tool returns no commenter names.
+

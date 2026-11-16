@@ -26,6 +26,74 @@
         "settleMs": {"type": "integer", "required": false, "description": "Wait after each scroll, in ms. Default 2000."}
       },
       "returns": {"type": "object", "description": "{ids, urls, count, rounds, stalled} on success (urls are https://www.facebook.com/reel/<id>/; stalled is true when the loop ended on the unchanged-count rule, false when it hit maxRounds); {ids: [], reason} when logged out or no reels."}
+    },
+    "listPageFeed": {
+      "description": "Read a Facebook Page's feed through the logged-in session: per post the id (reel/pcb/photo), url, type (reel, video, album, photo, text), first 600 chars of caption, posted date (hover tooltip, may be empty for some cards), reactions (sum of the per-type labels), comments, shares, Messenger Send-message bar, and reel duration. Opens the Page in a background tab, scrolls in small wheel bursts, hovers each timestamp in view to read its date, merges the virtualized cards, closes the tab. Side effect: moves the virtual pointer inside that background tab only.",
+      "path": "tools/feed.mjs",
+      "callable": "listPageFeed",
+      "args": {
+        "pageUrl": {
+          "type": "string",
+          "required": true,
+          "description": "Page URL, e.g. https://www.facebook.com/profile.php?id=61594040665651."
+        },
+        "maxPosts": {
+          "type": "integer",
+          "required": false,
+          "description": "Stop after this many posts. Default 40."
+        },
+        "maxRounds": {
+          "type": "integer",
+          "required": false,
+          "description": "Upper bound on scroll rounds. Default 60."
+        },
+        "stallRounds": {
+          "type": "integer",
+          "required": false,
+          "description": "Stop after this many rounds with no new post. Default 6."
+        },
+        "settleMs": {
+          "type": "integer",
+          "required": false,
+          "description": "Wait after each scroll round, in ms. Default 1800."
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "{posts: [{id, url, type, text, posted, reactions, comments, shares, messenger, duration}], count, rounds, stalled} on success; {posts: [], reason} when logged out or empty. posted is e.g. 'Saturday, November 14, 2026 at 7:31 PM' or ''."
+      }
+    },
+    "listPageReelViews": {
+      "description": "List reel ids with the view count printed on each Reels-tab tile ('615', '11K', '1.3K', parsed to numbers). Same background-tab and scroll recipe as listPageReels, capped by maxReels so a routine run reads only the newest tiles.",
+      "path": "tools/feed.mjs",
+      "callable": "listPageReelViews",
+      "args": {
+        "pageUrl": {
+          "type": "string",
+          "required": true,
+          "description": "Page reels tab URL, e.g. https://www.facebook.com/61594040665651/reels/."
+        },
+        "maxReels": {
+          "type": "integer",
+          "required": false,
+          "description": "Stop after this many tiles. Default 60."
+        },
+        "maxRounds": {
+          "type": "integer",
+          "required": false,
+          "description": "Upper bound on scroll rounds. Default 40."
+        },
+        "stallRounds": {
+          "type": "integer",
+          "required": false,
+          "description": "Stop after this many rounds with no new tile. Default 6."
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "{reels: [{id, url, views}], count, rounds} on success (views is a rounded number, null when the tile shows none); {reels: [], reason} when logged out or empty."
+      }
     }
+
   }
 }

@@ -9,6 +9,16 @@ import { isAbsolute, extname } from "node:path";
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// A search string the activity page's raw HTML holds verbatim. HTML escapes & < > " ' and `,
+// so cut the body at those characters and take the first chunk long enough to be unique.
+// Cutting only the first line at its first apostrophe left "I" for "I'm in ...", so the
+// lookup never matched and a live post came back with url null.
+export function htmlSafeNeedle(text) {
+  const chunks = text.split(/[&<>"'`\n]/).map((s) => s.replace(/\s+/g, " ").trim());
+  const pick = chunks.find((s) => s.length >= 12) || chunks.reduce((a, b) => (b.length > a.length ? b : a), "");
+  return pick.slice(0, 40);
+}
+
 async function evaluate(page, expression) {
   const { result, exceptionDetails } = await page.cdp("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true });
   if (exceptionDetails) {
@@ -178,7 +188,7 @@ export async function createPost(ctx, args) {
       const urn = await evaluate(page, isSelf
         ? `(() => {
             const html = document.documentElement.outerHTML;
-            const safe = ${JSON.stringify(needle)}.split(/[&<>"'\`]/)[0];
+            const safe = ${JSON.stringify(htmlSafeNeedle(text))};
             const at = safe.length >= 8 ? html.indexOf(safe) : -1;
             if (at < 0) return null;
             const re = /urn:li:activity:(\\d+)/g;

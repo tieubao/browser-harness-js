@@ -1,0 +1,6 @@
+{
+  "id": "eservices-ica-gov-sg",
+  "name": "ICA SG Arrival Card (eservices.ica.gov.sg)",
+  "domains": ["eservices.ica.gov.sg"],
+  "notes": ["notes/overview.md"]
+}

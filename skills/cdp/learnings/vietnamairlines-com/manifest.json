@@ -1,0 +1,6 @@
+{
+  "id": "vietnamairlines-com",
+  "name": "Vietnam Airlines (vietnamairlines.com booking flow)",
+  "domains": ["www.vietnamairlines.com", "booking.vietnamairlines.com"],
+  "notes": ["notes/overview.md"]
+}

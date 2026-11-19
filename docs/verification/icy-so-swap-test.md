@@ -28,5 +28,13 @@ wagmi only auto-reconnects on an origin that connected before.
 Verdict: RED as expected; restored by the connect step above.
 ```
 
+## Approve path (via the learnings runner shape, no sensitive grant)
+```
+Command: runSwapTest(ctx, { url: 'https://icy.so/', amount: '3', swap: false, timeoutSec: 120 })
+Output: connected=true, addressFilled=true, firstButton="Approve ICY",
+  approveTx=0xabad883b…ad4626f0, buttonAfterApprove="Swap 3 ICY for Bitcoin", secondsToSwapButton=2
+Verdict: PASS (address set by native setter + input event; React accepted it; #442 refetch confirmed on production)
+```
+
 ## Not proven
-- The approve branch through `cast send` ran in an earlier session-local bridge, not through this file (the wallet already held an allowance during the swap run).
+- A run on a Worker version preview through `learnings()` after this change (previews were exercised by the session-local bridge earlier).

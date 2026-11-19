@@ -1,0 +1,20 @@
+{
+  "id": "icy-so",
+  "name": "ICY swap (icy.so)",
+  "domains": ["icy.so", "df-treasury-icy-swap.infras.workers.dev"],
+  "notes": ["notes/overview.md"],
+  "nodeTools": {
+    "run_swap_test": {
+      "description": "End-to-end test of the icy-swap UI with the throwaway test wallet from 1Password: connect, fill amount and BTC address, approve, optionally swap, and read the result. Signs only ICY/swapper calls and IcySwap EIP-712 data, via cast. Opens and closes its own background tab.",
+      "path": "tools/swap-test.mjs",
+      "callable": "runSwapTest",
+      "args": {
+        "url": {"type": "string", "required": false, "description": "icy.so or a Worker version preview URL, e.g. https://<ver>-df-treasury-icy-swap.infras.workers.dev/ (default https://icy.so/)"},
+        "amount": {"type": "string", "required": false, "description": "ICY to swap, minimum 3 (default \"3\")"},
+        "swap": {"type": "boolean", "required": false, "description": "true = submit the swap after approve (moves real ICY, pays real sats); false = stop after approve"},
+        "timeoutSec": {"type": "integer", "required": false, "description": "overall deadline, default 120"}
+      },
+      "returns": {"type": "object", "description": "{url, amount, ok, steps: {connected, addressFilled, firstButton, approveTx, buttonAfterApprove, secondsToSwapButton, swapTx, latestSwap}, log}"}
+    }
+  }
+}

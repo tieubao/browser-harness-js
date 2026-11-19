@@ -16,6 +16,13 @@
 //                                          operator's own browser; that is the feature)
 //   browser-cdp click <targetId> <x> <y>   real mouse click via Input.dispatchMouseEvent
 //                                          (React handlers that ignore el.click() honour this)
+//   browser-cdp click-el <targetId> <js>   click the element a JS expression returns: scrollIntoView
+//                                          (block center), wait 400 ms, re-read the bounding-rect
+//                                          centre, then the same real mouse click as `click`. Prints
+//                                          "clicked <x> <y>"; prints "none" and exits 1 when the
+//                                          expression returns null. <js> of "-" reads it from stdin.
+//                                          For Angular/Material dropdowns, options and buttons that
+//                                          ignore el.click(). Same operator-JS note as `eval`.
 //   browser-cdp pdf <targetId> <out.pdf> [--force]
 //                                          Page.printToPDF at print-service options: a CSS @page
 //                                          size or margin wins when the page declares one, else
@@ -92,6 +99,12 @@ async function evalIn(ws, expression) {
   if (r.exceptionDetails) throw new Error(r.exceptionDetails.text || "evaluate failed");
   return r.result.value;
 }
+// Real left click at a point: move, press, release (what React/Angular handlers listen for).
+async function clickAt(ws, x, y) {
+  await ws.rpc("Input.dispatchMouseEvent", { type: "mouseMoved", x, y });
+  await ws.rpc("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", clickCount: 1 });
+  await ws.rpc("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", clickCount: 1 });
+}
 async function dump(t) {
   const ws = await connect(t);
   await new Promise((r) => setTimeout(r, wait));
@@ -122,11 +135,25 @@ const commands = {
   async click() {
     const ws = await connect(await target(arg));
     const x = Number(a3), y = Number(a4);
-    await ws.rpc("Input.dispatchMouseEvent", { type: "mouseMoved", x, y });
-    await ws.rpc("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", clickCount: 1 });
-    await ws.rpc("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", clickCount: 1 });
+    await clickAt(ws, x, y);
     ws.close();
     console.log("clicked", x, y);
+  },
+  async "click-el"() {
+    const usage = "usage: browser-cdp click-el <targetId> <js-expression-returning-element | ->";
+    if (!arg || !a3) throw new Error(usage);
+    const js = a3 === "-" ? Buffer.concat(await Array.fromAsync(process.stdin)).toString() : a3;
+    const centre = (scroll) => `(()=>{const e=(${js}\n); if(!e) return "none"; ${scroll ? 'e.scrollIntoView({block:"center"}); ' : ""}const b=e.getBoundingClientRect(); return Math.round(b.x+b.width/2)+" "+Math.round(b.y+b.height/2)})()`;
+    const ws = await connect(await target(arg));
+    try {
+      if (await evalIn(ws, centre(true)) === "none") { console.log("none"); process.exitCode = 1; return; }
+      await new Promise((r) => setTimeout(r, 400));
+      const xy = await evalIn(ws, centre(false));
+      if (xy === "none") { console.log("none"); process.exitCode = 1; return; }
+      const [x, y] = xy.split(" ").map(Number);
+      await clickAt(ws, x, y);
+      console.log("clicked", x, y);
+    } finally { ws.close(); }
   },
   async pdf() {
     if (!a3) throw new Error("pdf needs <targetId> <out.pdf> [--force]");
@@ -195,7 +222,7 @@ const commands = {
 };
 
 if (!commands[cmd]) {
-  console.error("usage: browser-cdp open <url> [waitMs] | read <targetId> [waitMs] | eval <targetId> <js|-> | click <targetId> <x> <y> | pdf <targetId> <out.pdf> [--force] | shot <url-substring-or-targetId> <out.png> [--full-page] | close <targetId> | list | learn new <short-id> --domains a,b [--name \"...\"] | learn list");
+  console.error("usage: browser-cdp open <url> [waitMs] | read <targetId> [waitMs] | eval <targetId> <js|-> | click <targetId> <x> <y> | click-el <targetId> <js|-> | pdf <targetId> <out.pdf> [--force] | shot <url-substring-or-targetId> <out.png> [--full-page] | close <targetId> | list | learn new <short-id> --domains a,b [--name \"...\"] | learn list");
   process.exit(64);
 }
 commands[cmd]().catch((e) => { console.error(e.message); process.exit(e.exitCode || 1); });

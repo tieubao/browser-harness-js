@@ -1,0 +1,6 @@
+{
+  "id": "flyscoot-com",
+  "name": "Scoot (flyscoot.com booking flow)",
+  "domains": ["www.flyscoot.com", "booking.flyscoot.com", "payments.flyscoot.com"],
+  "notes": ["notes/overview.md"]
+}

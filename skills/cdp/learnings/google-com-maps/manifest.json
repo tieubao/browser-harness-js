@@ -1,0 +1,40 @@
+{
+  "id": "google-com-maps",
+  "name": "Google Maps (saved lists)",
+  "domains": ["www.google.com"],
+  "notes": ["notes/overview.md"],
+  "nodeTools": {
+    "listItems": {
+      "description": "Read-only. Open the signed-in user's Saved > Lists panel in a NEW BACKGROUND tab, open the list whose name matches exactly (case-insensitive, no fuzzy match), scroll until every item is rendered, read each item's name, detail lines and note, and close the tab. Never touches an existing tab.",
+      "path": "tools/google-com-maps.mjs",
+      "callable": "listItems",
+      "args": {
+        "list": {"type": "string", "required": true, "description": "exact list name, e.g. \"Trips\""}
+      },
+      "returns": {"type": "object", "description": "{list, visibility, count (header), itemCount, complete (itemCount === count), items:[{name, detail:[rating/category/address lines], note}]}; throws when the list is absent (names similar lists) or the browser is signed out"}
+    },
+    "createList": {
+      "description": "Write. Open Saved > Lists, return {created:false} when the exact name already exists, else click New list, type the name, click Create, and re-read the lists to confirm. live: unverified for the Create click (the dialog was opened and read, never submitted).",
+      "path": "tools/google-com-maps.mjs",
+      "callable": "createList",
+      "args": {
+        "name": {"type": "string", "required": true, "description": "new list name, at most 40 characters"}
+      },
+      "returns": {"type": "object", "description": "{created, name, count?}; {stop:\"no-new-list-button\"|\"outcome-unknown\", hint} when it cannot confirm"}
+    },
+    "saveToList": {
+      "description": "Write. Search the query (URL form, handles both a results feed and a direct redirect to one place), drop noise rows (ticket offices, hotels, shops) and weak name matches, open the best candidates and require mustContain in the place page's address plus plus-code row, then open the Save chooser and click the named list. The chooser rows are toggles: a place already in the list is left alone. A missing list is created from the chooser unless createIfMissing is false. The save is confirmed by read-back (Saved-in chip or the Save button count), then the optional note is typed into the item in the list view and read back. Saves nothing and returns {stop:\"no-match\", tried} when no candidate passes.",
+      "path": "tools/google-com-maps.mjs",
+      "callable": "saveToList",
+      "args": {
+        "query": {"type": "string", "required": true, "description": "search text, e.g. \"Temple of Heaven Beijing\""},
+        "list": {"type": "string", "required": true, "description": "exact list name"},
+        "note": {"type": "string", "required": false, "description": "note to put on the saved item"},
+        "mustContain": {"type": "string", "required": false, "description": "region guard on the place page address/plus code: comma-separated parts must all appear, \"a|b\" means either (e.g. \"Beijing|北京\")"},
+        "fallbacks": {"type": "array", "required": false, "description": "extra queries tried in order when nothing passes, e.g. the same place in Chinese"},
+        "createIfMissing": {"type": "boolean", "required": false, "description": "default true; false returns {stop:\"list-missing\"} instead of creating"}
+      },
+      "returns": {"type": "object", "description": "{saved:true, alreadySaved, listCreated, list, name, address, usedQuery, note?: \"set\"|\"unchanged\"|\"unconfirmed\"|\"item-not-found\"|\"not-focused\"}; {stop:\"no-match\", tried:[{query,name,address,reason}]}; {stop:\"list-missing\"|\"outcome-unknown\", hint}"}
+    }
+  }
+}

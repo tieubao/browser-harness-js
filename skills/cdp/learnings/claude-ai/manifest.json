@@ -18,6 +18,16 @@
       "args": {"url": {"type": "string", "required": false, "description": "default https://claude.ai/code"}},
       "returns": {"type": "object", "description": "{targetId}"}
     },
+    "artifactLink": {
+      "description": "Recover a claude.ai artifact link by its title from the gallery (claude.ai/code/artifacts), because the output masker hides artifact links. Opens a background tab (or reuses targetId), waits up to 45 s for the title, picks the card anchor at the smallest ancestor depth. Relay idChunks to the operator. Side effect: creates a tab and closes it unless targetId was passed.",
+      "path": "tools/claude-ai.mjs",
+      "callable": "artifactLink",
+      "args": {
+        "title": {"type": "string", "required": true, "description": "artifact title as shown on its gallery card"},
+        "targetId": {"type": "string", "required": false, "description": "reuse this tab (navigated to the gallery when elsewhere); left open"}
+      },
+      "returns": {"type": "object", "description": "{id, url, idChunks} (newest first; several matches add matches:[...]) or {state:\"not-found\", titlesSeen:[up to 10 card titles]}"}
+    },
     "rect": {
       "description": "Scroll the element that a JS expression evaluates to into view and return its viewport rect. Use it to place a click or a screenshot clip.",
       "path": "tools/claude-ai.mjs",

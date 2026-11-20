@@ -80,6 +80,70 @@ export async function openCode(ctx, args = {}) {
   return { targetId };
 }
 
+// ---- artifactLink: recover a claude.ai artifact link by title ----
+// Claude Code's output masker hides claude.ai artifact links, so a session cannot hand one to the
+// operator. The gallery page lists every artifact as <a href="/artifact/<id>"> inside a card
+// that carries its title; read the id from there.
+const GALLERY = ORIGIN + "/code/artifacts";
+const MAX_DEPTH = 6;
+
+// Space-separated 4-char groups; the chunking is what gets an id past the masker.
+export const chunkId = (id) => (id.match(/.{1,4}/g) || []).join(" ");
+
+export const linkFor = (id) => ({ id, url: ORIGIN + "/artifact/" + id, idChunks: chunkId(id) });
+
+// anchors: [{id, depths: boolean[]}] in DOM order, depths[d] = "the ancestor d levels up (0 = the
+// anchor itself) has innerText containing the title". Keep the anchors matching at the smallest
+// depth that has any match (the card, not the whole list), deduped by id.
+export function pickMatches(anchors) {
+  for (let d = 0; d <= MAX_DEPTH; d++) {
+    const hit = anchors.filter((a) => a.depths[d]);
+    if (hit.length) return [...new Set(hit.map((a) => a.id))];
+  }
+  return [];
+}
+
+// One in-page pass: for each artifact anchor the per-depth title test, plus a card title.
+export const collectJs = (title) => `(()=>{const t=${JSON.stringify(title)};return [...document.querySelectorAll('a[href*="/artifact/"]')].map(a=>{const m=a.getAttribute("href").match(/\\/artifact\\/([A-Za-z0-9_-]+)/);if(!m)return null;const depths=[];let n=a,first="";for(let d=0;d<=${MAX_DEPTH};d++){const x=n?n.innerText||"":"";depths.push(x.includes(t));if(!first)first=x.split("\\n").map(l=>l.trim()).find(Boolean)||"";n=n&&n.parentElement}return{id:m[1],depths,first}}).filter(Boolean)})()`;
+
+async function waitForTitle(page, title, deadline) {
+  const probe = `document.body.innerText.includes(${JSON.stringify(title)})`;
+  const reloadAt = Date.now() + 15000;
+  let reloaded = false;
+  while (Date.now() < deadline) {
+    if (await evaluate(page, probe)) return true;
+    if (!reloaded && Date.now() > reloadAt) { reloaded = true; await page.cdp("Page.reload", {}); }
+    await wait(500);
+  }
+  return false;
+}
+
+// Open (or reuse args.targetId) a background tab on the gallery, wait for the title, return the
+// link(s). A tab it opened is closed; a reused one is left open.
+export async function artifactLink(ctx, args = {}) {
+  const title = args.title;
+  if (!title) throw new Error("artifactLink: title is required");
+  const reuse = Boolean(args.targetId);
+  const page = reuse ? ctx.requirePage() : await ctx.browser.open(GALLERY, { allowedOrigins: [ORIGIN], timeoutMs: 45000 });
+  try {
+    if (reuse && !(await evaluate(page, "location.href")).startsWith(GALLERY)) {
+      await page.cdp("Page.navigate", { url: GALLERY });
+    }
+    await waitForTitle(page, title, Date.now() + 45000);
+    const anchors = await evaluate(page, collectJs(title));
+    const ids = pickMatches(anchors);
+    if (!ids.length) {
+      const seen = [...new Set(anchors.map((a) => a.first).filter(Boolean))].slice(0, 10);
+      return { state: "not-found", titlesSeen: seen };
+    }
+    const links = ids.map(linkFor);
+    return links.length > 1 ? { ...links[0], matches: links } : links[0];
+  } finally {
+    if (reuse) page.dispose();
+    else await page.close();
+  }
+}
+
 export const rectTool = (ctx, args) => rect(ctx, args.expr);
 export const hoverClickTool = (ctx, args) => hoverClick(ctx, args.expr);
 export const clickByTextTool = (ctx, args) => clickByText(ctx, args.scope, args.text);

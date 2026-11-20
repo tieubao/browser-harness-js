@@ -28,6 +28,10 @@ await learnings("claude-ai", "shot", { targetId, out: "/tmp/dialog.png", clip: {
 - General tab: coordinator model, thread model, thread effort, auto-continue, Pause, Restart, Archive, Delete.
 - Archive opens a confirm dialog "Archive project?" with its own "Archive" button.
 
+## Artifact links
+
+- Claude Code's output masker hides claude.ai artifact links (shown as "(unrecognized address)"), so `artifactLink({title})` reads the id from the gallery instead; relay `idChunks` (4-char groups) to the operator, never the joined id or url.
+
 ## Clicking
 
 - The guarded click refuses several of these controls: `blocked: not_interactable_or_unsupported: observation truncated`.

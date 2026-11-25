@@ -1,11 +1,21 @@
 #!/usr/bin/env bash
 # Smoke test for the linkedin skill.
-# NEVER publishes: the only write-side calls are `--dry-run`, which fills the
-# composer/box and stops before the Post/Comment/Send click. notifs/inbox are
-# read-only. Requires a Chromium browser with remote debugging AND a logged-in
-# LinkedIn session (see the cdp skill). Exits 77 if the browser is
-# unreachable, 0 if all checks pass, 1 otherwise.
+# NEVER publishes or likes: the only write-side calls are `--dry-run`, which
+# fills the composer/box and stops before the Post/Comment/Send click.
+# notifs/inbox are read-only. The `like` tests run OFFLINE against a fake
+# browser-harness-js (a tiny DOM in node), so they need no browser at all.
+# The live part requires a Chromium browser with remote debugging AND a
+# logged-in LinkedIn session (see the cdp skill).
+#
+#   bash scripts/test             # offline like tests + live checks + guards
+#   bash scripts/test --offline   # offline like tests + guards, no browser
+#
+# Exits 77 if the browser is unreachable (and the offline tests passed), 0 if
+# all checks pass, 1 otherwise.
 set -uo pipefail
+
+offline=false
+[ "${1:-}" = "--offline" ] && offline=true
 
 script_dir="$(cd "$(dirname "$0")" && pwd)"
 cli="$script_dir/linkedin"
@@ -13,11 +23,6 @@ cli="$script_dir/linkedin"
 if [ ! -f "$cli" ]; then
   echo "Error: $cli not found" >&2
   exit 1
-fi
-
-if ! command -v browser-harness-js >/dev/null 2>&1; then
-  echo "skip: browser-harness-js not on PATH (run scripts/setup first)" >&2
-  exit 77
 fi
 
 # Run the project's own linkedin script, not whatever happens to be on PATH.
@@ -34,33 +39,197 @@ refuse() { # desc  needle  actual   -> pass if actual does NOT contain needle
   if printf '%s' "$3" | grep -qF "$2"; then bad "$1" "$3"; else ok "$1"; fi
 }
 
-# Skip cleanly if the browser isn't reachable. This also serves as the first
-# live dry-run, so a successful probe is not wasted work.
-probe=$(run post --dry-run "linkedin smoke")
-case "$probe" in
-  *Cannot*connect*|*ECONNREFUSED*|*connect:*|*"No running browser"*|*"No detected browser"*)
-    echo "skip: browser not reachable ($(printf '%s' "$probe" | head -1 | sed 's/^[[:space:]]*//'))" >&2
-    exit 77 ;;
-esac
+echo "linkedin like (offline, fake browser-harness-js, never touches a browser)"
 
-echo "linkedin smoke test (--dry-run for write verbs, never publishes)"
+# The fake browser-harness-js runs the CLI's generated JS in node against a
+# fixture DOM shaped like LinkedIn's live markup: the post's
+# button[aria-label="Reaction button state: …"], and per comment a
+# div[id="replaceableComment_urn:li:comment:(activity:1,<id>)"] holding a
+# div[role=button] > svg[aria-label="Reaction button state: …"]. It logs every
+# navigate/click/tab to $FAKE_LOG. FAKE_FIXTURE: post-liked | post-unliked |
+# comments (post, comment 222 unliked, its reply 333 liked) | comment-liked |
+# loggedout. FAKE_ONCLICK: flip (state becomes "like") | noflip.
+fake_dir="$(mktemp -d)"
+trap 'rm -rf "$fake_dir"' EXIT
+cat >"$fake_dir/browser-harness-js" <<'FAKE_EOF'
+#!/usr/bin/env node
+const fs = require("fs"), vm = require("vm")
+const log = (s) => fs.appendFileSync(process.env.FAKE_LOG, s + "\n")
+const fixture = process.env.FAKE_FIXTURE, onClick = process.env.FAKE_ONCLICK || "flip"
+const STATE = "Reaction button state"
+class El {
+  constructor(tag, attrs, kids) {
+    this.tagName = tag.toUpperCase(); this.attrs = attrs || {}; this.parentElement = null
+    this.children = (kids || []).map((k) => { k.parentElement = this; return k })
+  }
+  getAttribute(n) { return n in this.attrs ? this.attrs[n] : null }
+  setAttribute(n, v) { this.attrs[n] = String(v) }
+  getBoundingClientRect() { return { x: 0, y: 0, width: 10, height: 10 } }
+  click() {
+    log("click " + (this.attrs["data-fake"] || this.tagName))
+    if (onClick !== "flip") return
+    const s = matches(this, '[aria-label^="' + STATE + '"]') ? this : this.querySelector('[aria-label^="' + STATE + '"]')
+    if (s) s.attrs["aria-label"] = STATE + ": like"
+  }
+  querySelectorAll(sel) {
+    const out = [], walk = (e) => e.children.forEach((c) => { if (matches(c, sel)) out.push(c); walk(c) })
+    walk(this); return out
+  }
+  querySelector(sel) { return this.querySelectorAll(sel)[0] || null }
+}
+// Selector subset: tag, [a], [a=v], [a="v"], [a^="v"], [a*="v"], [a$="v"], comma lists.
+function matches(el, sel) {
+  return sel.split(",").some((s) => {
+    const m = s.trim().match(/^([a-zA-Z]*)((?:\[[^\]]+\])*)$/)
+    if (!m) throw new Error("fake DOM: unsupported selector " + s)
+    if (m[1] && el.tagName !== m[1].toUpperCase()) return false
+    const re = /\[([\w-]+)(?:([*^$]?=)"?([^"\]]*)"?)?\]/g
+    let a
+    while ((a = re.exec(m[2]))) {
+      const v = el.getAttribute(a[1]), w = a[3]
+      if (v === null) return false
+      if ((a[2] === "=" && v !== w) || (a[2] === "*=" && !v.includes(w)) || (a[2] === "^=" && !v.startsWith(w)) || (a[2] === "$=" && !v.endsWith(w))) return false
+    }
+    return true
+  })
+}
+const post = (state) => new El("div", {}, [new El("button", { "aria-label": STATE + ": " + state, "data-fake": "post" })])
+const comment = (id, state, kids) => new El("div", { id: "replaceableComment_urn:li:comment:(activity:1," + id + ")" }, [
+  new El("div", { role: "button", "data-fake": "comment-" + id }, [new El("svg", { role: "img", "aria-label": STATE + ": " + state })])
+].concat(kids || []))
+const page = {
+  "post-liked": [post("like")],
+  "post-unliked": [post("no reaction")],
+  comments: [post("no reaction"), comment("222", "no reaction", [comment("333", "like")])],
+  "comment-liked": [post("no reaction"), comment("222", "like")],
+  loggedout: [new El("input", { name: "session_key" }), post("no reaction")]
+}[fixture]
+const root = new El("html", {}, [new El("body", {}, page)])
+const location = { href: "about:blank", pathname: "/" }
+const ctx = vm.createContext({ document: { querySelector: (s) => root.querySelector(s), querySelectorAll: (s) => root.querySelectorAll(s), body: root }, location })
+const session = {
+  isConnected: () => true,
+  connect: async () => {},
+  Target: {
+    createTarget: async (p) => { log("tab background=" + p.background); return { targetId: "T" } },
+    attachToTarget: async () => ({ sessionId: "S" })
+  },
+  waitFor: async () => ({}),
+  closeTab: async () => { log("closeTab") }
+}
+const cdp = async (sid, method, params) => {
+  if (method === "Runtime.evaluate") return { result: { value: vm.runInContext(params.expression, ctx) } }
+  if (method === "Page.navigate") { log("navigate " + params.url); location.href = params.url; location.pathname = new URL(params.url).pathname }
+  return {}
+}
+const code = fs.readFileSync(0, "utf8")
+const AsyncFunction = (async () => {}).constructor
+// setTimeout is shadowed so the CLI's hydration sleeps cost nothing.
+AsyncFunction("session", "cdp", "setTimeout", code)(session, cdp, (f) => setImmediate(f)).then(
+  (v) => { if (v !== undefined && v !== null) process.stdout.write((typeof v === "string" ? v : JSON.stringify(v)) + "\n") },
+  (e) => { process.stderr.write(String((e && e.stack) || e) + "\n"); process.exit(1) })
+FAKE_EOF
+chmod +x "$fake_dir/browser-harness-js"
 
-# Live dry-run against the real composer (needs a logged-in LinkedIn session).
-expect "post: reports DRY_RUN_OK" "DRY_RUN_OK" "$probe"
-refuse "post: no unparsed placeholder" "__LI_" "$probe"
+FAKE_LOG="$fake_dir/log"
+export FAKE_LOG
+# like_run <fixture> <onclick> <linkedin args...>: sets $out, $rc, $flog.
+like_run() {
+  local fx="$1" oc="$2"; shift 2
+  : >"$FAKE_LOG"
+  out=$(PATH="$fake_dir:$PATH" FAKE_FIXTURE="$fx" FAKE_ONCLICK="$oc" "$cli" "$@" 2>&1); rc=$?
+  flog=$(cat "$FAKE_LOG")
+}
+clicks() { printf '%s\n' "$flog" | grep -c '^click' ; }
+P="https://www.linkedin.com/feed/update/urn:li:activity:1/"
+C="${P}?commentUrn=urn%3Ali%3Acomment%3A%28activity%3A1%2C222%29"
+R="${C}&replyUrn=urn%3Ali%3Acomment%3A%28activity%3A1%2C333%29"
 
-# JSON mode + special chars (&, $, quotes, backtick) through the
-# function-replacement placeholder injection, nothing gets eaten.
-json=$(run --json post --dry-run 'a & $b "q" `tick`')
-expect "json: parses dry_run flag" '"dry_run":true' "$json"
-refuse "json: no unparsed placeholder" "__LI_" "$json"
+like_run post-liked flip --json like "$P"
+if [ "$rc" -eq 0 ] && [ "$(clicks)" -eq 0 ] && printf '%s' "$out" | grep -qF '"liked":true,"already":true'; then ok "like: already reacted -> no click, already:true"; else bad "like: already reacted -> no click, already:true" "rc=$rc out=$out log=$flog"; fi
 
-# Read verbs are safe to run for real.
-notifs=$(run notifs 3)
-refuse "notifs: no error output" "ERROR " "$notifs"
+like_run post-unliked flip --json like "$P"
+if [ "$rc" -eq 0 ] && [ "$(clicks)" -eq 1 ] && printf '%s' "$out" | grep -qF '"liked":true,"already":false'; then ok "like: not liked -> one click -> flips -> liked:true"; else bad "like: not liked -> one click -> flips -> liked:true" "rc=$rc out=$out log=$flog"; fi
 
-inbox=$(run inbox 3)
-refuse "inbox: no error output" "ERROR " "$inbox"
+like_run post-unliked noflip --json like "$P"
+if [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -qF '"ok":false' && printf '%s' "$out" | grep -qF '"reason"'; then ok "like: click without flip -> ok:false, non-zero exit"; else bad "like: click without flip -> ok:false, non-zero exit" "rc=$rc out=$out"; fi
+
+like_run comments flip --json like "$P"
+if [ "$rc" -eq 0 ] && [ "$flog" != "${flog/click post/}" ] && [ "$(clicks)" -eq 1 ] && printf '%s' "$out" | grep -qF '"target":"post"'; then ok "like: post URL likes the post, not a comment"; else bad "like: post URL likes the post, not a comment" "rc=$rc out=$out log=$flog"; fi
+
+like_run comments flip --json like "$C"
+if [ "$rc" -eq 0 ] && [ "$flog" != "${flog/click comment-222/}" ] && [ "$(clicks)" -eq 1 ] && printf '%s' "$out" | grep -qF '"target":"comment","liked":true,"already":false'; then ok "like: commentUrn URL likes that comment"; else bad "like: commentUrn URL likes that comment" "rc=$rc out=$out log=$flog"; fi
+
+like_run comments flip --json like "$R"
+if [ "$rc" -eq 0 ] && [ "$(clicks)" -eq 0 ] && printf '%s' "$out" | grep -qF '"already":true'; then ok "like: replyUrn targets the nested reply (already liked, no click)"; else bad "like: replyUrn targets the nested reply (already liked, no click)" "rc=$rc out=$out log=$flog"; fi
+
+like_run comment-liked flip --json like "$C"
+if [ "$rc" -eq 0 ] && [ "$(clicks)" -eq 0 ] && printf '%s' "$out" | grep -qF '"already":true'; then ok "like: liked comment under an unliked post -> no click"; else bad "like: liked comment under an unliked post -> no click" "rc=$rc out=$out log=$flog"; fi
+
+like_run loggedout flip --json like "$P"
+if [ "$rc" -ne 0 ] && [ "$(clicks)" -eq 0 ] && printf '%s' "$out" | grep -qF 'logged out'; then ok "like: logged out -> refused, no click"; else bad "like: logged out -> refused, no click" "rc=$rc out=$out log=$flog"; fi
+
+like_run post-unliked flip --json like --check "$P"
+if [ "$rc" -eq 0 ] && [ "$(clicks)" -eq 0 ] && printf '%s' "$out" | grep -qF '"liked":false'; then ok "check: not liked -> liked:false, never clicks"; else bad "check: not liked -> liked:false, never clicks" "rc=$rc out=$out log=$flog"; fi
+
+like_run comment-liked flip --json like --check "$C"
+if [ "$rc" -eq 0 ] && [ "$(clicks)" -eq 0 ] && printf '%s' "$out" | grep -qF '"liked":true' && printf '%s' "$flog" | grep -qF 'tab background=true'; then ok "check: comment liked -> liked:true, background tab, never clicks"; else bad "check: comment liked -> liked:true, background tab, never clicks" "rc=$rc out=$out log=$flog"; fi
+
+like_run post-liked flip like "https://www.linkedin.com/posts/someone_title-activity-1-AbCd/"
+if [ "$rc" -eq 0 ] && printf '%s' "$flog" | grep -qF "navigate $P" && printf '%s' "$out" | grep -qF 'ALREADY_LIKED post'; then ok "like: /posts/ slug normalized to feed/update, pretty output"; else bad "like: /posts/ slug normalized to feed/update, pretty output" "rc=$rc out=$out log=$flog"; fi
+
+like_run post-liked flip --json like "https://www.linkedin.com/feed/?highlightedUpdateUrn=urn:li:activity:1&origin=inapp"
+if [ "$rc" -eq 0 ] && printf '%s' "$flog" | grep -qF "navigate $P"; then ok "like: notifs highlightedUpdateUrn URL normalized"; else bad "like: notifs highlightedUpdateUrn URL normalized" "rc=$rc out=$out log=$flog"; fi
+
+like_run comments flip --json like "https://www.linkedin.com/feed/update/urn:li:comment:(activity:1,222)/"
+if [ "$rc" -eq 0 ] && [ "$flog" != "${flog/click comment-222/}" ] && printf '%s' "$flog" | grep -qF "navigate ${P}?commentUrn="; then ok "like: urn:li:comment path likes that comment"; else bad "like: urn:li:comment path likes that comment" "rc=$rc out=$out log=$flog"; fi
+
+for badurl in "https://www.linkedin.com/messaging/thread/2-abc/" "https://example.com/feed/update/urn:li:activity:1/" \
+              "http://www.linkedin.com/feed/update/urn:li:activity:1/" "https://www.linkedin.com/in/someone/" \
+              "https://www.linkedin.com/feed/" "https://linkedin.com.evil.io/feed/update/urn:li:activity:1/" \
+              "${P}?commentUrn=garbage"; do
+  like_run post-unliked flip --json like "$badurl"
+  if [ "$rc" -ne 0 ] && [ -z "$flog" ] && printf '%s' "$out" | grep -qF 'linkedin like:'; then ok "like: refuses $badurl before the browser"; else bad "like: refuses $badurl before the browser" "rc=$rc out=$out log=$flog"; fi
+done
+like_run post-unliked flip like "https://www.linkedin.com/messaging/thread/2-abc/"
+expect "like: DM URL refusal names DMs" "DMs have no like" "$out"
+
+if ! $offline; then
+  if ! command -v browser-harness-js >/dev/null 2>&1; then
+    echo "skip: browser-harness-js not on PATH (run scripts/setup first)" >&2
+    [ "$fail" -eq 0 ] || exit 1
+    exit 77
+  fi
+
+  # Skip cleanly if the browser isn't reachable. This also serves as the first
+  # live dry-run, so a successful probe is not wasted work.
+  probe=$(run post --dry-run "linkedin smoke")
+  case "$probe" in
+    *Cannot*connect*|*ECONNREFUSED*|*connect:*|*"No running browser"*|*"No detected browser"*)
+      echo "skip: browser not reachable ($(printf '%s' "$probe" | head -1 | sed 's/^[[:space:]]*//'))" >&2
+      [ "$fail" -eq 0 ] || exit 1
+      exit 77 ;;
+  esac
+
+  echo "linkedin smoke test (--dry-run for write verbs, never publishes)"
+
+  # Live dry-run against the real composer (needs a logged-in LinkedIn session).
+  expect "post: reports DRY_RUN_OK" "DRY_RUN_OK" "$probe"
+  refuse "post: no unparsed placeholder" "__LI_" "$probe"
+
+  # JSON mode + special chars (&, $, quotes, backtick) through the
+  # function-replacement placeholder injection, nothing gets eaten.
+  json=$(run --json post --dry-run 'a & $b "q" `tick`')
+  expect "json: parses dry_run flag" '"dry_run":true' "$json"
+  refuse "json: no unparsed placeholder" "__LI_" "$json"
+
+  # Read verbs are safe to run for real.
+  notifs=$(run notifs 3)
+  refuse "notifs: no error output" "ERROR " "$notifs"
+
+  inbox=$(run inbox 3)
+  refuse "inbox: no error output" "ERROR " "$inbox"
+fi
 
 echo "-- guards --"
 # No args -> usage, non-zero exit.
@@ -84,6 +253,12 @@ if [ "$rc6" -ne 0 ] && printf '%s' "$g6" | grep -qF "linkedin.com"; then ok "gua
 # notifs with non-numeric count -> error, non-zero exit.
 g7=$("$cli" notifs abc 2>&1); rc7=$?
 if [ "$rc7" -ne 0 ] && printf '%s' "$g7" | grep -qF "must be a number"; then ok "guard: bad count rejected"; else bad "guard: bad count rejected" "rc=$rc7 out=$g7"; fi
+# --check outside like -> error, non-zero exit.
+g8=$("$cli" notifs --check 2>&1); rc8=$?
+if [ "$rc8" -ne 0 ] && printf '%s' "$g8" | grep -qF "only applies to like"; then ok "guard: --check without like rejected"; else bad "guard: --check without like rejected" "rc=$rc8 out=$g8"; fi
+# like with --dry-run -> error (a dry-run like would be a silent no-op).
+g9=$("$cli" like --dry-run "https://www.linkedin.com/feed/update/urn:li:activity:1/" 2>&1); rc9=$?
+if [ "$rc9" -ne 0 ] && printf '%s' "$g9" | grep -qF "not supported"; then ok "guard: like --dry-run rejected"; else bad "guard: like --dry-run rejected" "rc=$rc9 out=$g9"; fi
 
 echo
 echo "$pass passed, $fail failed"

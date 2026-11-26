@@ -234,7 +234,7 @@
       "returns": {"type": "object", "description": "{threadId, title, textPath, pdfPath (null when pdf:false), messages: number, chars: number}. Files are <slug of title>.txt/.pdf, with -<threadId> appended when that name already exists. {stop:\"no-results\"|\"no-thread-id\"|\"no-print-view\"} otherwise"}
     },
     "openDraft": {
-      "description": "Open an existing saved draft for editing: load #drafts, activate the tab, real-click the subject (span.bog) of the visible Draft row whose subject equals subject exactly, wait for input[name=subjectbox], read the compose back. Edits and sends nothing. Do not use #drafts?compose=<id>: it opens a blank new compose. Side effect: brings the tab to the front; leaves it open on success.",
+      "description": "Open an existing saved draft for editing: load #drafts, activate the tab, real-click the subject (span.bog) of the visible Draft row whose subject equals subject exactly, wait for input[name=subjectbox], read the compose back. Edits and sends nothing. Do not use #drafts?compose=<id>: it opens a blank new compose. Side effect: once a matching row exists, brings the tab to the front; leaves it open on success.",
       "path": "tools/mail-google-com.mjs",
       "callable": "openDraft",
       "args": {

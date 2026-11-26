@@ -104,6 +104,7 @@ test("openDraft stops on a missing row or a compose that never appears, closing 
   assert.deepEqual(await openDraft(none, { subject: "Plan" }), { stop: "no-draft-row" });
   assert.ok(methods(none).includes("Target.closeTarget"));
   assert.ok(!methods(none).includes("Input.dispatchMouseEvent"));
+  assert.ok(!methods(none).includes("Target.activateTarget"), "a miss must not take the foreground");
 
   const stuck = fakeCtx(draftAnswers({ opens: false }));
   assert.deepEqual(await openDraft(stuck, { subject: "Plan", targetId: "CALLER" }), { stop: "not-opened" });

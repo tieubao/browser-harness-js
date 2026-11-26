@@ -1245,7 +1245,6 @@ export async function openDraft(ctx, { authuser = 0, subject, targetId } = {}) {
   try {
     const tab = await attachTab(ctx, targetId);
     if (!owned) await tab.send("Page.navigate", { url });
-    await ctx.session.Target.activateTarget({ targetId });
     await tab.send("Emulation.setFocusEmulationEnabled", { enabled: true });
 
     // Gmail keeps other views' rows in the DOM at zero size, so only visible ones count.
@@ -1264,7 +1263,9 @@ export async function openDraft(ctx, { authuser = 0, subject, targetId } = {}) {
       const r = el.getBoundingClientRect();
       return { x: r.x, y: r.y, width: r.width, height: r.height, matches: hits.length };
     })()`;
+    // The rows render in a background tab; front it only once there is something to click.
     if (!(await pollUntil(tab, `!!${rowJs}`, 20000, 500))) return { stop: "no-draft-row" };
+    await ctx.session.Target.activateTarget({ targetId });
     await wait(1000); // the list settles after its first paint
     const row = await evaluate(tab, rowJs);
     if (!row) return { stop: "no-draft-row" };

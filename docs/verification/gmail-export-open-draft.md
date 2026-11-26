@@ -3,6 +3,7 @@
 Live run on the signed-in Helium (port 9222, explicit `wsUrl`) through a private daemon started from the branch.
 
 ```
+window.GM_ID_KEY on #inbox (type, length only) -> string, 10  (so the ik URL is used, not the ui=2 fallback)
 exportThread({ query: 'subject:"ZEF Live 2"', outDir })   # a newsletter
   messages 1, chars 1328, textPath + pdfPath written
 pdfinfo                -> Pages: 2, 468695 bytes

@@ -15,19 +15,121 @@ if ! command -v browser-harness-js >/dev/null 2>&1; then
   fi
 fi
 
-usage() { echo "Usage: xsearch [--json] [--latest] <query> [count]" >&2; exit 1; }
+usage() {
+  echo "Usage: xsearch [--json] [--latest] <query> [count]" >&2
+  echo "       xsearch --walk <handle> --since <ISO date> [--until <ISO date>]" >&2
+  exit 1
+}
 [ $# -lt 1 ] && usage
 
 json_output=false
 # --latest reads the Latest tab (newest first) instead of Top.
 tab=top
+walk=""
+since=""
+until=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --json) json_output=true; shift ;;
     --latest) tab=live; shift ;;
+    --walk) [ $# -ge 2 ] || usage; walk="$2"; shift 2 ;;
+    --since) [ $# -ge 2 ] || usage; since="$2"; shift 2 ;;
+    --until) [ $# -ge 2 ] || usage; until="$2"; shift 2 ;;
     *) break ;;
   esac
 done
+
+# --walk: every post of one account in [since, until), as one JSON array.
+# The profile timeline and since:/until: date windows both drop posts, so this
+# walks the Latest tab backwards with until_time, one plain search per step.
+if [ -n "$walk" ]; then
+  { [ -n "$since" ] && [ $# -eq 0 ]; } || usage
+  exec node - "$0" "$walk" "$since" "$until" <<'NODE'
+const { execFileSync } = require('child_process')
+const [self, rawHandle, sinceArg, untilArg] = process.argv.slice(2)
+const log = (m) => process.stderr.write('xsearch walk: ' + m + '\n')
+const fail = (m) => { log(m); process.exit(1) }
+
+const handle = rawHandle.replace(/^@/, '')
+if (!/^\w{1,15}$/.test(handle)) fail('bad handle: ' + rawHandle)
+// A date-only value (2026-11-18) parses as UTC midnight.
+const sinceMs = Date.parse(sinceArg)
+const untilMs = untilArg ? Date.parse(untilArg) : Date.now()
+if (Number.isNaN(sinceMs) || Number.isNaN(untilMs)) fail('--since and --until need an ISO date')
+if (sinceMs >= untilMs) fail('--since must be before --until')
+
+const iso = (sec) => new Date(sec * 1000).toISOString()
+const sec = (row) => Math.floor(Date.parse(row.time) / 1000)
+const own = '/' + handle.toLowerCase() + '/status/'
+
+// One plain search. Keeps only this account's dated posts before `until`: a
+// foreign, undated or out-of-window row would move the cursor and hide a gap.
+// Count 6 is the first rendered batch, so the rows are the newest ones in order.
+function search(until) {
+  let rows = []
+  try {
+    const out = execFileSync(self, ['--json', '--latest', 'from:' + handle + ' until_time:' + until, '6'],
+      { encoding: 'utf8', timeout: 180000, stdio: ['ignore', 'pipe', 'inherit'] })
+    rows = JSON.parse(out)
+  } catch (e) {
+    log('search failed: ' + String(e.message).split('\n')[0])
+  }
+  if (!Array.isArray(rows)) return []
+  return rows.filter((r) => r.url && r.url.toLowerCase().includes(own) && r.time && sec(r) < until)
+}
+
+// A walk of ~5 new posts per step: the cap is a runaway guard, not a limit.
+const MAX_STEPS = 1000
+const seen = new Map()
+let until = Math.floor(untilMs / 1000)
+// until_time is exclusive, and an account can post twice in one second. Each
+// step therefore asks for one second past the oldest post of the step before,
+// and that post (the anchor) must come back: its return proves there is no gap.
+let anchor = null
+let incomplete = ''
+let step = 0
+for (;;) {
+  if (step === MAX_STEPS) { incomplete = 'safety cap of ' + MAX_STEPS + ' steps hit'; break }
+  step++
+  const bad = (rows) => rows.length === 0 || (anchor && !rows.some((r) => r.url === anchor))
+  let rows = search(until)
+  if (bad(rows)) {
+    log('step ' + step + ' until_time=' + until + ' ' + (rows.length ? 'anchor missing' : 'empty') + ', retry')
+    rows = search(until)
+  }
+  if (rows.length === 0) {
+    // With an anchor the search must return at least the anchor, so empty means it failed.
+    if (anchor) incomplete = 'search stayed empty at until_time=' + until
+    else log('step ' + step + ' until_time=' + until + ' (' + iso(until) + ') rows=0: no older posts')
+    break
+  }
+  const anchorState = !anchor ? 'none' : rows.some((r) => r.url === anchor) ? 'ok' : 'MISSING'
+  if (anchorState === 'MISSING') incomplete = 'anchor not returned at until_time=' + until + ', possible gap'
+  const fresh = rows.filter((r) => !seen.has(r.url))
+  for (const r of rows) seen.set(r.url, r)
+  const oldest = rows.reduce((a, b) => (sec(b) <= sec(a) ? b : a))
+  log('step ' + step + ' until_time=' + until + ' (' + iso(until) + ') rows=' + rows.length + ' new=' + fresh.length +
+    ' oldest=' + oldest.time + ' anchor=' + anchorState)
+  if (sec(oldest) * 1000 < sinceMs) break
+  if (fresh.length) {
+    until = sec(oldest) + 1
+    anchor = oldest.url
+  } else {
+    // Only known posts came back. Ask strictly before the oldest: empty there is the end.
+    until = sec(oldest)
+    anchor = null
+  }
+}
+
+const posts = [...seen.values()]
+  .filter((r) => Date.parse(r.time) >= sinceMs && Date.parse(r.time) < untilMs)
+  .sort((a, b) => Date.parse(b.time) - Date.parse(a.time))
+log(posts.length + ' posts from @' + handle + ' in [' + new Date(sinceMs).toISOString() + ', ' +
+  new Date(untilMs).toISOString() + '), ' + step + ' steps, ' + (incomplete ? 'INCOMPLETE: ' + incomplete : 'complete'))
+console.log(JSON.stringify(posts, null, 2))
+process.exit(incomplete ? 2 : 0)
+NODE
+fi
 
 query="${1:?Usage: xsearch [--json] [--latest] <query> [count]}"
 count="${2:-10}"

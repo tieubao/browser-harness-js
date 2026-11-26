@@ -62,19 +62,21 @@ const iso = (sec) => new Date(sec * 1000).toISOString()
 const sec = (row) => Math.floor(Date.parse(row.time) / 1000)
 const own = '/' + handle.toLowerCase() + '/status/'
 
-// One plain search. Keeps only this account's dated posts before `until`: a
-// foreign, undated or out-of-window row would move the cursor and hide a gap.
-// Count 6 is the first rendered batch, so the rows are the newest ones in order.
+// One plain search; null when the search itself failed. Keeps only this
+// account's dated posts before `until`: a foreign, undated or out-of-window
+// row would move the cursor and hide a gap. Count 6 is the first rendered
+// batch, so the rows are the newest ones in order.
 function search(until) {
-  let rows = []
+  let rows
   try {
     const out = execFileSync(self, ['--json', '--latest', 'from:' + handle + ' until_time:' + until, '6'],
       { encoding: 'utf8', timeout: 180000, stdio: ['ignore', 'pipe', 'inherit'] })
     rows = JSON.parse(out)
   } catch (e) {
     log('search failed: ' + String(e.message).split('\n')[0])
+    return null
   }
-  if (!Array.isArray(rows)) return []
+  if (!Array.isArray(rows)) return null
   return rows.filter((r) => r.url && r.url.toLowerCase().includes(own) && r.time && sec(r) < until)
 }
 
@@ -93,10 +95,11 @@ for (;;) {
   step++
   const bad = (rows) => rows.length === 0 || (anchor && !rows.some((r) => r.url === anchor))
   let rows = search(until)
-  if (bad(rows)) {
-    log('step ' + step + ' until_time=' + until + ' ' + (rows.length ? 'anchor missing' : 'empty') + ', retry')
+  if (!rows || bad(rows)) {
+    log('step ' + step + ' until_time=' + until + ' ' + (!rows ? 'failed' : rows.length ? 'anchor missing' : 'empty') + ', retry')
     rows = search(until)
   }
+  if (!rows) { incomplete = 'search failed twice at until_time=' + until; break }
   if (rows.length === 0) {
     // With an anchor the search must return at least the anchor, so empty means it failed.
     if (anchor) incomplete = 'search stayed empty at until_time=' + until
@@ -127,7 +130,8 @@ const posts = [...seen.values()]
 log(posts.length + ' posts from @' + handle + ' in [' + new Date(sinceMs).toISOString() + ', ' +
   new Date(untilMs).toISOString() + '), ' + step + ' steps, ' + (incomplete ? 'INCOMPLETE: ' + incomplete : 'complete'))
 console.log(JSON.stringify(posts, null, 2))
-process.exit(incomplete ? 2 : 0)
+// exitCode, not exit(): exit() can cut a large array written to a pipe.
+process.exitCode = incomplete ? 2 : 0
 NODE
 fi
 

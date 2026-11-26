@@ -21,6 +21,7 @@ xsearch "your query"             # pretty-printed, up to 10 results
 xsearch "your query" 5           # 5 results, pretty-printed
 xsearch --json "your query" 3   # raw JSON
 xsearch --json --latest "@handle" 5   # Latest tab, newest first (default is Top)
+xsearch --walk handle --since 2026-11-18   # every post of one account since a date (optional --until): one JSON array, step log on stderr, exit 2 if incomplete
 ```
 
 ## Parallel use

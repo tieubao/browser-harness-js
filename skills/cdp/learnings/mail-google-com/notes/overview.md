@@ -174,9 +174,10 @@ await learnings("mail-google-com", "forwardMessage", { query: "subject:\"Invoice
 - **Quoted text stays collapsed** as `[Quoted text hidden]` in the export, same as `readThread`'s fallback.
 - **`#drafts?compose=<draft id>` does not open the draft.** It opened a blank new compose (the hash became `compose=new`).
 - **A draft opens on a real click in an activated tab.** Load `#drafts`, `Target.activateTarget`, then `Input.dispatchMouseEvent` on the row's `span.bog`. The same click on a background tab did nothing.
-- **`openDraft` is narrow on purpose.** The subject match is exact, and the row marker is the English word `Draft` (another UI language returns `no-draft-row`). A reply draft inside a thread has no visible subject box and may return `not-opened`. With another compose already open in a reused tab, the follow-up verbs may act on that one.
-- **Some `#drafts` rows carry no `Draft` text.** On a live list, 2 of 3 rows had none (long participant lists), and `openDraft` returns `no-draft-row` for those.
-- **Live status.** `exportThread` ran live on a one-message newsletter, by `query` and by `threadId`. `openDraft` ran live only to `no-draft-row`: no draft was safe to open, so its click and readback are checked offline only.
+- **A draft row is known by attribute.** A standalone draft's row carries `data-standalone-draft-id` and `data-legacy-standalone-draft-id` on a span. The visible `Draft` word is not used: some rows drop it, and it changes with the UI language.
+- **`openDraft` handles standalone drafts only.** Reply drafts inside a thread carried neither attribute on three live rows, so they return `no-draft-row`. The subject match is exact. With another compose already open in a reused tab, the follow-up verbs may act on that one.
+- **A compose in a hidden tab may not save.** `composeDraft` then `saveDraftNow` left no draft while the tab reported `visibilityState: hidden`. With focus emulation on and a body space typed and kept, it saved. Which of the two mattered is unknown. Confirm with `searchRows` (`in:drafts`) before closing the tab.
+- **Live status.** `exportThread` ran live on a one-message newsletter, by `query` and by `threadId`. `openDraft` ran live end to end on a throwaway standalone draft (open and readback), and to `no-draft-row` on a missing subject.
 
 ## Concurrency
 

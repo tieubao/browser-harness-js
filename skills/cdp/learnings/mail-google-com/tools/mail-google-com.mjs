@@ -1247,7 +1247,9 @@ export async function openDraft(ctx, { authuser = 0, subject, targetId } = {}) {
     if (!owned) await tab.send("Page.navigate", { url });
     await tab.send("Emulation.setFocusEmulationEnabled", { enabled: true });
 
-    // Gmail keeps other views' rows in the DOM at zero size, so only visible ones count.
+    // Gmail keeps other views' rows in the DOM at zero size, so only visible ones count. A saved
+    // draft row is known by its standalone-draft-id attribute; the visible "Draft" word is dropped
+    // on some rows and changes with the UI language.
     const rowJs = `(() => {
       if (!location.hash.startsWith('#drafts')) return null;
       const want = ${JSON.stringify(want)};
@@ -1255,7 +1257,7 @@ export async function openDraft(ctx, { authuser = 0, subject, targetId } = {}) {
       const hits = [...document.querySelectorAll('tr.zA')].filter((row) => {
         const s = row.querySelector('span.bog');
         return s && shown(s) && (s.textContent || '').trim() === want &&
-          [...row.querySelectorAll('span,font,div')].some((e) => !e.children.length && /^Draft(\\s*\\d+)?$/.test((e.textContent || '').trim()));
+          !!row.querySelector('[data-standalone-draft-id],[data-legacy-standalone-draft-id]');
       });
       if (!hits.length) return null;
       const el = hits[0].querySelector('span.bog');

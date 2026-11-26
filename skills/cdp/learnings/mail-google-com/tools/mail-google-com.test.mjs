@@ -105,6 +105,9 @@ test("openDraft stops on a missing row or a compose that never appears, closing 
   assert.ok(methods(none).includes("Target.closeTarget"));
   assert.ok(!methods(none).includes("Input.dispatchMouseEvent"));
   assert.ok(!methods(none).includes("Target.activateTarget"), "a miss must not take the foreground");
+  const rowExpr = none.log.find(([x, p]) => x === "Runtime.evaluate" && p.expression.includes("tr.zA"))[1].expression;
+  assert.ok(rowExpr.includes("[data-standalone-draft-id],[data-legacy-standalone-draft-id]"), "rows are matched by draft id attribute");
+  assert.ok(!rowExpr.includes("Draft("), "not by the visible Draft word");
 
   const stuck = fakeCtx(draftAnswers({ opens: false }));
   assert.deepEqual(await openDraft(stuck, { subject: "Plan", targetId: "CALLER" }), { stop: "not-opened" });

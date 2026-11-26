@@ -39,6 +39,18 @@ await learnings("mail-google-com", "replaceAttachments", {
 // -> { attachments: [...] }: READ it, a leftover chip happened once
 await learnings("mail-google-com", "saveDraftNow", { targetId: draft.targetId })
 // -> { subject }
+
+// Whole thread to disk (full text, plus PDF)
+await learnings("mail-google-com", "exportThread", { query: "subject:\"Invoice #123\"", outDir: "/abs/dir" })
+// -> { threadId, title, textPath, pdfPath, messages, chars }
+
+// Reopen a saved draft, then edit it with the targetId verbs above
+await learnings("mail-google-com", "openDraft", { subject: "Subject" })
+// -> { targetId, subject, recipients, attachments, from } or { stop: "no-draft-row" | "not-opened" }
+
+// Reply or forward inside a thread (never sends)
+await learnings("mail-google-com", "replyInThread", { query: "subject:\"Invoice #123\"", bodyLines: ["Hi,", "", "Thanks."] })
+await learnings("mail-google-com", "forwardMessage", { query: "subject:\"Invoice #123\"", to: "someone@example.com", noteLines: ["FYI."] })
 ```
 
 ## Limits (learned 2026-09-27)
@@ -155,13 +167,24 @@ await learnings("mail-google-com", "saveDraftNow", { targetId: draft.targetId })
 - **`replyInThread` then `sendPreparedDraft` worked live end to end.** An inline reply to the last message of a personal-Gmail thread, with an `.xlsx` attachment and `stripSignature: true`, read back the right recipient, body and file name, and `sendPreparedDraft({ targetId, confirm: true })` returned `{sent: true}`. The message showed in Sent, in the same thread, about 20 s later.
 - **Use this path for any reply that needs a file.** The claude.ai Gmail connector takes attachments only as inline base64, and an agent's output masker replaces long base64 with a mask, so the file cannot reach the connector call. `replyInThread` takes a host path instead.
 
+## Export a thread, open a saved draft (`exportThread`, `openDraft`)
+
+- **The print view calls `window.print()` on load.** `Page.printToPDF` then fails with "Page is already being printed". Register `Page.addScriptToEvaluateOnNewDocument({ source: "window.print=function(){}" })` before navigating.
+- **Print view URL:** `/mail/u/<n>/?ik=<ik>&view=pt&search=all&th=<legacy-thread-id>`. `ik` is `window.GM_ID_KEY` on any Gmail app page. It identifies the account, so never print it.
+- **Quoted text stays collapsed** as `[Quoted text hidden]` in the export, same as `readThread`'s fallback.
+- **`#drafts?compose=<draft id>` does not open the draft.** It opened a blank new compose (the hash became `compose=new`).
+- **A draft opens on a real click in an activated tab.** Load `#drafts`, `Target.activateTarget`, then `Input.dispatchMouseEvent` on the row's `span.bog`. The same click on a background tab did nothing.
+- **`openDraft` is narrow on purpose.** The subject match is exact, and the row marker is the English word `Draft` (another UI language returns `no-draft-row`). A reply draft inside a thread has no visible subject box and may return `not-opened`. With another compose already open in a reused tab, the follow-up verbs may act on that one.
+- **Some `#drafts` rows carry no `Draft` text.** On a live list, 2 of 3 rows had none (long participant lists), and `openDraft` returns `no-draft-row` for those.
+- **Live status.** `exportThread` ran live on a one-message newsletter, by `query` and by `threadId`. `openDraft` ran live only to `no-draft-row`: no draft was safe to open, so its click and readback are checked offline only.
+
 ## Concurrency
 
 The harness REPL server is one long-lived process shared by every Claude session on the machine, and its active-session pointer is global. A tool that moved that pointer to its tab and then made plain `session.X(...)` calls raced other sessions: one session's `Page.navigate` landed in another session's draft tab, and `setBodyAboveSignature`, `replaceAttachments` and `replyInThread` hung or acted on the wrong tab.
 
 - **Fix:** every tool attaches to its own target with `Target.attachToTarget({ targetId, flatten: true })` and sends each Page/DOM/Input/Runtime call to that explicit `sessionId` through `ctx.cdp(sessionId, method, params)`. The file never moves the active-session pointer. `Target.*` calls are browser-level and never read it.
 - **Rule:** a caller passes its own `targetId` and never relies on the active tab. The tools that take a `targetId` (`replaceDraftBody`, `pickSignature`, `setBodyAboveSignature`, `replaceAttachments`, `saveDraftNow`, `sendPreparedDraft`) attach to that exact tab; the tools that open their own tab keep the id they created.
-- **Focus:** only `replyInThread` and `forwardMessage` call `Target.activateTarget`, because `Input.insertText` into a background tab lands late. The read-only verbs stay in background tabs.
+- **Focus:** only `replyInThread`, `forwardMessage` and `openDraft` call `Target.activateTarget`: `Input.insertText` into a background tab lands late, and a draft row ignores a click in a background tab. The read-only verbs stay in background tabs.
 - **Gotcha:** a draft edit made from a stale tab can overwrite the operator's own edit in that draft. Reload the draft (`Page.reload`) before editing a draft the operator may have touched.
 
 ## Provenance

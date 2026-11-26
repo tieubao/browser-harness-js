@@ -7,7 +7,8 @@
 // of Send and hands back a readback; sendPreparedDraft refuses without confirm:true.
 import fs from "node:fs";
 import path from "node:path";
-const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+export const _timing = { scale: 1 }; // tests shrink the waits
+const wait = (ms) => new Promise((r) => setTimeout(r, ms * _timing.scale));
 
 // The REPL server is one process shared by every Claude session, and its active-session pointer
 // is global, so two sessions driving Gmail steal each other's tab. Attach with ctx.attachPage
@@ -1057,7 +1058,7 @@ export async function createForwardFilter(ctx, { authuser = 0, query, forwardTo,
 }
 
 async function pollUntil(tab, expr, timeoutMs, intervalMs) {
-  const deadline = Date.now() + timeoutMs;
+  const deadline = Date.now() + timeoutMs * _timing.scale;
   while (Date.now() < deadline) {
     if (await evaluate(tab, expr)) return true;
     await wait(intervalMs);
@@ -1155,4 +1156,164 @@ export async function setSignatureHtml(ctx, { authuser = 0, name, htmlFile, crea
     return { text: (e.innerText || '').slice(0, 300), imgs: imgs.length, imgsLoaded: imgs.filter((i) => i.naturalWidth > 0).length, links: e.querySelectorAll('a').length };
   })())`)) || "{}");
   return { targetId, name, ...readback };
+}
+
+// "Gmail - <subject>" (Workspace: "<Org> Mail - <subject>") -> a file-name slug. Marks are folded
+// so Vietnamese subjects stay readable; a subject with no latin letters yields "".
+function slugify(title) {
+  return String(title).normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[đĐ]/g, "d").toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-").replace(/^-+/, "").slice(0, 80).replace(/-+$/, "");
+}
+
+// Save a whole thread as text (and PDF) from Gmail's print view. That view calls window.print() on
+// load, which leaves Page.printToPDF failing with "Page is already being printed", so the stub is
+// registered before the tab's first navigation. The account's ik key is used and never returned.
+export async function exportThread(ctx, { authuser = 0, threadId, query, outDir, pdf = true } = {}) {
+  if (!threadId && !query) throw new Error("exportThread: threadId or query is required");
+  if (!outDir || !path.isAbsolute(outDir)) throw new Error("exportThread: outDir must be an absolute path");
+  if (threadId && !/^[0-9a-f]+$/i.test(threadId)) throw new Error("exportThread: threadId must be the legacy hex id");
+  const base = `https://mail.google.com/mail/u/${authuser}/`;
+  const { targetId } = await ctx.session.Target.createTarget({ url: "about:blank", background: true });
+  try {
+    const tab = await attachTab(ctx, targetId);
+    await tab.send("Page.enable");
+    await tab.send("Page.addScriptToEvaluateOnNewDocument", { source: "window.print=function(){}" });
+    await tab.send("Emulation.setFocusEmulationEnabled", { enabled: true });
+    await tab.send("Page.navigate", { url: base + (threadId ? "#inbox" : `#search/${encodeURIComponent(query)}`) });
+
+    let id = threadId;
+    if (!id) {
+      await wait(9000);
+      id = await evaluate(tab, `(() => {
+        const row = document.querySelector('tr.zA');
+        if (!row) return null;
+        const el = row.matches('[data-legacy-thread-id]') ? row : row.querySelector('[data-legacy-thread-id]');
+        return el ? el.getAttribute('data-legacy-thread-id') : '';
+      })()`);
+      if (id === null || id === undefined) return { stop: "no-results", hint: `no rows for query ${query}` };
+      if (!id) return { stop: "no-thread-id", hint: "first row has no data-legacy-thread-id descendant" };
+    }
+
+    // No ik: the ui=2 form of the print view (readThread's fallback) works without it.
+    await pollUntil(tab, "!!window.GM_ID_KEY", 15000, 500);
+    const ik = String((await evaluate(tab, "window.GM_ID_KEY || ''")) || "");
+    const key = ik ? `ik=${encodeURIComponent(ik)}` : "ui=2";
+    await tab.send("Page.navigate", { url: `${base}?${key}&view=pt&search=all&th=${encodeURIComponent(id)}` });
+    await wait(1500);
+    if (!(await pollUntil(tab, "!!document.querySelector('table.message')", 20000, 500))) {
+      return { stop: "no-print-view", threadId: id };
+    }
+    // Remote images load after the markup; give them a moment so the PDF is not full of holes.
+    await pollUntil(tab, "[...document.images].every((i) => i.complete)", 10000, 500);
+    await wait(1000);
+    const doc = JSON.parse((await evaluate(tab, `JSON.stringify({
+      title: document.title,
+      text: document.body.innerText,
+      messages: document.querySelectorAll('table.message').length,
+    })`)) || "{}");
+
+    const title = String(doc.title || "").replace(/^(?:Gmail|.*? Mail) - /, "");
+    const text = String(doc.text || "");
+    fs.mkdirSync(outDir, { recursive: true });
+    let slug = slugify(title) || id;
+    // Never overwrite another thread's export that shares the subject.
+    if ([".txt", ".pdf"].some((ext) => fs.existsSync(path.join(outDir, slug + ext)))) slug = `${slug}-${id}`;
+    const textPath = path.join(outDir, `${slug}.txt`);
+    fs.writeFileSync(textPath, text);
+    let pdfPath = null;
+    if (pdf) {
+      const { data } = await tab.send("Page.printToPDF", { printBackground: true });
+      pdfPath = path.join(outDir, `${slug}.pdf`);
+      fs.writeFileSync(pdfPath, Buffer.from(data, "base64"));
+    }
+    return { threadId: id, title, textPath, pdfPath, messages: Number(doc.messages) || 0, chars: text.length };
+  } finally {
+    ctx.session.Target.closeTarget({ targetId }).catch(() => {});
+  }
+}
+
+// Open a saved draft for editing and read it back, so replaceAttachments / setBodyAboveSignature /
+// sendPreparedDraft can follow on the same targetId. Needs an activated tab and a real click on the
+// row's subject (see notes). The subject match is exact: a near miss could end up being sent.
+export async function openDraft(ctx, { authuser = 0, subject, targetId } = {}) {
+  const want = String(subject || "").trim();
+  if (!want) throw new Error("openDraft: subject is required");
+  const url = `https://mail.google.com/mail/u/${authuser}/#drafts`;
+  const owned = !targetId;
+  if (owned) targetId = (await ctx.session.Target.createTarget({ url, background: true })).targetId;
+  let opened = false;
+  try {
+    const tab = await attachTab(ctx, targetId);
+    if (!owned) await tab.send("Page.navigate", { url });
+    await ctx.session.Target.activateTarget({ targetId });
+    await tab.send("Emulation.setFocusEmulationEnabled", { enabled: true });
+
+    // Gmail keeps other views' rows in the DOM at zero size, so only visible ones count.
+    const rowJs = `(() => {
+      if (!location.hash.startsWith('#drafts')) return null;
+      const want = ${JSON.stringify(want)};
+      const shown = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+      const hits = [...document.querySelectorAll('tr.zA')].filter((row) => {
+        const s = row.querySelector('span.bog');
+        return s && shown(s) && (s.textContent || '').trim() === want &&
+          [...row.querySelectorAll('span,font,div')].some((e) => !e.children.length && /^Draft(\\s*\\d+)?$/.test((e.textContent || '').trim()));
+      });
+      if (!hits.length) return null;
+      const el = hits[0].querySelector('span.bog');
+      el.scrollIntoView({ block: 'center', behavior: 'instant' });
+      const r = el.getBoundingClientRect();
+      return { x: r.x, y: r.y, width: r.width, height: r.height, matches: hits.length };
+    })()`;
+    if (!(await pollUntil(tab, `!!${rowJs}`, 20000, 500))) return { stop: "no-draft-row" };
+    await wait(1000); // the list settles after its first paint
+    const row = await evaluate(tab, rowJs);
+    if (!row) return { stop: "no-draft-row" };
+    await clickRect(tab, row);
+
+    const boxJs = `[...document.querySelectorAll('input[name=subjectbox]')].find((i) => i.value.trim() === ${JSON.stringify(want)})`;
+    if (!(await pollUntil(tab, `!!${boxJs}`, 15000, 500))) return { stop: "not-opened" };
+    await wait(1500); // chips land a beat after the subject box
+
+    // Same sources as composeDraft's readback, scoped to this compose: the draft list behind it
+    // has its own hovercard ids and file names.
+    const readback = JSON.parse((await evaluate(tab, `JSON.stringify((() => {
+      const input = ${boxJs};
+      let box = input.closest('[role=dialog]');
+      if (!box) {
+        box = input;
+        while (box.parentElement && !box.querySelector(${JSON.stringify(BODY_SELECTOR)})) box = box.parentElement;
+      }
+      const body = box.querySelector(${JSON.stringify(BODY_SELECTOR)});
+      const outside = (el) => !body || !body.contains(el);
+      const recipients = new Set();
+      box.querySelectorAll('[data-hovercard-id]').forEach((e) => { if (outside(e)) recipients.add(e.getAttribute('data-hovercard-id')); });
+      const names = new Set();
+      box.querySelectorAll('[download_url]').forEach((el) => {
+        const seg = (el.getAttribute('download_url') || '').split(':');
+        if (outside(el) && seg[1]) { try { names.add(decodeURIComponent(seg[1])); } catch (e) { names.add(seg[1]); } }
+      });
+      box.querySelectorAll('*').forEach((el) => {
+        const t = (el.textContent || '').trim();
+        if (!el.children.length && outside(el) && !t.includes('@') && t.length < 100 && /\\.[A-Za-z0-9]{2,5}$/.test(t)) names.add(t);
+      });
+      return {
+        from: (box.querySelector('input[name=from]') || {}).value || '',
+        recipients: [...recipients],
+        subject: input.value,
+        attachments: [...names],
+      };
+    })())`)) || "{}");
+
+    opened = true;
+    return {
+      targetId,
+      subject: readback.subject || "",
+      recipients: readback.recipients || [],
+      attachments: readback.attachments || [],
+      from: readback.from || "",
+      ...(row.matches > 1 ? { matches: row.matches } : {}),
+    };
+  } finally {
+    if (owned && !opened) ctx.session.Target.closeTarget({ targetId }).catch(() => {});
+  }
 }

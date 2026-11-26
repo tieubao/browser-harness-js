@@ -219,6 +219,30 @@
         "targetId": {"type": "string", "required": true, "description": "from composeDraft"}
       },
       "returns": {"type": "object", "description": "{subject: string} the subject box value after the save; {stop:\"no-subject-box\"} if the compose subject field is missing"}
+    },
+    "exportThread": {
+      "description": "Save a whole thread as text and PDF from Gmail's print view (view=pt), with no per-message truncation. Resolves the thread from threadId, else the first row of query; reads the account's ik from window.GM_ID_KEY (never returned); stubs window.print before navigating, or Page.printToPDF fails with \"Page is already being printed\". Quoted text stays collapsed as \"[Quoted text hidden]\". Opens its own background tab and closes it. Side effect: writes files under outDir; whether it marks unread messages read is unverified.",
+      "path": "tools/mail-google-com.mjs",
+      "callable": "exportThread",
+      "args": {
+        "authuser": {"type": "number", "required": false, "description": "default 0"},
+        "threadId": {"type": "string", "required": false, "description": "legacy hex id (data-legacy-thread-id); one of threadId or query is required, threadId wins"},
+        "query": {"type": "string", "required": false, "description": "Gmail search operators; the first result row is exported"},
+        "outDir": {"type": "string", "required": true, "description": "absolute directory to write into; created when missing"},
+        "pdf": {"type": "boolean", "required": false, "description": "default true"}
+      },
+      "returns": {"type": "object", "description": "{threadId, title, textPath, pdfPath (null when pdf:false), messages: number, chars: number}. Files are <slug of title>.txt/.pdf, with -<threadId> appended when that name already exists. {stop:\"no-results\"|\"no-thread-id\"|\"no-print-view\"} otherwise"}
+    },
+    "openDraft": {
+      "description": "Open an existing saved draft for editing: load #drafts, activate the tab, real-click the subject (span.bog) of the visible row that carries data-standalone-draft-id / data-legacy-standalone-draft-id and whose subject equals subject exactly (a reply draft inside a thread has no such attribute: no-draft-row), wait for input[name=subjectbox], read the compose back. Edits and sends nothing. Do not use #drafts?compose=<id>: it opens a blank new compose. Side effect: once a matching row exists, brings the tab to the front; leaves it open on success.",
+      "path": "tools/mail-google-com.mjs",
+      "callable": "openDraft",
+      "args": {
+        "authuser": {"type": "number", "required": false, "description": "default 0"},
+        "subject": {"type": "string", "required": true, "description": "the draft's exact subject"},
+        "targetId": {"type": "string", "required": false, "description": "reuse this tab (it is navigated to #drafts); omit to open a new one"}
+      },
+      "returns": {"type": "object", "description": "{targetId, subject, recipients: string[], attachments: string[], from: string (empty when the compose has no from field), matches?: number when more than one draft row had that subject (the first was opened)}; {stop:\"no-draft-row\"|\"not-opened\"} otherwise"}
     }
   }
 }

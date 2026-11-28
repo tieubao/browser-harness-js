@@ -231,6 +231,7 @@ const listAnswers = (expr) => {
   if (expr.startsWith("JSON.stringify")) return JSON.stringify([{ id: "t1", from: "a@example.com", fromName: "A", subject: "s", snippet: "n", labels: [], date: "2026-11-20T10:00:00Z", unread: false }]);
   if (expr.includes("GLOBAL") || expr.includes("aria-label")) return "han@example.com";
   if (expr.includes("older")) return false;
+  if (expr.includes("querySelector('tr.zA')")) return true; // list ready
   return undefined;
 };
 
@@ -242,9 +243,17 @@ test("listInbox returns account and rows from one background tab and closes it w
   assert.equal(out.threads[0].id, "t1");
   const created = ctx.log.find(([m]) => m === "Target.createTarget")[1];
   assert.equal(created.background, true);
-  assert.match(created.url, /mail\/u\/2\/#search/);
+  assert.match(created.url, /mail\/u\/2\/#inbox$/);
   assert.equal(methods(ctx).at(-1), "Target.closeTarget");
   assert.ok(!methods(ctx).includes("Page.reload"));
+});
+
+test("listInbox refuses a search query when results never render, and still closes the tab", async () => {
+  const ctx = fakeCtx((expr) => (expr.includes("querySelector('tr.zA')") ? false : listAnswers(expr)));
+  await assert.rejects(listInbox(ctx, { query: "from:a@example.com", limit: 5 }), /do not render/);
+  const created = ctx.log.find(([m]) => m === "Target.createTarget")[1];
+  assert.match(created.url, /#search\/from%3Aa%40example\.com$/);
+  assert.equal(methods(ctx).at(-1), "Target.closeTarget");
 });
 
 test("accountEmail runs in a background tab and closes it", async () => {

@@ -308,3 +308,5 @@ yet run end to end as tools -- the first real use is their proof.
 - **Verify by reload.** The tool reloads and returns the editor text, `<img>` count, loaded-image count (`naturalWidth>0`) and link count. It never returns clipboard contents.
 
 Ported to the Page API (see ../PORTING.md). live: verified on findAccountSlot, verifySent and searchRows; write tools unverified.
+
+`listInbox` lists the inbox through the `#inbox` view. Gmail never renders a search result in a background tab (checked live: `#search/...` stays at zero rows, the inbox view renders in about 5 s), so any other query rejects instead of returning an empty list. The existing `searchRows` hits the same limit.

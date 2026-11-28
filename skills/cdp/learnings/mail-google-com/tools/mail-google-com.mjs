@@ -293,13 +293,21 @@ export async function accountEmail(ctx, { authuser = 0 } = {}) {
 // Rows are read with textContent because innerText is empty in background tabs. Rows hidden by
 // a display:none ancestor are skipped. The id is Gmail's legacy thread id: either the row's
 // data-legacy-thread-id or the thread-f:<id> id on a descendant.
+const LIST_READY_JS = `!!document.querySelector('tr.zA') || /No messages matched your search|No conversations in|Your Primary tab is empty|Your inbox is empty/i.test((document.body && document.body.textContent) || '')`;
+
 export async function listInbox(ctx, { authuser = 0, query = "in:inbox", limit = 100 } = {}) {
   limit = Math.max(1, Number(limit) || 100);
-  const url = `https://mail.google.com/mail/u/${authuser}/#search/${encodeURIComponent(query)}`;
+  // Gmail renders the inbox view in a background tab but never renders a search result
+  // there (verified live: #search/... stays at zero rows). So the inbox is listed through
+  // #inbox, and any other query refuses loudly rather than return an empty list.
+  const isInbox = /^\s*in:inbox\s*$/i.test(query);
+  const view = isInbox ? "inbox" : `search/${encodeURIComponent(query)}`;
+  const url = `https://mail.google.com/mail/u/${authuser}/#${view}`;
   const { targetId } = await ctx.session.Target.createTarget({ url, background: true });
   try {
     const tab = await attachTab(ctx, targetId);
-    await wait(9000);
+    const ready = await pollUntil(tab, LIST_READY_JS, isInbox ? 45000 : 20000, 1000);
+    if (!ready) throw new Error(isInbox ? "listInbox: inbox rows did not render" : "listInbox: search results do not render in a background tab");
     const account = (await evaluate(tab, ACCOUNT_EMAIL_JS)) || '';
     const threads = [];
     const seen = new Set();
@@ -316,7 +324,7 @@ export async function listInbox(ctx, { authuser = 0, query = "in:inbox", limit =
       if (threads.length >= limit || rows.length === 0 || added === 0) break;
       // Next page by hash navigation (#search/<q>/p<N>): no reload, and no synthetic click,
       // which Gmail ignores.
-      await evaluate(tab, `location.hash = ${JSON.stringify(`#search/${encodeURIComponent(query)}/p${pageNo + 2}`)}`);
+      await evaluate(tab, `location.hash = ${JSON.stringify(`#${view}/p${pageNo + 2}`)}`);
       await wait(2500);
     }
     return { account, threads };

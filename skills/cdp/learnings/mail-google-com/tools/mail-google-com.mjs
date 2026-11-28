@@ -202,6 +202,137 @@ export async function searchRows(ctx, { authuser = 0, query, limit = 25 } = {}) 
   }
 }
 
+
+// In-page row extraction for listInbox. Kept as one expression so the exact source can run
+// against a synthetic DOM in the offline test. Gmail rows carry either data-legacy-thread-id
+// on the row or a descendant whose id starts thread-f:.
+const LIST_ROWS_JS = `(() => {
+  const norm = (s) => (s || '').replace(/\\s+/g, ' ').trim();
+  const attr = (el, name) => (el && el.getAttribute ? (el.getAttribute(name) || '') : '');
+  const text = (el) => norm(el && el.textContent);
+  const visible = (row) => {
+    for (let el = row; el; el = el.parentElement) {
+      if (el.hidden) return false;
+      let display = ((el.style && el.style.display) || '').replace(/\\s+/g, '').toLowerCase();
+      if (display !== 'none' && typeof getComputedStyle === 'function') {
+        try { display = getComputedStyle(el).display; } catch (_) {}
+      }
+      if (display === 'none') return false;
+    }
+    return true;
+  };
+  const threadId = (row) => {
+    const own = row.matches && row.matches('[data-legacy-thread-id]') ? row : row.querySelector('[data-legacy-thread-id]');
+    const legacy = attr(own, 'data-legacy-thread-id');
+    if (legacy) return legacy;
+    const ids = [row.id || ''].concat([...row.querySelectorAll('[id]')].map((el) => el.id || ''));
+    const hit = ids.find((id) => id.startsWith('thread-f:'));
+    return hit ? hit.slice('thread-f:'.length) : '';
+  };
+  return [...document.querySelectorAll('tr.zA')].filter(visible).map((row) => {
+    const sender = row.querySelector('[email]');
+    const subjectEl = row.querySelector('.bog') || row.querySelector('.y6 span');
+    const snippetEl = row.querySelector('.y2');
+    const dateEl = row.querySelector('td.xW span[title]') || row.querySelector('span[title]') || row.querySelector('td.xW span');
+    const classes = row.className || '';
+    const unread = (row.classList && row.classList.contains && row.classList.contains('zE')) || /(?:^|\\s)zE(?:\\s|$)/.test(classes);
+    const labels = [];
+    const pushLabel = (label) => {
+      label = norm(label);
+      if (label && !labels.includes(label)) labels.push(label);
+    };
+    (attr(row, 'data-labels') || '').split(',').forEach(pushLabel);
+    [...row.querySelectorAll('[data-label-name]')].forEach((el) => pushLabel(attr(el, 'data-label-name')));
+    if (unread) pushLabel('UNREAD');
+    return {
+      id: threadId(row),
+      from: attr(sender, 'email') || text(sender),
+      fromName: attr(sender, 'name') || text(sender),
+      subject: text(subjectEl),
+      snippet: text(snippetEl).replace(/^\\s*-\\s*/, ''),
+      labels,
+      date: attr(dateEl, 'title') || text(dateEl),
+      unread,
+    };
+  }).filter((row) => row.id);
+})()`;
+
+const ACCOUNT_EMAIL_JS = `(() => {
+  const pick = (s) => {
+    const m = (s || '').match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
+    return m ? m[0] : '';
+  };
+  for (const el of [...document.querySelectorAll('[aria-label]')]) {
+    const hit = pick(el.getAttribute('aria-label'));
+    if (hit) return hit;
+  }
+  if (window.GLOBALS) {
+    let text = '';
+    try { text = JSON.stringify(window.GLOBALS); } catch { text = String(window.GLOBALS); }
+    const hit = pick(text);
+    if (hit) return hit;
+  }
+  return pick(document.title);
+})()`;
+
+export const _testPageJs = { LIST_ROWS_JS, ACCOUNT_EMAIL_JS };
+
+export async function accountEmail(ctx, { authuser = 0 } = {}) {
+  const url = `https://mail.google.com/mail/u/${authuser}/#inbox`;
+  const { targetId } = await ctx.session.Target.createTarget({ url, background: true });
+  try {
+    const tab = await attachTab(ctx, targetId);
+    await wait(9000);
+    return { email: (await evaluate(tab, ACCOUNT_EMAIL_JS)) || '' };
+  } finally {
+    ctx.session.Target.closeTarget({ targetId }).catch(() => {});
+  }
+}
+
+// Read-only inbox/search listing for mailbox. One background tab, no reload, closed in finally.
+// Rows are read with textContent because innerText is empty in background tabs. Rows hidden by
+// a display:none ancestor are skipped. The id is Gmail's legacy thread id: either the row's
+// data-legacy-thread-id or the thread-f:<id> id on a descendant.
+const LIST_READY_JS = `!!document.querySelector('tr.zA') || /No messages matched your search|No conversations in|Your Primary tab is empty|Your inbox is empty/i.test((document.body && document.body.textContent) || '')`;
+
+export async function listInbox(ctx, { authuser = 0, query = "in:inbox", limit = 100 } = {}) {
+  limit = Math.max(1, Number(limit) || 100);
+  // Gmail renders the inbox view in a background tab but never renders a search result
+  // there (verified live: #search/... stays at zero rows). So the inbox is listed through
+  // #inbox, and any other query refuses loudly rather than return an empty list.
+  const isInbox = /^\s*in:inbox\s*$/i.test(query);
+  const view = isInbox ? "inbox" : `search/${encodeURIComponent(query)}`;
+  const url = `https://mail.google.com/mail/u/${authuser}/#${view}`;
+  const { targetId } = await ctx.session.Target.createTarget({ url, background: true });
+  try {
+    const tab = await attachTab(ctx, targetId);
+    const ready = await pollUntil(tab, LIST_READY_JS, isInbox ? 45000 : 20000, 1000);
+    if (!ready) throw new Error(isInbox ? "listInbox: inbox rows did not render" : "listInbox: search results do not render in a background tab");
+    const account = (await evaluate(tab, ACCOUNT_EMAIL_JS)) || '';
+    const threads = [];
+    const seen = new Set();
+    const maxPages = Math.min(5, Math.ceil(limit / 50) + 1);
+    for (let pageNo = 0; pageNo < maxPages && threads.length < limit; pageNo++) {
+      const rows = JSON.parse((await evaluate(tab, `JSON.stringify(${LIST_ROWS_JS})`)) || "[]");
+      let added = 0;
+      for (const row of rows) {
+        if (seen.has(row.id) || threads.length >= limit) continue;
+        seen.add(row.id);
+        threads.push(row);
+        added++;
+      }
+      if (threads.length >= limit || rows.length === 0 || added === 0) break;
+      // Next page by hash navigation (#search/<q>/p<N>): no reload, and no synthetic click,
+      // which Gmail ignores.
+      await evaluate(tab, `location.hash = ${JSON.stringify(`#${view}/p${pageNo + 2}`)}`);
+      await wait(2500);
+    }
+    return { account, threads };
+  } finally {
+    ctx.session.Target.closeTarget({ targetId }).catch(() => {});
+  }
+}
+
 export async function readThread(ctx, { authuser = 0, query, maxChars = 1600 } = {}) {
   if (!query) throw new Error("readThread: query is required");
   const url = `https://mail.google.com/mail/u/${authuser}/#search/${encodeURIComponent(query)}`;

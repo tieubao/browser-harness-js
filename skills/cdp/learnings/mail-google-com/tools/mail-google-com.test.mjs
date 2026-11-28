@@ -5,7 +5,8 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { _timing, exportThread, openDraft } from "./mail-google-com.mjs";
+import vm from "node:vm";
+import { _testPageJs, _timing, accountEmail, exportThread, listInbox, openDraft } from "./mail-google-com.mjs";
 
 _timing.scale = 0.001;
 
@@ -114,4 +115,150 @@ test("openDraft stops on a missing row or a compose that never appears, closing 
   assert.ok(!methods(stuck).includes("Target.closeTarget"));
   assert.ok(!methods(stuck).includes("Target.createTarget"));
   await assert.rejects(openDraft(stuck, {}), /subject is required/);
+});
+
+
+function matchesSimple(el, selector) {
+  if (!el || !selector) return false;
+  if (selector.startsWith("[") && selector.endsWith("]")) {
+    const name = selector.slice(1, -1).split("=")[0].replace(/['"]/g, "");
+    return el.getAttribute(name) !== null && el.getAttribute(name) !== undefined;
+  }
+  const m = selector.match(/^([a-zA-Z][a-zA-Z0-9]*)?(?:\.([a-zA-Z0-9_-]+))?(?:\[([a-zA-Z0-9_-]+)\])?$/);
+  if (!m) return false;
+  const [, tag, cls, attr] = m;
+  if (tag && el.tagName !== tag.toUpperCase()) return false;
+  if (cls && !el.classList.contains(cls)) return false;
+  if (attr && (el.getAttribute(attr) === null || el.getAttribute(attr) === undefined)) return false;
+  return Boolean(tag || cls || attr);
+}
+
+function matchesSelector(el, selector) {
+  return selector.split(",").some((group) => {
+    const parts = group.trim().split(/\s+/).filter(Boolean);
+    if (!matchesSimple(el, parts.at(-1))) return false;
+    let anc = el.parentElement;
+    for (let i = parts.length - 2; i >= 0; i--) {
+      while (anc && !matchesSimple(anc, parts[i])) anc = anc.parentElement;
+      if (!anc) return false;
+      anc = anc.parentElement;
+    }
+    return true;
+  });
+}
+
+function domEl({ tag = "div", text = "", attrs = {}, classes = [], children = [], style = {}, hidden = false, id = "" } = {}) {
+  const el = {
+    tagName: tag.toUpperCase(),
+    textContent: text,
+    style,
+    hidden,
+    id,
+    className: classes.join(" "),
+    parentElement: null,
+    children: [],
+    classList: { contains: (name) => classes.includes(name) },
+    getAttribute(name) {
+      if (name === "id") return id || null;
+      if (name === "class") return classes.join(" ");
+      return Object.prototype.hasOwnProperty.call(attrs, name) ? attrs[name] : null;
+    },
+  };
+  el.children = children.map((child) => { child.parentElement = el; return child; });
+  const descendants = (root) => root.children.flatMap((child) => [child, ...descendants(child)]);
+  el.querySelectorAll = (selector) => descendants(el).filter((node) => matchesSelector(node, selector));
+  el.querySelector = (selector) => el.querySelectorAll(selector)[0] || null;
+  el.matches = (selector) => matchesSelector(el, selector);
+  return el;
+}
+
+function inboxFixture() {
+  const sender = (email, name) => domEl({ tag: "span", text: name, attrs: { email, name } });
+  const subject = (value) => domEl({ tag: "span", text: value, classes: ["bog"] });
+  const snippet = (value) => domEl({ tag: "span", text: value, classes: ["y2"] });
+  const date = (title, text) => domEl({ tag: "td", classes: ["xW"], children: [domEl({ tag: "span", text, attrs: { title } })] });
+  const first = domEl({
+    tag: "tr",
+    classes: ["zA"],
+    attrs: { "data-legacy-thread-id": "legacy123", "data-labels": "Accounting,Hiring" },
+    children: [sender("alice@example.com", "Alice Example"), subject("Quarterly invoice"), snippet(" - invoice attached"), date("2026-11-20T10:00:00Z", "Nov 20")],
+  });
+  const second = domEl({
+    tag: "tr",
+    classes: ["zA", "zE"],
+    children: [
+      domEl({ tag: "span", id: "thread-f:def456" }),
+      sender("bob@example.com", "Bob Example"),
+      subject("Please review"),
+      snippet(" - when you have a moment"),
+      date("2026-11-21T11:00:00Z", "Nov 21"),
+    ],
+  });
+  const hiddenRow = domEl({
+    tag: "tr",
+    classes: ["zA"],
+    attrs: { "data-legacy-thread-id": "hidden999" },
+    children: [subject("hidden")],
+  });
+  const hiddenWrap = domEl({ style: { display: "none" }, children: [hiddenRow] });
+  return domEl({ tag: "body", children: [first, second, hiddenWrap] });
+}
+
+test("listInbox row extraction uses a synthetic DOM, skips hidden rows and parses fields", () => {
+  const document = inboxFixture();
+  const rows = JSON.parse(JSON.stringify(vm.runInNewContext(_testPageJs.LIST_ROWS_JS, { document })));
+  assert.equal(rows.length, 2);
+  assert.deepEqual(rows.map((row) => row.id), ["legacy123", "def456"]);
+  assert.equal(rows[0].from, "alice@example.com");
+  assert.equal(rows[0].fromName, "Alice Example");
+  assert.equal(rows[0].subject, "Quarterly invoice");
+  assert.equal(rows[0].snippet, "invoice attached");
+  assert.deepEqual(rows[0].labels, ["Accounting", "Hiring"]);
+  assert.equal(rows[0].date, "2026-11-20T10:00:00Z");
+  assert.equal(rows[0].unread, false);
+  assert.equal(rows[1].unread, true);
+  assert.deepEqual(rows[1].labels, ["UNREAD"]);
+});
+
+test("accountEmail extraction reads the account aria-label, with GLOBALS as fallback", () => {
+  const byLabel = domEl({ children: [domEl({ tag: "a", attrs: { "aria-label": "Google Account: Han Example han@example.com" } })] });
+  assert.equal(vm.runInNewContext(_testPageJs.ACCOUNT_EMAIL_JS, { document: byLabel, window: {} }), "han@example.com");
+  const bare = domEl({ children: [] });
+  assert.equal(vm.runInNewContext(_testPageJs.ACCOUNT_EMAIL_JS, { document: bare, window: { GLOBALS: ["x", "backup@example.com"] } }), "backup@example.com");
+});
+
+const listAnswers = (expr) => {
+  if (expr.startsWith("JSON.stringify")) return JSON.stringify([{ id: "t1", from: "a@example.com", fromName: "A", subject: "s", snippet: "n", labels: [], date: "2026-11-20T10:00:00Z", unread: false }]);
+  if (expr.includes("GLOBAL") || expr.includes("aria-label")) return "han@example.com";
+  if (expr.includes("older")) return false;
+  if (expr.includes("querySelector('tr.zA')")) return true; // list ready
+  return undefined;
+};
+
+test("listInbox returns account and rows from one background tab and closes it without reload", async () => {
+  const ctx = fakeCtx(listAnswers);
+  const out = await listInbox(ctx, { authuser: 2, query: "in:inbox", limit: 10 });
+  assert.equal(out.account, "han@example.com");
+  assert.equal(out.threads.length, 1);
+  assert.equal(out.threads[0].id, "t1");
+  const created = ctx.log.find(([m]) => m === "Target.createTarget")[1];
+  assert.equal(created.background, true);
+  assert.match(created.url, /mail\/u\/2\/#inbox$/);
+  assert.equal(methods(ctx).at(-1), "Target.closeTarget");
+  assert.ok(!methods(ctx).includes("Page.reload"));
+});
+
+test("listInbox refuses a search query when results never render, and still closes the tab", async () => {
+  const ctx = fakeCtx((expr) => (expr.includes("querySelector('tr.zA')") ? false : listAnswers(expr)));
+  await assert.rejects(listInbox(ctx, { query: "from:a@example.com", limit: 5 }), /do not render/);
+  const created = ctx.log.find(([m]) => m === "Target.createTarget")[1];
+  assert.match(created.url, /#search\/from%3Aa%40example\.com$/);
+  assert.equal(methods(ctx).at(-1), "Target.closeTarget");
+});
+
+test("accountEmail runs in a background tab and closes it", async () => {
+  const ctx = fakeCtx(listAnswers);
+  assert.deepEqual(await accountEmail(ctx, { authuser: 1 }), { email: "han@example.com" });
+  assert.equal(ctx.log.find(([m]) => m === "Target.createTarget")[1].background, true);
+  assert.equal(methods(ctx).at(-1), "Target.closeTarget");
 });

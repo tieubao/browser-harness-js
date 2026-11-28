@@ -17,6 +17,8 @@ await learnings("mail-google-com", "sendPreparedDraft", { targetId, confirm: tru
 await learnings("mail-google-com", "verifySent", { recipient: "someone@example.com" })
 
 await learnings("mail-google-com", "searchRows", { query: "from:someone is:unread", limit: 10 })
+await learnings("mail-google-com", "listInbox", { query: "in:inbox", limit: 100 })
+await learnings("mail-google-com", "accountEmail", { authuser: 0 })
 await learnings("mail-google-com", "readThread", { query: "subject:\"Invoice #123\"" })
 await learnings("mail-google-com", "downloadAttachments", { query: "subject:\"Invoice #123\"", outDir: "/abs/dir", match: "\\.pdf$" })
 // -> { saved: [{ name, mime, bytes, path }], found }: first result thread, bytes fetched in-page with the session cookies
@@ -94,6 +96,9 @@ await learnings("mail-google-com", "forwardMessage", { query: "subject:\"Invoice
   background target (`Target.createTarget({ background: true })`) returns empty `innerText` for
   every row after the first, because Chrome skips layout work for background tabs. `textContent`
   does not depend on layout, so `searchRows` and `readThread` read rows and messages with it.
+- **`listInbox` is the read-only mailbox listing.** It uses the same background-tab textContent
+  rule, skips rows hidden under `display:none`, never reloads, closes its tab, and takes the
+  legacy thread id from `data-legacy-thread-id` or a descendant `thread-f:<id>` id.
 - **Trusted Types blocks innerHTML, so use DOM nodes or `DOM.setOuterHTML`.** Gmail's compose body
   enforces a Trusted Types policy; a page-script `element.innerHTML = ...` assignment throws.
   Plain text goes in as real nodes (`replaceChildren` with text nodes and `<br>` elements). An

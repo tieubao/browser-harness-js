@@ -213,7 +213,10 @@ const LIST_ROWS_JS = `(() => {
   const visible = (row) => {
     for (let el = row; el; el = el.parentElement) {
       if (el.hidden) return false;
-      const display = ((el.style && el.style.display) || '').replace(/\\s+/g, '').toLowerCase();
+      let display = ((el.style && el.style.display) || '').replace(/\\s+/g, '').toLowerCase();
+      if (display !== 'none' && typeof getComputedStyle === 'function') {
+        try { display = getComputedStyle(el).display; } catch (_) {}
+      }
       if (display === 'none') return false;
     }
     return true;
@@ -311,15 +314,9 @@ export async function listInbox(ctx, { authuser = 0, query = "in:inbox", limit =
         added++;
       }
       if (threads.length >= limit || rows.length === 0 || added === 0) break;
-      if (limit <= 100) break;
-      const clicked = await evaluate(tab, `(() => {
-        const buttons = [...document.querySelectorAll('[aria-label],[data-tooltip]')];
-        const older = buttons.find((el) => /^(older|older messages)$/i.test((el.getAttribute('aria-label') || el.getAttribute('data-tooltip') || '').trim()));
-        if (!older) return false;
-        older.click();
-        return true;
-      })()`);
-      if (!clicked) break;
+      // Next page by hash navigation (#search/<q>/p<N>): no reload, and no synthetic click,
+      // which Gmail ignores.
+      await evaluate(tab, `location.hash = ${JSON.stringify(`#search/${encodeURIComponent(query)}/p${pageNo + 2}`)}`);
       await wait(2500);
     }
     return { account, threads };
